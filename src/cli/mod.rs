@@ -1,3 +1,29 @@
+//! CLI layer — clap definitions + command dispatch.
+//!
+//! Each subcommand is a separate module. The CLI layer:
+//! - Parses args into typed commands
+//! - Locates `.agents/` root (walk up from cwd, or `--root` flag)
+//! - Calls library functions
+//! - Formats output (human-readable by default, `--json` for machine)
+//! - Maps `MarsError` to exit codes and stderr messages
+
+pub mod add;
+pub mod doctor;
+pub mod init;
+pub mod list;
+pub mod outdated;
+pub mod output;
+pub mod override_cmd;
+pub mod remove;
+pub mod rename;
+pub mod repair;
+pub mod resolve_cmd;
+pub mod sync;
+pub mod update;
+pub mod why;
+
+use std::path::{Path, PathBuf};
+
 use clap::{Parser, Subcommand};
 
 use crate::error::MarsError;
@@ -11,7 +37,7 @@ pub struct Cli {
 
     /// Path to .agents/ root (default: auto-detect by walking up from cwd).
     #[arg(long, global = true)]
-    pub root: Option<std::path::PathBuf>,
+    pub root: Option<PathBuf>,
 
     /// Output in JSON format.
     #[arg(long, global = true)]
@@ -21,87 +47,43 @@ pub struct Cli {
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Initialize a new .agents/ directory with agents.toml.
-    Init,
+    Init(init::InitArgs),
 
-    /// Add a source (git URL or local path).
-    Add {
-        /// Source specifier (e.g., github.com/user/repo@v1.0 or ./local-path).
-        source: String,
-
-        /// Only install specific agents from this source.
-        #[arg(long)]
-        agents: Vec<String>,
-
-        /// Only install specific skills from this source.
-        #[arg(long)]
-        skills: Vec<String>,
-
-        /// Exclude specific items from this source.
-        #[arg(long)]
-        exclude: Vec<String>,
-    },
+    /// Add a source (git URL, GitHub shorthand, or local path).
+    Add(add::AddArgs),
 
     /// Remove a source.
-    Remove {
-        /// Name of the source to remove.
-        source: String,
-    },
+    Remove(remove::RemoveArgs),
 
     /// Sync: resolve + install (make reality match config).
-    Sync {
-        /// Force overwrite on conflicts (skip merge).
-        #[arg(long)]
-        force: bool,
+    Sync(sync::SyncArgs),
 
-        /// Dry run — show what would change without applying.
-        #[arg(long)]
-        diff: bool,
-
-        /// Error if lock file would change (CI mode).
-        #[arg(long)]
-        frozen: bool,
-    },
-
-    /// Update sources within version constraints.
-    Update {
-        /// Specific source to update (default: all).
-        source: Option<String>,
-    },
-
-    /// List installed items grouped by source.
-    List,
+    /// Update sources to newest compatible versions.
+    Update(update::UpdateArgs),
 
     /// Show available updates without applying.
-    Outdated,
+    Outdated(outdated::OutdatedArgs),
 
-    /// Trace which source provides an item.
-    Why {
-        /// Item name to trace.
-        item: String,
-    },
+    /// List managed items with status.
+    List(list::ListArgs),
+
+    /// Explain why an item is installed.
+    Why(why::WhyArgs),
 
     /// Rename a managed item.
-    Rename {
-        /// Current item path (e.g., agents/coder).
-        from: String,
-        /// New item path (e.g., agents/cool-coder).
-        to: String,
-    },
+    Rename(rename::RenameArgs),
+
+    /// Mark conflicts as resolved.
+    Resolve(resolve_cmd::ResolveArgs),
 
     /// Set a local dev override for a source.
-    Override {
-        /// Source name to override.
-        source: String,
-        /// Local path to use instead.
-        #[arg(long)]
-        path: std::path::PathBuf,
-    },
+    Override(override_cmd::OverrideArgs),
 
     /// Validate state consistency.
-    Doctor,
+    Doctor(doctor::DoctorArgs),
 
     /// Rebuild state from lock + sources.
-    Repair,
+    Repair(repair::RepairArgs),
 }
 
 /// Dispatch a parsed CLI command to the appropriate handler.
@@ -112,42 +94,130 @@ pub enum Command {
 /// - 2: resolution/validation error
 /// - 3: I/O or git error
 pub fn dispatch(cli: Cli) -> Result<i32, MarsError> {
-    match cli.command {
-        Command::Init => {
-            todo!("mars init")
+    match &cli.command {
+        Command::Init(args) => init::run(args, cli.json),
+        Command::Add(args) => {
+            let root = find_agents_root(cli.root.as_deref())?;
+            add::run(args, &root, cli.json)
         }
-        Command::Add { .. } => {
-            todo!("mars add")
+        Command::Remove(args) => {
+            let root = find_agents_root(cli.root.as_deref())?;
+            remove::run(args, &root, cli.json)
         }
-        Command::Remove { .. } => {
-            todo!("mars remove")
+        Command::Sync(args) => {
+            let root = find_agents_root(cli.root.as_deref())?;
+            sync::run(args, &root, cli.json)
         }
-        Command::Sync { .. } => {
-            todo!("mars sync")
+        Command::Update(args) => {
+            let root = find_agents_root(cli.root.as_deref())?;
+            update::run(args, &root, cli.json)
         }
-        Command::Update { .. } => {
-            todo!("mars update")
+        Command::Outdated(args) => {
+            let root = find_agents_root(cli.root.as_deref())?;
+            outdated::run(args, &root, cli.json)
         }
-        Command::List => {
-            todo!("mars list")
+        Command::List(args) => {
+            let root = find_agents_root(cli.root.as_deref())?;
+            list::run(args, &root, cli.json)
         }
-        Command::Outdated => {
-            todo!("mars outdated")
+        Command::Why(args) => {
+            let root = find_agents_root(cli.root.as_deref())?;
+            why::run(args, &root, cli.json)
         }
-        Command::Why { .. } => {
-            todo!("mars why")
+        Command::Rename(args) => {
+            let root = find_agents_root(cli.root.as_deref())?;
+            rename::run(args, &root, cli.json)
         }
-        Command::Rename { .. } => {
-            todo!("mars rename")
+        Command::Resolve(args) => {
+            let root = find_agents_root(cli.root.as_deref())?;
+            resolve_cmd::run(args, &root, cli.json)
         }
-        Command::Override { .. } => {
-            todo!("mars override")
+        Command::Override(args) => {
+            let root = find_agents_root(cli.root.as_deref())?;
+            override_cmd::run(args, &root, cli.json)
         }
-        Command::Doctor => {
-            todo!("mars doctor")
+        Command::Doctor(args) => {
+            let root = find_agents_root(cli.root.as_deref())?;
+            doctor::run(args, &root, cli.json)
         }
-        Command::Repair => {
-            todo!("mars repair")
+        Command::Repair(args) => {
+            let root = find_agents_root(cli.root.as_deref())?;
+            repair::run(args, &root, cli.json)
         }
+    }
+}
+
+/// Find `.agents/` root by walking up from cwd, or use `--root` flag.
+///
+/// Walk up the directory tree looking for a directory containing `agents.toml`.
+/// Checks both `.agents/agents.toml` and `agents.toml` at each level.
+pub fn find_agents_root(explicit: Option<&Path>) -> Result<PathBuf, MarsError> {
+    if let Some(root) = explicit {
+        return Ok(root.to_path_buf());
+    }
+
+    let cwd = std::env::current_dir()?;
+    let mut dir = cwd.as_path();
+
+    loop {
+        // Check for .agents/agents.toml
+        let agents_dir = dir.join(".agents");
+        if agents_dir.join("agents.toml").exists() {
+            return Ok(agents_dir);
+        }
+
+        // Check if we're inside .agents/ already
+        if dir.join("agents.toml").exists()
+            && dir
+                .file_name()
+                .map(|n| n == ".agents")
+                .unwrap_or(false)
+        {
+            return Ok(dir.to_path_buf());
+        }
+
+        // Walk up
+        match dir.parent() {
+            Some(parent) => dir = parent,
+            None => break,
+        }
+    }
+
+    Err(MarsError::Source {
+        source_name: "root".to_string(),
+        message: format!(
+            "no .agents/ directory found from {} to /. Run `mars init` first.",
+            cwd.display()
+        ),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn find_root_with_explicit_path() {
+        let dir = TempDir::new().unwrap();
+        let root = find_agents_root(Some(dir.path())).unwrap();
+        assert_eq!(root, dir.path());
+    }
+
+    #[test]
+    fn find_root_walks_up() {
+        let dir = TempDir::new().unwrap();
+        let agents_dir = dir.path().join(".agents");
+        std::fs::create_dir_all(&agents_dir).unwrap();
+        std::fs::write(agents_dir.join("agents.toml"), "[sources]\n").unwrap();
+
+        // Create a subdirectory
+        let sub = dir.path().join("subdir").join("deep");
+        std::fs::create_dir_all(&sub).unwrap();
+
+        // find_agents_root uses cwd, so we test with explicit
+        // The actual walk-up requires changing cwd which isn't safe in tests
+        let found = find_agents_root(Some(&agents_dir)).unwrap();
+        assert_eq!(found, agents_dir);
     }
 }

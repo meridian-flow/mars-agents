@@ -243,6 +243,15 @@ pub fn save(root: &Path, config: &Config) -> Result<(), MarsError> {
     crate::fs::atomic_write(&path, content.as_bytes())
 }
 
+/// Write agents.local.toml atomically.
+pub fn save_local(root: &Path, local: &LocalConfig) -> Result<(), MarsError> {
+    let path = root.join(LOCAL_CONFIG_FILE);
+    let content = toml::to_string_pretty(local).map_err(|e| ConfigError::Invalid {
+        message: format!("failed to serialize local config: {e}"),
+    })?;
+    crate::fs::atomic_write(&path, content.as_bytes())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
