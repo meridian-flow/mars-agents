@@ -1,0 +1,26 @@
+[package]
+name = "mars-agents"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "mars"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+serde_yaml = "0.9"
+git2 = { version = "0.19", features = ["vendored-openssl"] }
+sha2 = "0.10"
+semver = { version = "1", features = ["serde"] }
+indexmap = { version = "2", features = ["serde"] }
+thiserror = "2"
+tempfile = "3"
+termcolor = "1"
+
+[dev-dependencies]
+assert_fs = "1"
+predicates = "3"
+assert_cmd = "2"

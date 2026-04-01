@@ -1,0 +1,6 @@
+# Rust build artifacts
+/target/
+
+# Project-local directories (managed by other tools)
+.meridian/
+.agents/
