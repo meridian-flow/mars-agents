@@ -61,7 +61,7 @@ pub struct LockedItem {
 ///
 /// Items are identified by `(kind, name)`, not by source URL.
 /// If a package moves to a different git host, the item identity is preserved.
-#[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Hash, Eq, PartialEq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct ItemId {
     pub kind: ItemKind,
     pub name: String,
@@ -74,7 +74,7 @@ impl std::fmt::Display for ItemId {
 }
 
 /// Kind of installable item.
-#[derive(Debug, Clone, Copy, Hash, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Hash, Eq, PartialEq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ItemKind {
     Agent,

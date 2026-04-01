@@ -1,16 +1,16 @@
 use std::path::{Path, PathBuf};
 
 use crate::error::MarsError;
-use crate::lock::ItemId;
+use crate::lock::{ItemId, ItemKind};
 
 /// An item discovered in a source tree by filesystem convention.
 ///
 /// Discovery scans for `agents/*.md` and `skills/*/SKILL.md`.
 /// The manifest is not consulted for what a package provides.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiscoveredItem {
     pub id: ItemId,
-    /// Path within source tree (relative).
+    /// Path within source tree (relative), e.g. "agents/coder.md" or "skills/planning".
     pub source_path: PathBuf,
 }
 
@@ -24,6 +24,298 @@ pub struct DiscoveredItem {
 /// Sources without a `mars.toml` work identically — discovery doesn't
 /// depend on the manifest.
 pub fn discover_source(tree_path: &Path) -> Result<Vec<DiscoveredItem>, MarsError> {
-    let _ = tree_path;
-    todo!()
+    let mut items = Vec::new();
+
+    // Discover agents: agents/*.md (non-recursive)
+    let agents_dir = tree_path.join("agents");
+    if agents_dir.is_dir() {
+        for entry in std::fs::read_dir(&agents_dir)? {
+            let entry = entry?;
+            let file_name = entry.file_name();
+            let name_str = file_name.to_string_lossy();
+
+            // Skip hidden files
+            if name_str.starts_with('.') {
+                continue;
+            }
+
+            let path = entry.path();
+            if path.is_file()
+                && let (Some(ext), Some(stem)) = (path.extension(), path.file_stem())
+                && ext == "md"
+            {
+                items.push(DiscoveredItem {
+                    id: ItemId {
+                        kind: ItemKind::Agent,
+                        name: stem.to_string_lossy().into_owned(),
+                    },
+                    source_path: PathBuf::from("agents").join(&file_name),
+                });
+            }
+        }
+    }
+
+    // Discover skills: skills/*/SKILL.md (non-recursive)
+    let skills_dir = tree_path.join("skills");
+    if skills_dir.is_dir() {
+        for entry in std::fs::read_dir(&skills_dir)? {
+            let entry = entry?;
+            let dir_name = entry.file_name();
+            let name_str = dir_name.to_string_lossy();
+
+            // Skip hidden directories
+            if name_str.starts_with('.') {
+                continue;
+            }
+
+            let path = entry.path();
+            if path.is_dir() && path.join("SKILL.md").is_file() {
+                items.push(DiscoveredItem {
+                    id: ItemId {
+                        kind: ItemKind::Skill,
+                        name: name_str.into_owned(),
+                    },
+                    source_path: PathBuf::from("skills").join(&dir_name),
+                });
+            }
+        }
+    }
+
+    // Sort by (kind, name) for deterministic ordering.
+    // ItemId derives Ord with Agent < Skill, then lexicographic by name.
+    items.sort_by(|a, b| a.id.cmp(&b.id));
+
+    Ok(items)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    /// Helper: create a source tree with the given agent and skill files.
+    fn make_tree(agents: &[&str], skills: &[&str]) -> TempDir {
+        let dir = TempDir::new().unwrap();
+
+        if !agents.is_empty() {
+            let agents_dir = dir.path().join("agents");
+            fs::create_dir_all(&agents_dir).unwrap();
+            for name in agents {
+                fs::write(agents_dir.join(name), "# agent content").unwrap();
+            }
+        }
+
+        if !skills.is_empty() {
+            let skills_dir = dir.path().join("skills");
+            fs::create_dir_all(&skills_dir).unwrap();
+            for name in skills {
+                let skill_dir = skills_dir.join(name);
+                fs::create_dir_all(&skill_dir).unwrap();
+                fs::write(skill_dir.join("SKILL.md"), "# skill content").unwrap();
+            }
+        }
+
+        dir
+    }
+
+    #[test]
+    fn discover_agents_only() {
+        let tree = make_tree(&["coder.md", "reviewer.md"], &[]);
+        let items = discover_source(tree.path()).unwrap();
+
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].id.kind, ItemKind::Agent);
+        assert_eq!(items[0].id.name, "coder");
+        assert_eq!(items[0].source_path, PathBuf::from("agents/coder.md"));
+        assert_eq!(items[1].id.kind, ItemKind::Agent);
+        assert_eq!(items[1].id.name, "reviewer");
+        assert_eq!(items[1].source_path, PathBuf::from("agents/reviewer.md"));
+    }
+
+    #[test]
+    fn discover_skills_only() {
+        let tree = make_tree(&[], &["planning"]);
+        let items = discover_source(tree.path()).unwrap();
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].id.kind, ItemKind::Skill);
+        assert_eq!(items[0].id.name, "planning");
+        assert_eq!(items[0].source_path, PathBuf::from("skills/planning"));
+    }
+
+    #[test]
+    fn discover_agents_and_skills() {
+        let tree = make_tree(&["coder.md", "reviewer.md"], &["planning", "review"]);
+        let items = discover_source(tree.path()).unwrap();
+
+        assert_eq!(items.len(), 4);
+        // Agents come first (Agent < Skill), sorted by name
+        assert_eq!(items[0].id.name, "coder");
+        assert_eq!(items[0].id.kind, ItemKind::Agent);
+        assert_eq!(items[1].id.name, "reviewer");
+        assert_eq!(items[1].id.kind, ItemKind::Agent);
+        // Skills next, sorted by name
+        assert_eq!(items[2].id.name, "planning");
+        assert_eq!(items[2].id.kind, ItemKind::Skill);
+        assert_eq!(items[3].id.name, "review");
+        assert_eq!(items[3].id.kind, ItemKind::Skill);
+    }
+
+    #[test]
+    fn empty_tree_no_agents_or_skills_dir() {
+        let tree = TempDir::new().unwrap();
+        let items = discover_source(tree.path()).unwrap();
+        assert!(items.is_empty());
+    }
+
+    #[test]
+    fn empty_agents_dir() {
+        let tree = TempDir::new().unwrap();
+        fs::create_dir_all(tree.path().join("agents")).unwrap();
+        let items = discover_source(tree.path()).unwrap();
+        assert!(items.is_empty());
+    }
+
+    #[test]
+    fn non_md_files_in_agents_skipped() {
+        let tree = TempDir::new().unwrap();
+        let agents_dir = tree.path().join("agents");
+        fs::create_dir_all(&agents_dir).unwrap();
+        fs::write(agents_dir.join("coder.md"), "# agent").unwrap();
+        fs::write(agents_dir.join("notes.txt"), "not an agent").unwrap();
+        fs::write(agents_dir.join("config.yaml"), "not an agent").unwrap();
+        fs::write(agents_dir.join("README"), "not an agent").unwrap();
+
+        let items = discover_source(tree.path()).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].id.name, "coder");
+    }
+
+    #[test]
+    fn skill_dir_without_skill_md_skipped() {
+        let tree = TempDir::new().unwrap();
+        let skills_dir = tree.path().join("skills");
+        let valid = skills_dir.join("planning");
+        let invalid = skills_dir.join("incomplete");
+        fs::create_dir_all(&valid).unwrap();
+        fs::create_dir_all(&invalid).unwrap();
+        fs::write(valid.join("SKILL.md"), "# skill").unwrap();
+        // incomplete/ has no SKILL.md
+
+        let items = discover_source(tree.path()).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].id.name, "planning");
+    }
+
+    #[test]
+    fn hidden_files_skipped() {
+        let tree = TempDir::new().unwrap();
+        let agents_dir = tree.path().join("agents");
+        let skills_dir = tree.path().join("skills");
+        fs::create_dir_all(&agents_dir).unwrap();
+        fs::create_dir_all(&skills_dir).unwrap();
+
+        // Hidden agent file
+        fs::write(agents_dir.join(".hidden.md"), "# hidden").unwrap();
+        // Visible agent file
+        fs::write(agents_dir.join("visible.md"), "# visible").unwrap();
+
+        // Hidden skill directory
+        let hidden_skill = skills_dir.join(".secret");
+        fs::create_dir_all(&hidden_skill).unwrap();
+        fs::write(hidden_skill.join("SKILL.md"), "# secret").unwrap();
+
+        // Visible skill directory
+        let visible_skill = skills_dir.join("planning");
+        fs::create_dir_all(&visible_skill).unwrap();
+        fs::write(visible_skill.join("SKILL.md"), "# planning").unwrap();
+
+        let items = discover_source(tree.path()).unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].id.name, "visible");
+        assert_eq!(items[1].id.name, "planning");
+    }
+
+    #[test]
+    fn deterministic_ordering() {
+        let tree = make_tree(
+            &["zebra.md", "alpha.md", "middle.md"],
+            &["z-skill", "a-skill"],
+        );
+
+        let items1 = discover_source(tree.path()).unwrap();
+        let items2 = discover_source(tree.path()).unwrap();
+
+        // Same order every time
+        assert_eq!(items1, items2);
+
+        // Agents first (sorted), then skills (sorted)
+        let names: Vec<&str> = items1.iter().map(|i| i.id.name.as_str()).collect();
+        assert_eq!(names, vec!["alpha", "middle", "zebra", "a-skill", "z-skill"]);
+    }
+
+    #[test]
+    fn subdirectories_in_agents_ignored() {
+        let tree = TempDir::new().unwrap();
+        let agents_dir = tree.path().join("agents");
+        let sub = agents_dir.join("subdir");
+        fs::create_dir_all(&sub).unwrap();
+        fs::write(sub.join("nested.md"), "# nested").unwrap();
+        fs::write(agents_dir.join("top.md"), "# top").unwrap();
+
+        let items = discover_source(tree.path()).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].id.name, "top");
+    }
+
+    #[test]
+    fn skill_file_not_dir_ignored() {
+        // A file named like a skill but not a directory
+        let tree = TempDir::new().unwrap();
+        let skills_dir = tree.path().join("skills");
+        fs::create_dir_all(&skills_dir).unwrap();
+        fs::write(skills_dir.join("not-a-dir"), "# not a skill dir").unwrap();
+
+        let items = discover_source(tree.path()).unwrap();
+        assert!(items.is_empty());
+    }
+
+    #[test]
+    fn dunder_prefix_skills_discovered() {
+        // Skills with __ prefix are common (e.g., __meridian-spawn)
+        let tree = make_tree(&[], &["__meridian-spawn", "planning"]);
+        let items = discover_source(tree.path()).unwrap();
+
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].id.name, "__meridian-spawn");
+        assert_eq!(items[1].id.name, "planning");
+    }
+
+    #[test]
+    fn only_agents_dir_exists() {
+        let tree = TempDir::new().unwrap();
+        let agents_dir = tree.path().join("agents");
+        fs::create_dir_all(&agents_dir).unwrap();
+        fs::write(agents_dir.join("coder.md"), "# coder").unwrap();
+        // No skills/ dir at all
+
+        let items = discover_source(tree.path()).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].id.name, "coder");
+    }
+
+    #[test]
+    fn only_skills_dir_exists() {
+        let tree = TempDir::new().unwrap();
+        let skills_dir = tree.path().join("skills");
+        let planning = skills_dir.join("planning");
+        fs::create_dir_all(&planning).unwrap();
+        fs::write(planning.join("SKILL.md"), "# planning").unwrap();
+        // No agents/ dir at all
+
+        let items = discover_source(tree.path()).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].id.name, "planning");
+    }
 }
