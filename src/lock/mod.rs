@@ -123,14 +123,132 @@ pub fn write(root: &Path, lock: &LockFile) -> Result<(), MarsError> {
 
 /// Build a new lock file from resolved graph + apply results.
 ///
-/// Not yet implemented — depends on resolve and sync phases.
+/// Constructs the lock file from the graph (source provenance) and
+/// the apply outcomes (checksums). Items that were skipped, kept, or
+/// merged retain their provenance from the graph. Removed items are excluded.
 pub fn build(
-    _graph: &crate::resolve::ResolvedGraph,
-    _applied: &crate::sync::apply::ApplyResult,
-    _pruned: &[crate::sync::apply::ActionOutcome],
+    graph: &crate::resolve::ResolvedGraph,
+    applied: &crate::sync::apply::ApplyResult,
+    old_lock: &LockFile,
 ) -> Result<LockFile, MarsError> {
-    todo!()
+    use crate::sync::apply::ActionTaken;
+
+    let mut sources = IndexMap::new();
+    let mut items = IndexMap::new();
+
+    // Build source entries from graph
+    for (name, node) in &graph.nodes {
+        let resolved = &node.resolved_ref;
+        let url = graph
+            .nodes
+            .get(name)
+            .and_then(|n| {
+                // If we have a version, it was a git source
+                n.resolved_ref.commit.as_ref().map(|_| ())
+            })
+            .and_then(|_| {
+                // Try to get URL from somewhere — it's not directly on ResolvedRef
+                // We'll fill this from the old lock or leave it None
+                old_lock.sources.get(name).and_then(|s| s.url.clone())
+            });
+
+        let path = if resolved.commit.is_none() && resolved.version.is_none() {
+            // Path source
+            Some(resolved.tree_path.to_string_lossy().to_string())
+        } else {
+            None
+        };
+
+        sources.insert(
+            name.clone(),
+            LockedSource {
+                url,
+                path,
+                version: resolved.version_tag.clone(),
+                commit: resolved.commit.clone(),
+                tree_hash: None, // Could compute, but not critical for v1
+            },
+        );
+    }
+
+    // Build item entries from apply outcomes
+    for outcome in &applied.outcomes {
+        match &outcome.action {
+            ActionTaken::Removed | ActionTaken::Skipped => {
+                // For skipped items, carry forward from old lock
+                if matches!(outcome.action, ActionTaken::Skipped) {
+                    let dest_str = outcome.dest_path.to_string_lossy().to_string();
+                    if let Some(old_item) = old_lock.items.get(&dest_str) {
+                        items.insert(dest_str, old_item.clone());
+                    }
+                }
+                // Removed items are excluded from the new lock
+            }
+            ActionTaken::Kept => {
+                // Keep local: carry forward old lock entry (source unchanged)
+                let dest_str = outcome.dest_path.to_string_lossy().to_string();
+                if let Some(old_item) = old_lock.items.get(&dest_str) {
+                    items.insert(dest_str, old_item.clone());
+                }
+            }
+            ActionTaken::Installed
+            | ActionTaken::Updated
+            | ActionTaken::Merged
+            | ActionTaken::Conflicted => {
+                let dest_str = outcome.dest_path.to_string_lossy().to_string();
+                if dest_str.is_empty() {
+                    continue;
+                }
+
+                // Use source_name from outcome (propagated from TargetItem)
+                let source_name = if outcome.source_name.is_empty() {
+                    None
+                } else {
+                    Some(outcome.source_name.clone())
+                };
+
+                // Determine version from graph
+                let version = source_name.as_ref().and_then(|sn| {
+                    graph
+                        .nodes
+                        .get(sn)
+                        .and_then(|n| n.resolved_ref.version_tag.clone())
+                });
+
+                let source_checksum = outcome
+                    .source_checksum
+                    .clone()
+                    .unwrap_or_default();
+                let installed_checksum = outcome
+                    .installed_checksum
+                    .clone()
+                    .unwrap_or_else(|| source_checksum.clone());
+
+                items.insert(
+                    dest_str.clone(),
+                    LockedItem {
+                        source: source_name.unwrap_or_default(),
+                        kind: outcome.item_id.kind,
+                        version,
+                        source_checksum,
+                        installed_checksum,
+                        dest_path: dest_str,
+                    },
+                );
+            }
+        }
+    }
+
+    // Sort items by key for deterministic output
+    items.sort_keys();
+
+    Ok(LockFile {
+        version: 1,
+        sources,
+        items,
+    })
 }
+
 
 #[cfg(test)]
 mod tests {
