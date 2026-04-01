@@ -3,14 +3,14 @@ use std::path::{Path, PathBuf};
 
 use indexmap::IndexMap;
 
-use crate::config::{EffectiveConfig, FilterMode, SourceSpec};
+use crate::config::{EffectiveConfig, FilterMode};
 use crate::discover;
 use crate::error::MarsError;
 use crate::frontmatter;
 use crate::hash;
 use crate::lock::{ItemId, ItemKind, LockFile};
 use crate::resolve::ResolvedGraph;
-use crate::types::{ContentHash, ItemName, SourceName};
+use crate::types::{ContentHash, DestPath, ItemName, RenameMap, SourceId, SourceName};
 use crate::validate;
 
 /// What `.agents/` should look like after sync.
@@ -19,7 +19,7 @@ use crate::validate;
 #[derive(Debug, Clone)]
 pub struct TargetState {
     /// Keyed by dest_path (relative to .agents/).
-    pub items: IndexMap<String, TargetItem>,
+    pub items: IndexMap<DestPath, TargetItem>,
 }
 
 /// A single item in the desired target state.
@@ -27,12 +27,11 @@ pub struct TargetState {
 pub struct TargetItem {
     pub id: ItemId,
     pub source_name: SourceName,
-    /// Source URL for auto-rename `{owner}_{repo}` extraction.
-    pub source_url: Option<String>,
+    pub source_id: SourceId,
     /// Path to content in fetched source tree.
     pub source_path: PathBuf,
     /// Relative path under `.agents/` (reflects rename if any).
-    pub dest_path: PathBuf,
+    pub dest_path: DestPath,
     /// SHA-256 of source content.
     pub source_hash: ContentHash,
     /// Optional in-memory content override after frontmatter rewrites.
@@ -61,10 +60,9 @@ pub fn build(graph: &ResolvedGraph, config: &EffectiveConfig) -> Result<TargetSt
         let discovered = discover::discover_source(&node.resolved_ref.tree_path)?;
 
         // Get the source URL for collision rename extraction
-        let source_url = source_config.and_then(|s| match &s.spec {
-            SourceSpec::Git(git) => Some(git.url.clone()),
-            SourceSpec::Path(_) => s.original_git.as_ref().map(|g| g.url.clone()),
-        });
+        let source_id = source_config
+            .map(|s| s.id.clone())
+            .unwrap_or_else(|| node.source_id.clone());
 
         // Determine filter mode
         let filter = source_config
@@ -86,12 +84,11 @@ pub fn build(graph: &ResolvedGraph, config: &EffectiveConfig) -> Result<TargetSt
             let source_content_path = node.resolved_ref.tree_path.join(&item.source_path);
 
             // Compute source hash
-            let source_hash = ContentHash::from(hash::compute_hash(&source_content_path, item.id.kind)?);
+            let source_hash =
+                ContentHash::from(hash::compute_hash(&source_content_path, item.id.kind)?);
 
             // Determine destination path, honoring path-based and name-based rename maps.
             let (dest_name, dest_path) = apply_item_rename(item.id.kind, &item.id.name, &renames);
-
-            let dest_key = dest_path.to_string_lossy().to_string();
 
             let target_item = TargetItem {
                 id: ItemId {
@@ -99,14 +96,14 @@ pub fn build(graph: &ResolvedGraph, config: &EffectiveConfig) -> Result<TargetSt
                     name: dest_name,
                 },
                 source_name: source_name.clone(),
-                source_url: source_url.clone(),
+                source_id: source_id.clone(),
                 source_path: source_content_path,
                 dest_path: dest_path.clone(),
                 source_hash,
                 rewritten_content: None,
             };
 
-            items.insert(dest_key, target_item);
+            items.insert(dest_path, target_item);
         }
     }
 
@@ -116,7 +113,7 @@ pub fn build(graph: &ResolvedGraph, config: &EffectiveConfig) -> Result<TargetSt
 /// Detect collisions on destination paths and auto-rename both with
 /// `{name}__{owner}_{repo}`.
 ///
-/// Uses `source_url` from ResolvedGraph nodes for `{owner}_{repo}` extraction.
+/// Uses source identity from resolved nodes for `{owner}_{repo}` extraction.
 pub fn check_collisions(
     target: &mut TargetState,
     graph: &ResolvedGraph,
@@ -127,7 +124,7 @@ pub fn check_collisions(
     // When two sources produce the same dest_path, we rename both.
 
     // First pass: find which dest_paths have multiple items wanting the same slot
-    let mut dest_to_sources: HashMap<String, Vec<(SourceName, ItemName)>> = HashMap::new();
+    let mut dest_to_sources: HashMap<DestPath, Vec<(SourceName, ItemName)>> = HashMap::new();
 
     for (dest_key, item) in &target.items {
         dest_to_sources
@@ -176,10 +173,9 @@ pub fn build_with_collisions(
 
         let discovered = discover::discover_source(&node.resolved_ref.tree_path)?;
 
-        let source_url = source_config.and_then(|s| match &s.spec {
-            SourceSpec::Git(git) => Some(git.url.clone()),
-            SourceSpec::Path(_) => s.original_git.as_ref().map(|g| g.url.clone()),
-        });
+        let source_id = source_config
+            .map(|s| s.id.clone())
+            .unwrap_or_else(|| node.source_id.clone());
 
         let filter = source_config
             .map(|s| &s.filter)
@@ -195,7 +191,8 @@ pub fn build_with_collisions(
 
         for item in filtered {
             let source_content_path = node.resolved_ref.tree_path.join(&item.source_path);
-            let source_hash = ContentHash::from(hash::compute_hash(&source_content_path, item.id.kind)?);
+            let source_hash =
+                ContentHash::from(hash::compute_hash(&source_content_path, item.id.kind)?);
 
             let (dest_name, dest_path) = apply_item_rename(item.id.kind, &item.id.name, &renames);
 
@@ -205,7 +202,7 @@ pub fn build_with_collisions(
                     name: dest_name,
                 },
                 source_name: source_name.clone(),
-                source_url: source_url.clone(),
+                source_id: source_id.clone(),
                 source_path: source_content_path,
                 dest_path,
                 source_hash,
@@ -215,9 +212,9 @@ pub fn build_with_collisions(
     }
 
     // Phase 2: Detect collisions on dest_path
-    let mut dest_counts: HashMap<String, Vec<usize>> = HashMap::new();
+    let mut dest_counts: HashMap<DestPath, Vec<usize>> = HashMap::new();
     for (idx, item) in all_items.iter().enumerate() {
-        let key = item.dest_path.to_string_lossy().to_string();
+        let key = item.dest_path.clone();
         dest_counts.entry(key).or_default().push(idx);
     }
 
@@ -235,14 +232,14 @@ pub fn build_with_collisions(
             let original_name = item.id.name.clone();
 
             // Extract owner_repo suffix from source URL or source name
-            let suffix = extract_owner_repo(item.source_url.as_deref(), &item.source_name);
+            let suffix = extract_owner_repo_from_id(&item.source_id, &item.source_name);
             let new_name = format!("{original_name}__{suffix}");
             let new_item_name = ItemName::from(new_name.clone());
 
-            let new_dest_path = match item.id.kind {
+            let new_dest_path = DestPath::from(match item.id.kind {
                 ItemKind::Agent => PathBuf::from("agents").join(format!("{new_name}.md")),
                 ItemKind::Skill => PathBuf::from("skills").join(&new_name),
-            };
+            });
 
             rename_actions.push(RenameAction {
                 original_name: original_name.clone(),
@@ -260,7 +257,7 @@ pub fn build_with_collisions(
     // Phase 4: Build final TargetState from (possibly renamed) items
     let mut items = IndexMap::new();
     for item in all_items {
-        let key = item.dest_path.to_string_lossy().to_string();
+        let key = item.dest_path.clone();
         items.insert(key, item);
     }
 
@@ -302,7 +299,7 @@ pub fn rewrite_skill_refs(
     }
 
     // For each agent in target, check if it references any renamed skills
-    let agent_keys: Vec<String> = target
+    let agent_keys: Vec<DestPath> = target
         .items
         .iter()
         .filter(|(_, item)| item.id.kind == ItemKind::Agent)
@@ -376,23 +373,19 @@ pub fn check_unmanaged_collisions(
     Ok(())
 }
 
-fn apply_item_rename(
-    kind: ItemKind,
-    item_name: &str,
-    renames: &IndexMap<String, String>,
-) -> (ItemName, PathBuf) {
+fn apply_item_rename(kind: ItemKind, item_name: &str, renames: &RenameMap) -> (ItemName, DestPath) {
     let default_dest = default_dest_path(kind, item_name);
     let default_key = default_dest.to_string_lossy().to_string();
 
     let rename_value = renames.get(&default_key).or_else(|| renames.get(item_name));
 
     let dest_path = match rename_value {
-        Some(value) => parse_rename_dest(kind, value),
+        Some(value) => parse_rename_dest(kind, value.as_str()),
         None => default_dest,
     };
     let dest_name = dest_name_from_path(kind, &dest_path);
 
-    (ItemName::from(dest_name), dest_path)
+    (ItemName::from(dest_name), DestPath::from(dest_path))
 }
 
 fn default_dest_path(kind: ItemKind, name: &str) -> PathBuf {
@@ -537,6 +530,13 @@ pub fn extract_owner_repo(url: Option<&str>, source_name: &str) -> String {
     source_name.to_string()
 }
 
+fn extract_owner_repo_from_id(source_id: &SourceId, source_name: &str) -> String {
+    match source_id {
+        SourceId::Git { url } => extract_owner_repo(Some(url.as_ref()), source_name),
+        SourceId::Path { .. } => extract_owner_repo(None, source_name),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -583,6 +583,13 @@ mod tests {
                 name.into(),
                 ResolvedNode {
                     source_name: name.into(),
+                    source_id: if let Some(u) = url {
+                        SourceId::git(crate::types::SourceUrl::from(u))
+                    } else {
+                        SourceId::Path {
+                            canonical: tree.path().to_path_buf(),
+                        }
+                    },
                     resolved_ref: ResolvedRef {
                         source_name: name.into(),
                         version: None,
@@ -598,7 +605,7 @@ mod tests {
 
             let spec = if let Some(u) = url {
                 SourceSpec::Git(GitSpec {
-                    url: u.to_string(),
+                    url: crate::types::SourceUrl::from(u),
                     version: None,
                 })
             } else {
@@ -609,19 +616,30 @@ mod tests {
                 name.into(),
                 EffectiveSource {
                     name: name.into(),
+                    id: if let Some(u) = url {
+                        SourceId::git(crate::types::SourceUrl::from(u))
+                    } else {
+                        SourceId::Path {
+                            canonical: tree.path().to_path_buf(),
+                        }
+                    },
                     spec,
                     filter,
-                    rename: IndexMap::new(),
+                    rename: RenameMap::new(),
                     is_overridden: false,
                     original_git: url_str.map(|u| GitSpec {
-                        url: u,
+                        url: crate::types::SourceUrl::from(u),
                         version: None,
                     }),
                 },
             );
         }
 
-        let graph = ResolvedGraph { nodes, order };
+        let graph = ResolvedGraph {
+            nodes,
+            order,
+            id_index: std::collections::HashMap::new(),
+        };
         let config = EffectiveConfig {
             sources: config_sources,
             settings: Settings {},
@@ -777,10 +795,12 @@ mod tests {
         )]);
 
         // Add rename mapping
-        config.sources.get_mut("base").unwrap().rename.insert(
-            "agents/old-name.md".into(),
-            "agents/new-name.md".into(),
-        );
+        config
+            .sources
+            .get_mut("base")
+            .unwrap()
+            .rename
+            .insert("agents/old-name.md".into(), "agents/new-name.md".into());
 
         let target = build(&graph, &config).unwrap();
         assert_eq!(target.items.len(), 1);
@@ -871,9 +891,11 @@ mod tests {
                     name: "coder".into(),
                 },
                 source_name: "source-a".into(),
-                source_url: None,
+                source_id: SourceId::Path {
+                    canonical: agent_path.clone(),
+                },
                 source_path: agent_path.clone(),
-                dest_path: PathBuf::from("agents/coder.md"),
+                dest_path: "agents/coder.md".into(),
                 source_hash: hash::hash_bytes(fs::read(&agent_path).unwrap().as_slice()).into(),
                 rewritten_content: None,
             },
@@ -886,10 +908,14 @@ mod tests {
                     name: "plan__org_base".into(),
                 },
                 source_name: "source-a".into(),
-                source_url: None,
+                source_id: SourceId::Path {
+                    canonical: skill_path.clone(),
+                },
                 source_path: skill_path.clone(),
-                dest_path: PathBuf::from("skills/plan__org_base"),
-                source_hash: hash::compute_hash(&skill_path, ItemKind::Skill).unwrap().into(),
+                dest_path: "skills/plan__org_base".into(),
+                source_hash: hash::compute_hash(&skill_path, ItemKind::Skill)
+                    .unwrap()
+                    .into(),
                 rewritten_content: None,
             },
         );
@@ -903,6 +929,7 @@ mod tests {
         let graph = ResolvedGraph {
             nodes: IndexMap::new(),
             order: vec![],
+            id_index: std::collections::HashMap::new(),
         };
 
         rewrite_skill_refs(&mut target, &renames, &graph).unwrap();
@@ -931,9 +958,11 @@ mod tests {
                     name: "coder".into(),
                 },
                 source_name: "source-a".into(),
-                source_url: None,
+                source_id: SourceId::Path {
+                    canonical: agent_path.clone(),
+                },
                 source_path: agent_path.clone(),
-                dest_path: PathBuf::from("agents/coder.md"),
+                dest_path: "agents/coder.md".into(),
                 source_hash: hash::hash_bytes(fs::read(&agent_path).unwrap().as_slice()).into(),
                 rewritten_content: None,
             },
@@ -948,6 +977,7 @@ mod tests {
         let graph = ResolvedGraph {
             nodes: IndexMap::new(),
             order: vec![],
+            id_index: std::collections::HashMap::new(),
         };
 
         rewrite_skill_refs(&mut target, &renames, &graph).unwrap();

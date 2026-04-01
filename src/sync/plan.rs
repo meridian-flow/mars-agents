@@ -4,7 +4,7 @@ use crate::lock::{ItemId, LockedItem};
 use crate::sync::apply::SyncOptions;
 use crate::sync::diff::{DiffEntry, SyncDiff};
 use crate::sync::target::TargetItem;
-use crate::types::SourceName;
+use crate::types::{DestPath, SourceName};
 
 /// A planned set of actions to execute.
 #[derive(Debug, Clone)]
@@ -25,7 +25,7 @@ pub enum PlannedAction {
     /// Skip — no changes needed.
     Skip {
         item_id: ItemId,
-        dest_path: PathBuf,
+        dest_path: DestPath,
         source_name: SourceName,
         reason: &'static str,
     },
@@ -40,7 +40,7 @@ pub enum PlannedAction {
     /// Keep the local modification.
     KeepLocal {
         item_id: ItemId,
-        dest_path: PathBuf,
+        dest_path: DestPath,
         source_name: SourceName,
     },
 }
@@ -91,14 +91,13 @@ pub fn create(
                     });
                 } else {
                     // Three-way merge needed
-                    let dest_path_str = locked.dest_path.clone();
                     let base_path = cache_bases_dir.join(locked.installed_checksum.as_ref());
 
                     // Read base content from cache (or empty if missing)
                     let base_content = std::fs::read(&base_path).unwrap_or_default();
 
                     // Local path is the installed dest
-                    let local_path = PathBuf::from(&dest_path_str);
+                    let local_path = locked.dest_path.as_path().to_path_buf();
 
                     actions.push(PlannedAction::Merge {
                         target: target.clone(),
@@ -155,9 +154,11 @@ mod tests {
                 name: name.into(),
             },
             source_name: "test".into(),
-            source_url: None,
+            source_id: crate::types::SourceId::Path {
+                canonical: PathBuf::from(format!("/tmp/source/agents/{name}.md")),
+            },
             source_path: PathBuf::from(format!("/tmp/source/agents/{name}.md")),
-            dest_path: PathBuf::from(format!("agents/{name}.md")),
+            dest_path: format!("agents/{name}.md").into(),
             source_hash: hash::hash_bytes(b"test content").into(),
             rewritten_content: None,
         }
@@ -170,7 +171,7 @@ mod tests {
             version: None,
             source_checksum: hash::hash_bytes(b"old content").into(),
             installed_checksum: hash::hash_bytes(b"old content").into(),
-            dest_path: format!("agents/{name}.md"),
+            dest_path: format!("agents/{name}.md").into(),
         }
     }
 

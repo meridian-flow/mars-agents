@@ -35,18 +35,20 @@ pub fn run(args: &WhyArgs, root: &Path, json: bool) -> Result<i32, MarsError> {
     for (dest_path, item) in &lock.items {
         let name_matches = match item.kind {
             ItemKind::Agent => {
-                let stem = std::path::Path::new(dest_path)
+                let stem = dest_path
+                    .as_path()
                     .file_stem()
                     .map(|s| s.to_string_lossy().to_string())
                     .unwrap_or_default();
-                stem == args.name || dest_path == &args.name
+                stem == args.name || dest_path.to_string() == args.name
             }
             ItemKind::Skill => {
-                let dir_name = std::path::Path::new(dest_path)
+                let dir_name = dest_path
+                    .as_path()
                     .file_name()
                     .map(|s| s.to_string_lossy().to_string())
                     .unwrap_or_default();
-                dir_name == args.name || dest_path == &args.name
+                dir_name == args.name || dest_path.to_string() == args.name
             }
         };
 
@@ -78,7 +80,7 @@ pub fn run(args: &WhyArgs, root: &Path, json: bool) -> Result<i32, MarsError> {
         kind: item.kind.to_string(),
         source: item.source.to_string(),
         version: item.version.clone().unwrap_or_else(|| "-".to_string()),
-        dest_path: dest_path.clone(),
+        dest_path: dest_path.to_string(),
         required_by: required_by.clone(),
     };
 
@@ -122,7 +124,7 @@ fn find_referencing_agents(
         if let Ok(skills) = crate::validate::parse_agent_skills(&agent_path)
             && skills.iter().any(|s| s == skill_name)
         {
-            refs.push(dest_path.clone());
+            refs.push(dest_path.to_string());
         }
     }
 

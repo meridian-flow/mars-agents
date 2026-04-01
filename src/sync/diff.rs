@@ -60,9 +60,7 @@ pub fn compute(
 
     // Process each target item
     for (_dest_key, target_item) in &target.items {
-        let dest_path_str = target_item.dest_path.to_string_lossy().to_string();
-
-        if let Some(locked_item) = lock.items.get(&dest_path_str) {
+        if let Some(locked_item) = lock.items.get(&target_item.dest_path) {
             // Item exists in lock — compare checksums
             let source_changed = target_item.source_hash != locked_item.source_checksum;
 
@@ -138,8 +136,8 @@ pub fn compute(
     }
 
     // Find orphans: items in lock but not in target
-    for (dest_path_str, locked_item) in &lock.items {
-        if !target.items.contains_key(dest_path_str) {
+    for (dest_path, locked_item) in &lock.items {
+        if !target.items.contains_key(dest_path) {
             items.push(DiffEntry::Orphan {
                 locked: locked_item.clone(),
             });
@@ -177,9 +175,11 @@ mod tests {
                 name: ItemName::from(name),
             },
             source_name: SourceName::from("test-source"),
-            source_url: None,
+            source_id: crate::types::SourceId::Path {
+                canonical: source_path.clone(),
+            },
             source_path,
-            dest_path,
+            dest_path: dest_path.into(),
             source_hash: ContentHash::from(source_hash),
             rewritten_content: None,
         }
@@ -201,7 +201,7 @@ mod tests {
             version: None,
             source_checksum: ContentHash::from(source_checksum),
             installed_checksum: ContentHash::from(installed_checksum),
-            dest_path,
+            dest_path: dest_path.into(),
         }
     }
 

@@ -4,7 +4,7 @@ use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{ConfigError, MarsError};
-use crate::types::{ItemName, SourceName};
+use crate::types::{ItemName, RenameMap, SourceId, SourceName, SourceUrl};
 
 /// Top-level agents.toml configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -23,11 +23,18 @@ pub struct Config {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SourceEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub url: Option<String>,
+    pub url: Option<SourceUrl>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
+    #[serde(flatten)]
+    pub filter: FilterConfig,
+}
+
+/// Shared include/exclude/rename filter configuration for a source.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct FilterConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agents: Option<Vec<ItemName>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -35,7 +42,7 @@ pub struct SourceEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exclude: Option<Vec<ItemName>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub rename: Option<IndexMap<String, String>>,
+    pub rename: Option<RenameMap>,
 }
 
 /// Dev override config (agents.local.toml).
@@ -68,7 +75,7 @@ pub enum SourceSpec {
 /// Git source specification preserved when overrides are active.
 #[derive(Debug, Clone)]
 pub struct GitSpec {
-    pub url: String,
+    pub url: SourceUrl,
     pub version: Option<String>,
 }
 
@@ -99,9 +106,10 @@ pub struct EffectiveConfig {
 #[derive(Debug, Clone)]
 pub struct EffectiveSource {
     pub name: SourceName,
+    pub id: SourceId,
     pub spec: SourceSpec,
     pub filter: FilterMode,
-    pub rename: IndexMap<String, String>,
+    pub rename: RenameMap,
     pub is_overridden: bool,
     pub original_git: Option<GitSpec>,
 }
@@ -143,6 +151,15 @@ pub fn load_local(root: &Path) -> Result<LocalConfig, MarsError> {
 /// - Each source uses either include filters (`agents`/`skills`) or `exclude`, not both
 /// - Warns (via eprintln) if an override references a source name not in config
 pub fn merge(config: Config, local: LocalConfig) -> Result<EffectiveConfig, MarsError> {
+    merge_with_root(config, local, Path::new("."))
+}
+
+/// Same as `merge`, but uses an explicit root for path-based SourceId canonicalization.
+pub fn merge_with_root(
+    config: Config,
+    local: LocalConfig,
+    root: &Path,
+) -> Result<EffectiveConfig, MarsError> {
     let mut sources = IndexMap::new();
 
     for (name, entry) in &config.sources {
@@ -170,8 +187,8 @@ pub fn merge(config: Config, local: LocalConfig) -> Result<EffectiveConfig, Mars
         };
 
         // Validate filter mode: agents/skills XOR exclude
-        let has_include = entry.agents.is_some() || entry.skills.is_some();
-        let has_exclude = entry.exclude.is_some();
+        let has_include = entry.filter.agents.is_some() || entry.filter.skills.is_some();
+        let has_exclude = entry.filter.exclude.is_some();
         if has_include && has_exclude {
             return Err(ConfigError::ConflictingFilters {
                 name: name.to_string(),
@@ -181,16 +198,16 @@ pub fn merge(config: Config, local: LocalConfig) -> Result<EffectiveConfig, Mars
 
         let filter = if has_include {
             FilterMode::Include {
-                agents: entry.agents.clone().unwrap_or_default(),
-                skills: entry.skills.clone().unwrap_or_default(),
+                agents: entry.filter.agents.clone().unwrap_or_default(),
+                skills: entry.filter.skills.clone().unwrap_or_default(),
             }
         } else if has_exclude {
-            FilterMode::Exclude(entry.exclude.clone().unwrap_or_default())
+            FilterMode::Exclude(entry.filter.exclude.clone().unwrap_or_default())
         } else {
             FilterMode::All
         };
 
-        let rename = entry.rename.clone().unwrap_or_default();
+        let rename = entry.filter.rename.clone().unwrap_or_default();
 
         // Check if this source has a local override
         let (spec, is_overridden, original_git) = if let Some(ov) = local.overrides.get(name) {
@@ -202,11 +219,13 @@ pub fn merge(config: Config, local: LocalConfig) -> Result<EffectiveConfig, Mars
         } else {
             (base_spec, false, None)
         };
+        let id = source_id_for_spec(root, &spec);
 
         sources.insert(
             name.clone(),
             EffectiveSource {
                 name: name.clone(),
+                id,
                 spec,
                 filter,
                 rename,
@@ -227,6 +246,23 @@ pub fn merge(config: Config, local: LocalConfig) -> Result<EffectiveConfig, Mars
         sources,
         settings: config.settings,
     })
+}
+
+fn source_id_for_spec(root: &Path, spec: &SourceSpec) -> SourceId {
+    match spec {
+        SourceSpec::Git(git) => SourceId::git(git.url.clone()),
+        SourceSpec::Path(path) => match SourceId::path(root, path) {
+            Ok(id) => id,
+            Err(_) => {
+                let canonical = if path.is_absolute() {
+                    path.clone()
+                } else {
+                    root.join(path)
+                };
+                SourceId::Path { canonical }
+            }
+        },
+    }
 }
 
 /// Write agents.toml atomically.
@@ -402,10 +438,12 @@ path = "/local/path"
                         url: Some("https://github.com/org/base.git".into()),
                         path: None,
                         version: Some("v1.0".into()),
-                        agents: Some(vec!["coder".into()]),
-                        skills: None,
-                        exclude: None,
-                        rename: None,
+                        filter: FilterConfig {
+                            agents: Some(vec!["coder".into()]),
+                            skills: None,
+                            exclude: None,
+                            rename: None,
+                        },
                     },
                 );
                 m.insert(
@@ -414,10 +452,7 @@ path = "/local/path"
                         url: None,
                         path: Some(PathBuf::from("../my-agents")),
                         version: None,
-                        agents: None,
-                        skills: None,
-                        exclude: None,
-                        rename: None,
+                        filter: FilterConfig::default(),
                     },
                 );
                 m
@@ -485,10 +520,7 @@ path = "/home/dev/local-base"
                         url: Some("https://github.com/org/base.git".into()),
                         path: None,
                         version: Some("v1.0".into()),
-                        agents: None,
-                        skills: None,
-                        exclude: None,
-                        rename: None,
+                        filter: FilterConfig::default(),
                     },
                 );
                 m
@@ -521,10 +553,7 @@ path = "/home/dev/local-base"
                         url: Some("https://github.com/org/base.git".into()),
                         path: None,
                         version: Some("v1.0".into()),
-                        agents: None,
-                        skills: None,
-                        exclude: None,
-                        rename: None,
+                        filter: FilterConfig::default(),
                     },
                 );
                 m
@@ -570,10 +599,7 @@ path = "/home/dev/local-base"
                         url: Some("https://github.com/org/base.git".into()),
                         path: None,
                         version: None,
-                        agents: None,
-                        skills: None,
-                        exclude: None,
-                        rename: None,
+                        filter: FilterConfig::default(),
                     },
                 );
                 m
@@ -596,10 +622,7 @@ path = "/home/dev/local-base"
                         url: Some("https://github.com/org/base.git".into()),
                         path: None,
                         version: Some("v2.0".into()),
-                        agents: None,
-                        skills: None,
-                        exclude: None,
-                        rename: None,
+                        filter: FilterConfig::default(),
                     },
                 );
                 m

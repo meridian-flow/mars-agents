@@ -1,10 +1,10 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::error::MarsError;
 use crate::lock::{ItemId, ItemKind};
 use crate::sync::plan::{PlannedAction, SyncPlan};
 use crate::sync::target::TargetItem;
-use crate::types::{ContentHash, ItemName, SourceName};
+use crate::types::{ContentHash, DestPath, ItemName, SourceName};
 
 /// Options controlling sync behavior.
 #[derive(Debug, Clone, Default)]
@@ -28,7 +28,7 @@ pub struct ApplyResult {
 pub struct ActionOutcome {
     pub item_id: ItemId,
     pub action: ActionTaken,
-    pub dest_path: PathBuf,
+    pub dest_path: DestPath,
     /// Which source this item came from.
     pub source_name: SourceName,
     /// Source checksum (pre-rewrite hash of source content).
@@ -158,7 +158,8 @@ fn execute_action(
             // Write merged content
             crate::fs::atomic_write(&dest, &merge_result.content)?;
 
-            let installed_checksum = ContentHash::from(crate::hash::hash_bytes(&merge_result.content));
+            let installed_checksum =
+                ContentHash::from(crate::hash::hash_bytes(&merge_result.content));
 
             // Cache the merged content as new base
             cache_base_content(cache_bases_dir, &installed_checksum, &dest, target.id.kind)?;
@@ -193,7 +194,7 @@ fn execute_action(
             Ok(ActionOutcome {
                 item_id,
                 action: ActionTaken::Removed,
-                dest_path: PathBuf::from(&locked.dest_path),
+                dest_path: locked.dest_path.clone(),
                 source_name: locked.source.clone(),
                 source_checksum: None,
                 installed_checksum: None,
@@ -264,7 +265,7 @@ fn dry_run_action(action: &PlannedAction) -> ActionOutcome {
             ActionOutcome {
                 item_id,
                 action: ActionTaken::Removed,
-                dest_path: PathBuf::from(&locked.dest_path),
+                dest_path: locked.dest_path.clone(),
                 source_name: locked.source.clone(),
                 source_checksum: None,
                 installed_checksum: None,
@@ -387,9 +388,9 @@ fn cache_base_content(
     Ok(())
 }
 
-/// Extract the item name from a dest_path string.
-fn extract_name_from_dest(dest_path: &str, kind: ItemKind) -> String {
-    let path = Path::new(dest_path);
+/// Extract the item name from a destination path.
+fn extract_name_from_dest(dest_path: &DestPath, kind: ItemKind) -> String {
+    let path = dest_path.as_path();
     match kind {
         ItemKind::Agent => path
             .file_stem()
@@ -425,7 +426,7 @@ pub fn prune_orphans(
                     name: ItemName::from(extract_name_from_dest(dest_path_str, locked_item.kind)),
                 },
                 action: ActionTaken::Removed,
-                dest_path: PathBuf::from(dest_path_str),
+                dest_path: dest_path_str.clone(),
                 source_name: locked_item.source.clone(),
                 source_checksum: None,
                 installed_checksum: None,
@@ -444,6 +445,7 @@ mod tests {
     use crate::sync::plan::{PlannedAction, SyncPlan};
     use crate::sync::target::TargetItem;
     use std::fs;
+    use std::path::PathBuf;
     use tempfile::TempDir;
 
     fn make_agent_target(name: &str, source_path: PathBuf, content: &[u8]) -> TargetItem {
@@ -453,9 +455,11 @@ mod tests {
                 name: name.into(),
             },
             source_name: "test-source".into(),
-            source_url: None,
+            source_id: crate::types::SourceId::Path {
+                canonical: source_path.clone(),
+            },
             source_path,
-            dest_path: PathBuf::from(format!("agents/{name}.md")),
+            dest_path: format!("agents/{name}.md").into(),
             source_hash: hash::hash_bytes(content).into(),
             rewritten_content: None,
         }
@@ -695,7 +699,7 @@ mod tests {
                     kind: ItemKind::Agent,
                     name: "stable".into(),
                 },
-                dest_path: PathBuf::from("agents/stable.md"),
+                dest_path: "agents/stable.md".into(),
                 source_name: "base".into(),
                 reason: "unchanged",
             }],
@@ -711,7 +715,7 @@ mod tests {
         assert!(matches!(result.outcomes[0].action, ActionTaken::Skipped));
         assert_eq!(
             result.outcomes[0].dest_path,
-            PathBuf::from("agents/stable.md")
+            crate::types::DestPath::from("agents/stable.md")
         );
         assert_eq!(result.outcomes[0].source_name, "base");
     }
@@ -728,7 +732,7 @@ mod tests {
                     kind: ItemKind::Agent,
                     name: "modified".into(),
                 },
-                dest_path: PathBuf::from("agents/modified.md"),
+                dest_path: "agents/modified.md".into(),
                 source_name: "base".into(),
             }],
         };
@@ -743,7 +747,7 @@ mod tests {
         assert!(matches!(result.outcomes[0].action, ActionTaken::Kept));
         assert_eq!(
             result.outcomes[0].dest_path,
-            PathBuf::from("agents/modified.md")
+            crate::types::DestPath::from("agents/modified.md")
         );
         assert_eq!(result.outcomes[0].source_name, "base");
     }
@@ -771,9 +775,11 @@ mod tests {
                 name: "planning".into(),
             },
             source_name: "test".into(),
-            source_url: None,
+            source_id: crate::types::SourceId::Path {
+                canonical: source_skill.clone(),
+            },
             source_path: source_skill,
-            dest_path: PathBuf::from("skills/planning"),
+            dest_path: "skills/planning".into(),
             source_hash: skill_hash.into(),
             rewritten_content: None,
         };
@@ -846,7 +852,10 @@ mod tests {
     #[test]
     fn extract_agent_name() {
         assert_eq!(
-            extract_name_from_dest("agents/coder.md", ItemKind::Agent),
+            extract_name_from_dest(
+                &crate::types::DestPath::from("agents/coder.md"),
+                ItemKind::Agent
+            ),
             "coder"
         );
     }
@@ -854,7 +863,10 @@ mod tests {
     #[test]
     fn extract_skill_name() {
         assert_eq!(
-            extract_name_from_dest("skills/planning", ItemKind::Skill),
+            extract_name_from_dest(
+                &crate::types::DestPath::from("skills/planning"),
+                ItemKind::Skill
+            ),
             "planning"
         );
     }

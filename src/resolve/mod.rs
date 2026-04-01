@@ -20,7 +20,7 @@ use crate::error::{MarsError, ResolutionError};
 use crate::lock::LockFile;
 use crate::manifest::Manifest;
 use crate::source::{AvailableVersion, ResolvedRef};
-use crate::types::SourceName;
+use crate::types::{SourceId, SourceName, SourceUrl};
 
 /// The resolved dependency graph — all sources with concrete versions.
 ///
@@ -31,12 +31,14 @@ pub struct ResolvedGraph {
     pub nodes: IndexMap<SourceName, ResolvedNode>,
     /// Topological order (deps before dependents).
     pub order: Vec<SourceName>,
+    pub id_index: HashMap<SourceId, SourceName>,
 }
 
 /// A single node in the resolved graph.
 #[derive(Debug, Clone)]
 pub struct ResolvedNode {
     pub source_name: SourceName,
+    pub source_id: SourceId,
     pub resolved_ref: ResolvedRef,
     /// None if source has no mars.toml.
     pub manifest: Option<Manifest>,
@@ -72,12 +74,12 @@ pub struct ResolveOptions {
 /// while the real source module provides git/path implementations.
 pub trait SourceProvider {
     /// List available semver-tagged versions for a git URL.
-    fn list_versions(&self, url: &str) -> Result<Vec<AvailableVersion>, MarsError>;
+    fn list_versions(&self, url: &SourceUrl) -> Result<Vec<AvailableVersion>, MarsError>;
 
     /// Fetch a git source at a specific version tag, returning a ResolvedRef.
     fn fetch_git_version(
         &self,
-        url: &str,
+        url: &SourceUrl,
         version: &AvailableVersion,
         source_name: &str,
         preferred_commit: Option<&str>,
@@ -86,7 +88,7 @@ pub trait SourceProvider {
     /// Fetch a git source at a branch or commit ref (non-semver).
     fn fetch_git_ref(
         &self,
-        url: &str,
+        url: &SourceUrl,
         ref_name: &str,
         source_name: &str,
     ) -> Result<ResolvedRef, MarsError>;
@@ -167,6 +169,7 @@ pub fn resolve(
     options: &ResolveOptions,
 ) -> Result<ResolvedGraph, MarsError> {
     let mut nodes: IndexMap<SourceName, ResolvedNode> = IndexMap::new();
+    let mut id_index: HashMap<SourceId, SourceName> = HashMap::new();
 
     // Pending sources to process: (name, url_or_path, version_constraint, required_by)
     let mut pending: VecDeque<PendingSource> = VecDeque::new();
@@ -182,6 +185,7 @@ pub fn resolve(
         };
         pending.push_back(PendingSource {
             name: name.clone(),
+            source_id: source.id.clone(),
             spec: source.spec.clone(),
             constraint,
             required_by: "agents.toml".into(),
@@ -191,8 +195,27 @@ pub fn resolve(
 
     // BFS: resolve each source, discover transitive deps
     while let Some(pending_src) = pending.pop_front() {
+        if let Some(existing_name) = id_index.get(&pending_src.source_id)
+            && existing_name != &pending_src.name
+        {
+            return Err(ResolutionError::DuplicateSourceIdentity {
+                existing_name: existing_name.to_string(),
+                duplicate_name: pending_src.name.to_string(),
+                source_id: pending_src.source_id.to_string(),
+            }
+            .into());
+        }
+
         // If already resolved, just record the additional constraint
-        if nodes.contains_key(&pending_src.name) {
+        if let Some(existing) = nodes.get(&pending_src.name) {
+            if existing.source_id != pending_src.source_id {
+                return Err(ResolutionError::SourceIdentityMismatch {
+                    name: pending_src.name.to_string(),
+                    existing: existing.source_id.to_string(),
+                    incoming: pending_src.source_id.to_string(),
+                }
+                .into());
+            }
             constraints
                 .entry(pending_src.name.clone())
                 .or_default()
@@ -225,8 +248,10 @@ pub fn resolve(
                 // Only add as pending if not already resolved
                 if !nodes.contains_key(dep_name.as_str()) {
                     let dep_constraint = parse_version_constraint(Some(&dep_spec.version));
+                    let dep_name_typed = SourceName::from(dep_name.clone());
                     pending.push_back(PendingSource {
-                        name: SourceName::from(dep_name.clone()),
+                        name: dep_name_typed,
+                        source_id: SourceId::git(dep_spec.url.clone()),
                         spec: SourceSpec::Git(GitSpec {
                             url: dep_spec.url.clone(),
                             version: Some(dep_spec.version.clone()),
@@ -249,12 +274,14 @@ pub fn resolve(
         nodes.insert(
             pending_src.name.clone(),
             ResolvedNode {
-                source_name: pending_src.name,
+                source_name: pending_src.name.clone(),
+                source_id: pending_src.source_id.clone(),
                 resolved_ref,
                 manifest,
                 deps,
             },
         );
+        id_index.insert(pending_src.source_id, pending_src.name);
     }
 
     // Validate that all constraints are satisfied by resolved versions
@@ -263,12 +290,17 @@ pub fn resolve(
     // Topological sort
     let order = topological_sort(&nodes)?;
 
-    Ok(ResolvedGraph { nodes, order })
+    Ok(ResolvedGraph {
+        nodes,
+        order,
+        id_index,
+    })
 }
 
 /// Internal: a source waiting to be resolved.
 struct PendingSource {
     name: SourceName,
+    source_id: SourceId,
     spec: SourceSpec,
     constraint: VersionConstraint,
     required_by: String,
@@ -306,7 +338,7 @@ fn resolve_single_source(
 /// Resolve a git source: list versions, intersect constraints, select version.
 fn resolve_git_source(
     name: &SourceName,
-    url: &str,
+    url: &SourceUrl,
     constraints: &[(String, VersionConstraint)],
     provider: &dyn SourceProvider,
     locked: Option<&LockFile>,
@@ -390,11 +422,14 @@ fn resolve_git_source(
     match provider.fetch_git_version(url, selected, name.as_ref(), preferred_commit) {
         Ok(resolved) => Ok(resolved),
         Err(err @ MarsError::LockedCommitUnreachable { .. }) if options.frozen => Err(err),
-        Err(MarsError::LockedCommitUnreachable { commit, url }) => {
+        Err(MarsError::LockedCommitUnreachable {
+            commit,
+            url: source_url,
+        }) => {
             eprintln!(
-                "warning: locked commit {commit} for {url} is unreachable; re-resolving from tag"
+                "warning: locked commit {commit} for {source_url} is unreachable; re-resolving from tag"
             );
-            provider.fetch_git_version(url.as_str(), selected, name.as_ref(), None)
+            provider.fetch_git_version(url, selected, name.as_ref(), None)
         }
         Err(err) => Err(err),
     }
@@ -501,7 +536,9 @@ fn validate_all_constraints(
 ///
 /// Returns source names in dependency order (deps before dependents).
 /// Errors if a cycle is detected.
-fn topological_sort(nodes: &IndexMap<SourceName, ResolvedNode>) -> Result<Vec<SourceName>, MarsError> {
+fn topological_sort(
+    nodes: &IndexMap<SourceName, ResolvedNode>,
+) -> Result<Vec<SourceName>, MarsError> {
     // Build in-degree map
     let mut in_degree: HashMap<SourceName, usize> = HashMap::new();
     let mut adjacency: HashMap<SourceName, Vec<SourceName>> = HashMap::new();
@@ -579,6 +616,7 @@ mod tests {
         EffectiveConfig, EffectiveSource, FilterMode, GitSpec, Settings, SourceSpec,
     };
     use crate::manifest::{DepSpec, Manifest, PackageInfo};
+    use crate::types::{RenameMap, SourceId, SourceUrl};
     use indexmap::IndexMap;
     use std::cell::RefCell;
     use std::collections::{HashMap, HashSet};
@@ -646,13 +684,13 @@ mod tests {
     }
 
     impl SourceProvider for MockProvider {
-        fn list_versions(&self, url: &str) -> Result<Vec<AvailableVersion>, MarsError> {
-            Ok(self.versions.get(url).cloned().unwrap_or_default())
+        fn list_versions(&self, url: &SourceUrl) -> Result<Vec<AvailableVersion>, MarsError> {
+            Ok(self.versions.get(url.as_ref()).cloned().unwrap_or_default())
         }
 
         fn fetch_git_version(
             &self,
-            url: &str,
+            url: &SourceUrl,
             version: &AvailableVersion,
             source_name: &str,
             preferred_commit: Option<&str>,
@@ -686,7 +724,7 @@ mod tests {
 
         fn fetch_git_ref(
             &self,
-            _url: &str,
+            _url: &SourceUrl,
             ref_name: &str,
             source_name: &str,
         ) -> Result<ResolvedRef, MarsError> {
@@ -724,9 +762,10 @@ mod tests {
                 name.into(),
                 EffectiveSource {
                     name: name.into(),
+                    id: source_id_for_spec(&spec),
                     spec,
                     filter: FilterMode::All,
-                    rename: IndexMap::new(),
+                    rename: RenameMap::new(),
                     is_overridden: false,
                     original_git: None,
                 },
@@ -740,7 +779,7 @@ mod tests {
 
     fn git_spec(url: &str, version: Option<&str>) -> SourceSpec {
         SourceSpec::Git(GitSpec {
-            url: url.to_string(),
+            url: SourceUrl::from(url),
             version: version.map(|s| s.to_string()),
         })
     }
@@ -751,7 +790,7 @@ mod tests {
             dependencies.insert(
                 dep_name.to_string(),
                 DepSpec {
-                    url: dep_url.to_string(),
+                    url: SourceUrl::from(dep_url),
                     version: dep_ver.to_string(),
                     items: None,
                 },
@@ -769,6 +808,15 @@ mod tests {
 
     fn default_options() -> ResolveOptions {
         ResolveOptions::default()
+    }
+
+    fn source_id_for_spec(spec: &SourceSpec) -> SourceId {
+        match spec {
+            SourceSpec::Git(g) => SourceId::git(g.url.clone()),
+            SourceSpec::Path(path) => SourceId::Path {
+                canonical: path.clone(),
+            },
+        }
     }
 
     // ========== parse_version_constraint tests ==========
@@ -1640,6 +1688,7 @@ mod tests {
             "c".into(),
             ResolvedNode {
                 source_name: "c".into(),
+                source_id: SourceId::git(SourceUrl::from("example.com/c")),
                 resolved_ref: dummy_ref("c"),
                 manifest: None,
                 deps: vec!["b".into()],
@@ -1649,6 +1698,7 @@ mod tests {
             "b".into(),
             ResolvedNode {
                 source_name: "b".into(),
+                source_id: SourceId::git(SourceUrl::from("example.com/b")),
                 resolved_ref: dummy_ref("b"),
                 manifest: None,
                 deps: vec!["a".into()],
@@ -1658,6 +1708,7 @@ mod tests {
             "a".into(),
             ResolvedNode {
                 source_name: "a".into(),
+                source_id: SourceId::git(SourceUrl::from("example.com/a")),
                 resolved_ref: dummy_ref("a"),
                 manifest: None,
                 deps: vec![],
@@ -1676,6 +1727,7 @@ mod tests {
             "a".into(),
             ResolvedNode {
                 source_name: "a".into(),
+                source_id: SourceId::git(SourceUrl::from("example.com/a")),
                 resolved_ref: dummy_ref("a"),
                 manifest: None,
                 deps: vec!["b".into(), "c".into()],
@@ -1685,6 +1737,7 @@ mod tests {
             "b".into(),
             ResolvedNode {
                 source_name: "b".into(),
+                source_id: SourceId::git(SourceUrl::from("example.com/b")),
                 resolved_ref: dummy_ref("b"),
                 manifest: None,
                 deps: vec!["d".into()],
@@ -1694,6 +1747,7 @@ mod tests {
             "c".into(),
             ResolvedNode {
                 source_name: "c".into(),
+                source_id: SourceId::git(SourceUrl::from("example.com/c")),
                 resolved_ref: dummy_ref("c"),
                 manifest: None,
                 deps: vec!["d".into()],
@@ -1703,6 +1757,7 @@ mod tests {
             "d".into(),
             ResolvedNode {
                 source_name: "d".into(),
+                source_id: SourceId::git(SourceUrl::from("example.com/d")),
                 resolved_ref: dummy_ref("d"),
                 manifest: None,
                 deps: vec![],
@@ -1728,6 +1783,7 @@ mod tests {
             "a".into(),
             ResolvedNode {
                 source_name: "a".into(),
+                source_id: SourceId::git(SourceUrl::from("example.com/a")),
                 resolved_ref: dummy_ref("a"),
                 manifest: None,
                 deps: vec![],
@@ -1737,6 +1793,7 @@ mod tests {
             "b".into(),
             ResolvedNode {
                 source_name: "b".into(),
+                source_id: SourceId::git(SourceUrl::from("example.com/b")),
                 resolved_ref: dummy_ref("b"),
                 manifest: None,
                 deps: vec![],
@@ -1756,6 +1813,7 @@ mod tests {
             "a".into(),
             ResolvedNode {
                 source_name: "a".into(),
+                source_id: SourceId::git(SourceUrl::from("example.com/a")),
                 resolved_ref: dummy_ref("a"),
                 manifest: None,
                 deps: vec!["b".into()],
@@ -1765,6 +1823,7 @@ mod tests {
             "b".into(),
             ResolvedNode {
                 source_name: "b".into(),
+                source_id: SourceId::git(SourceUrl::from("example.com/b")),
                 resolved_ref: dummy_ref("b"),
                 manifest: None,
                 deps: vec!["a".into()],

@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use crate::error::MarsError;
 use crate::hash;
-use crate::types::ContentHash;
+use crate::types::{ContentHash, DestPath};
 
 use super::output;
 
@@ -21,9 +21,9 @@ pub fn run(args: &ResolveArgs, root: &Path, json: bool) -> Result<i32, MarsError
     let mut resolved_files = Vec::new();
     let mut still_conflicted = Vec::new();
 
-    let items_to_check: Vec<String> = if let Some(file) = &args.file {
+    let items_to_check: Vec<DestPath> = if let Some(file) = &args.file {
         // Check specific file
-        let rel = file.to_string_lossy().to_string();
+        let rel = DestPath::from(file.as_path());
         if lock.items.contains_key(&rel) {
             vec![rel]
         } else {
@@ -54,7 +54,7 @@ pub fn run(args: &ResolveArgs, root: &Path, json: bool) -> Result<i32, MarsError
             let new_hash = hash::compute_hash(&disk_path, item.kind)?;
             if new_hash != item.installed_checksum {
                 item.installed_checksum = ContentHash::from(new_hash);
-                resolved_files.push(dest_path_str.clone());
+                resolved_files.push(dest_path_str.to_string());
             }
         }
     }

@@ -38,6 +38,24 @@ pub enum ResolutionError {
     #[error("version conflict for `{name}`: {message}")]
     VersionConflict { name: String, message: String },
 
+    #[error(
+        "duplicate source identity: `{existing_name}` and `{duplicate_name}` both resolve to `{source_id}`"
+    )]
+    DuplicateSourceIdentity {
+        existing_name: String,
+        duplicate_name: String,
+        source_id: String,
+    },
+
+    #[error(
+        "source `{name}` was referenced with conflicting identities: existing `{existing}`, incoming `{incoming}`"
+    )]
+    SourceIdentityMismatch {
+        name: String,
+        existing: String,
+        incoming: String,
+    },
+
     #[error("cycle detected: {chain}")]
     Cycle { chain: String },
 

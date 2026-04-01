@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+use crate::types::SourceUrl;
+
 /// Classification of source input syntax.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SourceFormat {
@@ -16,7 +18,7 @@ pub enum SourceFormat {
 pub struct ParsedSourceSpec {
     pub format: SourceFormat,
     pub raw: String,
-    pub url: Option<String>,
+    pub url: Option<SourceUrl>,
     pub path: Option<PathBuf>,
     pub version: Option<String>,
     pub name: String,
@@ -43,7 +45,7 @@ pub enum ParseError {
 /// Normalized source kind produced by `normalize()`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NormalizedSource {
-    Git(String),
+    Git(SourceUrl),
     Path(PathBuf),
 }
 
@@ -110,7 +112,9 @@ pub fn split_version(input: &str, format: SourceFormat) -> (&str, Option<&str>) 
 pub fn normalize(input: &str, format: SourceFormat) -> Result<NormalizedSource, ParseError> {
     match format {
         SourceFormat::LocalPath => Ok(NormalizedSource::Path(PathBuf::from(input))),
-        SourceFormat::GitHubShorthand => Ok(NormalizedSource::Git(format!("github.com/{input}"))),
+        SourceFormat::GitHubShorthand => Ok(NormalizedSource::Git(SourceUrl::from(format!(
+            "github.com/{input}"
+        )))),
         SourceFormat::HttpsUrl => {
             let stripped = input
                 .strip_prefix("https://")
@@ -123,7 +127,7 @@ pub fn normalize(input: &str, format: SourceFormat) -> Result<NormalizedSource, 
                     input: input.to_string(),
                 });
             }
-            Ok(NormalizedSource::Git(stripped.to_string()))
+            Ok(NormalizedSource::Git(SourceUrl::from(stripped.to_string())))
         }
         SourceFormat::SshUrl => {
             let (user_host, path) =
@@ -148,7 +152,9 @@ pub fn normalize(input: &str, format: SourceFormat) -> Result<NormalizedSource, 
                     input: input.to_string(),
                 });
             }
-            Ok(NormalizedSource::Git(format!("{host}/{path}")))
+            Ok(NormalizedSource::Git(SourceUrl::from(format!(
+                "{host}/{path}"
+            ))))
         }
         SourceFormat::BareDomain => {
             let stripped = input.strip_suffix(".git").unwrap_or(input);
@@ -158,7 +164,7 @@ pub fn normalize(input: &str, format: SourceFormat) -> Result<NormalizedSource, 
                     input: input.to_string(),
                 });
             }
-            Ok(NormalizedSource::Git(stripped.to_string()))
+            Ok(NormalizedSource::Git(SourceUrl::from(stripped.to_string())))
         }
         SourceFormat::Unknown => Err(ParseError::UnrecognizedFormat {
             input: input.to_string(),
@@ -173,7 +179,9 @@ pub fn derive_name(source: &NormalizedSource) -> Result<String, ParseError> {
             .rsplit('/')
             .next()
             .filter(|s| !s.is_empty())
-            .ok_or_else(|| ParseError::CannotDeriveName { input: url.clone() })?,
+            .ok_or_else(|| ParseError::CannotDeriveName {
+                input: url.to_string(),
+            })?,
         NormalizedSource::Path(path) => path
             .file_name()
             .and_then(|n| n.to_str())
@@ -270,19 +278,19 @@ mod tests {
     fn normalize_handles_all_git_formats() {
         assert_eq!(
             normalize("owner/repo", SourceFormat::GitHubShorthand).unwrap(),
-            NormalizedSource::Git("github.com/owner/repo".to_string())
+            NormalizedSource::Git(SourceUrl::from("github.com/owner/repo"))
         );
         assert_eq!(
             normalize("https://github.com/org/repo.git", SourceFormat::HttpsUrl).unwrap(),
-            NormalizedSource::Git("github.com/org/repo".to_string())
+            NormalizedSource::Git(SourceUrl::from("github.com/org/repo"))
         );
         assert_eq!(
             normalize("git@github.com:org/repo.git", SourceFormat::SshUrl).unwrap(),
-            NormalizedSource::Git("github.com/org/repo".to_string())
+            NormalizedSource::Git(SourceUrl::from("github.com/org/repo"))
         );
         assert_eq!(
             normalize("github.com/org/repo.git", SourceFormat::BareDomain).unwrap(),
-            NormalizedSource::Git("github.com/org/repo".to_string())
+            NormalizedSource::Git(SourceUrl::from("github.com/org/repo"))
         );
     }
 
@@ -295,7 +303,10 @@ mod tests {
     #[test]
     fn derive_name_from_git_and_path() {
         assert_eq!(
-            derive_name(&NormalizedSource::Git("github.com/org/repo".to_string())).unwrap(),
+            derive_name(&NormalizedSource::Git(SourceUrl::from(
+                "github.com/org/repo"
+            )))
+            .unwrap(),
             "repo"
         );
         assert_eq!(

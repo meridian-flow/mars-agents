@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use crate::config::SourceSpec;
 use crate::error::MarsError;
-use crate::types::{CommitHash, SourceName};
+use crate::types::{CommitHash, SourceName, SourceUrl};
 
 /// Cache directory for fetched sources.
 ///
@@ -84,7 +84,7 @@ pub fn fetch_source(
 ) -> Result<ResolvedRef, MarsError> {
     match spec {
         SourceSpec::Git(git_spec) => git::fetch(
-            &git_spec.url,
+            git_spec.url.as_ref(),
             git_spec.version.as_deref(),
             source_name,
             cache_dir,
@@ -95,8 +95,11 @@ pub fn fetch_source(
 }
 
 /// List available versions from a git remote (for resolution).
-pub fn list_versions(url: &str, cache_dir: &Path) -> Result<Vec<AvailableVersion>, MarsError> {
-    git::list_versions(url, cache_dir)
+pub fn list_versions(
+    url: &SourceUrl,
+    cache_dir: &Path,
+) -> Result<Vec<AvailableVersion>, MarsError> {
+    git::list_versions(url.as_ref(), cache_dir)
 }
 
 #[cfg(test)]

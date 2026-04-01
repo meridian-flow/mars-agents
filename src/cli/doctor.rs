@@ -40,7 +40,8 @@ pub fn run(_args: &DoctorArgs, root: &Path, json: bool) -> Result<i32, MarsError
         // Check file exists
         if !disk_path.exists() {
             issues.push(format!(
-                "lock references {dest_path_str} which doesn't exist on disk"
+                "lock references {} which doesn't exist on disk",
+                dest_path_str
             ));
             continue;
         }
@@ -71,7 +72,7 @@ pub fn run(_args: &DoctorArgs, root: &Path, json: bool) -> Result<i32, MarsError
     // Check agent→skill references
     if let Ok(config) = crate::config::load(root) {
         let local = crate::config::load_local(root).unwrap_or_default();
-        if let Ok(effective) = crate::config::merge(config, local) {
+        if let Ok(effective) = crate::config::merge_with_root(config, local, root) {
             // Check that all sources in config have corresponding lock entries
             for source_name in effective.sources.keys() {
                 if !lock.sources.contains_key(source_name) {

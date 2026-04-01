@@ -4,6 +4,7 @@ use std::path::Path;
 
 use crate::error::MarsError;
 use crate::sync::{ConfigMutation, ResolutionMode, SyncOptions, SyncRequest};
+use crate::types::DestPath;
 
 use super::output;
 
@@ -21,14 +22,15 @@ pub fn run(args: &RenameArgs, root: &Path, json: bool) -> Result<i32, MarsError>
     let lock = crate::lock::load(root)?;
 
     // Validate `from` is a managed item
-    if !lock.items.contains_key(&args.from) {
+    let from_dest = DestPath::from(args.from.as_str());
+    if !lock.items.contains_key(&from_dest) {
         return Err(MarsError::Source {
             source_name: "rename".to_string(),
             message: format!("`{}` is not a managed item", args.from),
         });
     }
 
-    let locked_item = &lock.items[&args.from];
+    let locked_item = &lock.items[&from_dest];
     let request = SyncRequest {
         resolution: ResolutionMode::Normal,
         mutation: Some(ConfigMutation::SetRename {

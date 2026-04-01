@@ -13,8 +13,8 @@ use crate::error::{ConfigError, MarsError};
 use crate::resolve::{ResolveOptions, SourceProvider};
 use crate::source::{self, AvailableVersion, CacheDir, ResolvedRef};
 use crate::sync::apply::ApplyResult;
-use crate::types::{CommitHash, SourceName};
 pub use crate::sync::apply::SyncOptions;
+use crate::types::{CommitHash, ItemName, SourceName};
 use crate::validate::ValidationWarning;
 
 /// Report from a completed sync operation.
@@ -59,7 +59,10 @@ pub enum ResolutionMode {
 #[derive(Debug, Clone)]
 pub enum ConfigMutation {
     /// Add or update a source in agents.toml.
-    UpsertSource { name: SourceName, entry: SourceEntry },
+    UpsertSource {
+        name: SourceName,
+        entry: SourceEntry,
+    },
     /// Remove a source from agents.toml.
     RemoveSource { name: SourceName },
     /// Add or update an override in agents.local.toml.
@@ -110,7 +113,7 @@ pub fn execute(root: &Path, request: &SyncRequest) -> Result<SyncReport, MarsErr
     }
 
     // Step 4b: Build effective config.
-    let effective = crate::config::merge(config.clone(), local.clone())?;
+    let effective = crate::config::merge_with_root(config.clone(), local.clone(), root)?;
 
     // Step 5: Validate upgrade targets exist.
     validate_targets(&request.resolution, &effective)?;
@@ -258,8 +261,11 @@ fn apply_mutation(config: &mut Config, mutation: &ConfigMutation) -> Result<(), 
                     source_name: source_name.to_string(),
                     message: format!("source `{source_name}` not found in agents.toml"),
                 })?;
-            let rename_map = source.rename.get_or_insert_with(indexmap::IndexMap::new);
-            rename_map.insert(from.clone(), to.clone());
+            let rename_map = source
+                .filter
+                .rename
+                .get_or_insert_with(crate::types::RenameMap::new);
+            rename_map.insert(ItemName::from(from.as_str()), ItemName::from(to.as_str()));
             Ok(())
         }
         ConfigMutation::ClearOverride { .. } => Ok(()),
@@ -330,13 +336,16 @@ struct RealSourceProvider<'a> {
 }
 
 impl SourceProvider for RealSourceProvider<'_> {
-    fn list_versions(&self, url: &str) -> Result<Vec<AvailableVersion>, MarsError> {
+    fn list_versions(
+        &self,
+        url: &crate::types::SourceUrl,
+    ) -> Result<Vec<AvailableVersion>, MarsError> {
         source::list_versions(url, self.cache_dir)
     }
 
     fn fetch_git_version(
         &self,
-        url: &str,
+        url: &crate::types::SourceUrl,
         version: &AvailableVersion,
         source_name: &str,
         preferred_commit: Option<&str>,
@@ -345,7 +354,7 @@ impl SourceProvider for RealSourceProvider<'_> {
             preferred_commit: preferred_commit.map(CommitHash::from),
         };
         source::git::fetch(
-            url,
+            url.as_ref(),
             Some(&version.tag),
             source_name,
             self.cache_dir,
@@ -355,12 +364,12 @@ impl SourceProvider for RealSourceProvider<'_> {
 
     fn fetch_git_ref(
         &self,
-        url: &str,
+        url: &crate::types::SourceUrl,
         ref_name: &str,
         source_name: &str,
     ) -> Result<ResolvedRef, MarsError> {
         source::git::fetch(
-            url,
+            url.as_ref(),
             Some(ref_name),
             source_name,
             self.cache_dir,
@@ -490,6 +499,9 @@ mod tests {
                 name.into(),
                 ResolvedNode {
                     source_name: name.into(),
+                    source_id: crate::types::SourceId::Path {
+                        canonical: tree_path.clone(),
+                    },
                     resolved_ref: ResolvedRef {
                         source_name: name.into(),
                         version: None,
@@ -507,9 +519,12 @@ mod tests {
                 name.into(),
                 EffectiveSource {
                     name: name.into(),
+                    id: crate::types::SourceId::Path {
+                        canonical: tree_path.clone(),
+                    },
                     spec: SourceSpec::Path(tree_path),
                     filter,
-                    rename: IndexMap::new(),
+                    rename: crate::types::RenameMap::new(),
                     is_overridden: false,
                     original_git: None,
                 },
@@ -517,7 +532,11 @@ mod tests {
         }
 
         (
-            ResolvedGraph { nodes, order },
+            ResolvedGraph {
+                nodes,
+                order,
+                id_index: std::collections::HashMap::new(),
+            },
             EffectiveConfig {
                 sources: config_sources,
                 settings: Settings {},
@@ -530,10 +549,7 @@ mod tests {
             url: None,
             path: Some(path.to_path_buf()),
             version: None,
-            agents: None,
-            skills: None,
-            exclude: None,
-            rename: None,
+            filter: FilterConfig::default(),
         }
     }
 

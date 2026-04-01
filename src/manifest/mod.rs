@@ -4,7 +4,7 @@ use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
 use crate::error::MarsError;
-use crate::types::ItemName;
+use crate::types::{ItemName, SourceUrl};
 
 /// Per-package manifest (mars.toml in package repo root).
 ///
@@ -30,7 +30,7 @@ pub struct PackageInfo {
 /// Dependency specification within a manifest.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DepSpec {
-    pub url: String,
+    pub url: SourceUrl,
     pub version: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub items: Option<Vec<ItemName>>,

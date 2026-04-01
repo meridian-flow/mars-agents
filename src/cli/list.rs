@@ -25,7 +25,7 @@ pub fn run(args: &ListArgs, root: &Path, json: bool) -> Result<i32, MarsError> {
 
     let mut entries = Vec::new();
 
-    for (dest_path_str, item) in &lock.items {
+    for (dest_path, item) in &lock.items {
         // Filter by source
         if let Some(ref filter_source) = args.source
             && &item.source != filter_source
@@ -45,7 +45,7 @@ pub fn run(args: &ListArgs, root: &Path, json: bool) -> Result<i32, MarsError> {
         }
 
         // Compute disk status
-        let disk_path = root.join(dest_path_str);
+        let disk_path = root.join(dest_path);
         let status = if !disk_path.exists() {
             "missing".to_string()
         } else if has_conflict_markers(&disk_path) {
@@ -61,7 +61,7 @@ pub fn run(args: &ListArgs, root: &Path, json: bool) -> Result<i32, MarsError> {
 
         entries.push(ListEntry {
             source: item.source.to_string(),
-            item: dest_path_str.clone(),
+            item: dest_path.to_string(),
             kind: item.kind.to_string(),
             version: item.version.clone().unwrap_or_else(|| "-".to_string()),
             status,

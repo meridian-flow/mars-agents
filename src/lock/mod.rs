@@ -4,7 +4,7 @@ use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{LockError, MarsError};
-use crate::types::{CommitHash, ContentHash, ItemName, SourceName};
+use crate::types::{CommitHash, ContentHash, DestPath, ItemName, SourceName, SourceUrl};
 
 /// The complete lock file — ownership registry for all managed items.
 ///
@@ -17,7 +17,7 @@ pub struct LockFile {
     #[serde(default)]
     pub sources: IndexMap<SourceName, LockedSource>,
     #[serde(default)]
-    pub items: IndexMap<String, LockedItem>,
+    pub items: IndexMap<DestPath, LockedItem>,
 }
 
 impl LockFile {
@@ -35,7 +35,7 @@ impl LockFile {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LockedSource {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub url: Option<String>,
+    pub url: Option<SourceUrl>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -55,7 +55,7 @@ pub struct LockedItem {
     pub version: Option<String>,
     pub source_checksum: ContentHash,
     pub installed_checksum: ContentHash,
-    pub dest_path: String,
+    pub dest_path: DestPath,
 }
 
 /// Stable identity for an installed item — decoupled from source URL.
@@ -178,26 +178,26 @@ pub fn build(
             ActionTaken::Removed | ActionTaken::Skipped => {
                 // For skipped items, carry forward from old lock
                 if matches!(outcome.action, ActionTaken::Skipped) {
-                    let dest_str = outcome.dest_path.to_string_lossy().to_string();
-                    if let Some(old_item) = old_lock.items.get(&dest_str) {
-                        items.insert(dest_str, old_item.clone());
+                    let dest_path = outcome.dest_path.clone();
+                    if let Some(old_item) = old_lock.items.get(&dest_path) {
+                        items.insert(dest_path, old_item.clone());
                     }
                 }
                 // Removed items are excluded from the new lock
             }
             ActionTaken::Kept => {
                 // Keep local: carry forward old lock entry (source unchanged)
-                let dest_str = outcome.dest_path.to_string_lossy().to_string();
-                if let Some(old_item) = old_lock.items.get(&dest_str) {
-                    items.insert(dest_str, old_item.clone());
+                let dest_path = outcome.dest_path.clone();
+                if let Some(old_item) = old_lock.items.get(&dest_path) {
+                    items.insert(dest_path, old_item.clone());
                 }
             }
             ActionTaken::Installed
             | ActionTaken::Updated
             | ActionTaken::Merged
             | ActionTaken::Conflicted => {
-                let dest_str = outcome.dest_path.to_string_lossy().to_string();
-                if dest_str.is_empty() {
+                let dest_path = outcome.dest_path.clone();
+                if dest_path.as_path().as_os_str().is_empty() {
                     continue;
                 }
 
@@ -226,14 +226,14 @@ pub fn build(
                     .unwrap_or_else(|| source_checksum.clone());
 
                 items.insert(
-                    dest_str.clone(),
+                    dest_path.clone(),
                     LockedItem {
                         source: source_name.unwrap_or_else(|| SourceName::from("")),
                         kind: outcome.item_id.kind,
                         version,
                         source_checksum,
                         installed_checksum,
-                        dest_path: dest_str,
+                        dest_path,
                     },
                 );
             }

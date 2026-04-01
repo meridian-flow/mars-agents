@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use crate::config::SourceEntry;
+use crate::config::{FilterConfig, SourceEntry};
 use crate::error::{ConfigError, MarsError};
 use crate::source::parse;
 use crate::sync::{ConfigMutation, ResolutionMode, SyncOptions, SyncRequest};
@@ -45,22 +45,39 @@ pub fn run(args: &AddArgs, root: &Path, json: bool) -> Result<i32, MarsError> {
         url: parsed.entry.url,
         path: parsed.entry.path,
         version: parsed.entry.version,
-        agents: if args.agents.is_empty() {
-            None
-        } else {
-            Some(args.agents.iter().map(|v| ItemName::from(v.as_str())).collect())
+        filter: FilterConfig {
+            agents: if args.agents.is_empty() {
+                None
+            } else {
+                Some(
+                    args.agents
+                        .iter()
+                        .map(|v| ItemName::from(v.as_str()))
+                        .collect(),
+                )
+            },
+            skills: if args.skills.is_empty() {
+                None
+            } else {
+                Some(
+                    args.skills
+                        .iter()
+                        .map(|v| ItemName::from(v.as_str()))
+                        .collect(),
+                )
+            },
+            exclude: if args.exclude.is_empty() {
+                None
+            } else {
+                Some(
+                    args.exclude
+                        .iter()
+                        .map(|v| ItemName::from(v.as_str()))
+                        .collect(),
+                )
+            },
+            rename: None,
         },
-        skills: if args.skills.is_empty() {
-            None
-        } else {
-            Some(args.skills.iter().map(|v| ItemName::from(v.as_str())).collect())
-        },
-        exclude: if args.exclude.is_empty() {
-            None
-        } else {
-            Some(args.exclude.iter().map(|v| ItemName::from(v.as_str())).collect())
-        },
-        rename: None,
     };
 
     let request = SyncRequest {
@@ -104,10 +121,7 @@ fn parse_source_specifier(spec: &str) -> Result<ParsedSource, MarsError> {
             url: parsed.url,
             path: parsed.path,
             version: parsed.version,
-            agents: None,
-            skills: None,
-            exclude: None,
-            rename: None,
+            filter: FilterConfig::default(),
         },
     })
 }
