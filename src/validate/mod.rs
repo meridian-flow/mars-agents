@@ -1,9 +1,8 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
-
 use crate::error::MarsError;
+use crate::frontmatter;
 use crate::lock::{ItemId, ItemKind};
 
 /// Warning from dependency validation.
@@ -23,13 +22,6 @@ pub enum ValidationWarning {
     OrphanedSkill { skill: ItemId },
 }
 
-/// Minimal struct for parsing agent YAML frontmatter.
-#[derive(Deserialize)]
-struct AgentFrontmatter {
-    #[serde(default)]
-    skills: Option<Vec<String>>,
-}
-
 /// Parse YAML frontmatter from an agent .md file.
 ///
 /// Returns the `skills` list, or empty vec if no frontmatter, no skills
@@ -44,29 +36,9 @@ pub fn parse_agent_skills(agent_path: &Path) -> Result<Vec<String>, MarsError> {
 ///
 /// Defensive: returns empty vec on any parse failure.
 fn extract_skills_from_content(content: &str) -> Vec<String> {
-    let trimmed = content.trim_start();
-    if !trimmed.starts_with("---") {
-        return Vec::new();
-    }
-
-    // Skip past the opening `---` and any immediate newline
-    let after_opening = &trimmed[3..];
-    let rest = after_opening.trim_start_matches(['\r', '\n']);
-
-    // Find closing `---` on its own line
-    let yaml_block = match rest.find("\n---") {
-        Some(pos) => &rest[..pos],
-        None => {
-            // Handle edge case: single-line frontmatter like "---\nkey: val\n---"
-            // where rest might be "key: val\n---" — already handled above.
-            // If truly no closing delimiter, no valid frontmatter.
-            return Vec::new();
-        }
-    };
-
-    match serde_yaml::from_str::<AgentFrontmatter>(yaml_block) {
-        Ok(fm) => fm.skills.unwrap_or_default(),
-        Err(_) => Vec::new(), // Malformed YAML → empty skills list
+    match frontmatter::parse(content) {
+        Ok(fm) => fm.skills(),
+        Err(_) => Vec::new(),
     }
 }
 
@@ -217,7 +189,8 @@ mod tests {
 
     #[test]
     fn parse_frontmatter_with_extra_fields() {
-        let content = "---\nmodel: opus\nskills:\n  - planning\n  - review\napproval: auto\n---\n\n# Agent\n";
+        let content =
+            "---\nmodel: opus\nskills:\n  - planning\n  - review\napproval: auto\n---\n\n# Agent\n";
         let skills = extract_skills_from_content(content);
         assert_eq!(skills, vec!["planning", "review"]);
     }
@@ -256,7 +229,10 @@ mod tests {
         );
 
         let agents = vec![("coder".to_string(), p)];
-        let skills: HashSet<String> = ["planning", "review"].iter().map(|s| s.to_string()).collect();
+        let skills: HashSet<String> = ["planning", "review"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
 
         let warnings = check_deps(&agents, &skills).unwrap();
         assert!(warnings.is_empty());
@@ -342,11 +318,7 @@ mod tests {
     #[test]
     fn missing_skill_with_suggestion() {
         let dir = TempDir::new().unwrap();
-        let p = write_agent(
-            dir.path(),
-            "coder",
-            "---\nskills: [plan]\n---\n# Coder\n",
-        );
+        let p = write_agent(dir.path(), "coder", "---\nskills: [plan]\n---\n# Coder\n");
 
         let agents = vec![("coder".to_string(), p)];
         let skills: HashSet<String> = ["planning"].iter().map(|s| s.to_string()).collect();
@@ -372,7 +344,10 @@ mod tests {
     fn suggestion_reverse_substring() {
         // "planning" contains "plan" → suggestion
         let available: HashSet<String> = ["planning"].iter().map(|s| s.to_string()).collect();
-        assert_eq!(find_suggestion("plan", &available), Some("planning".to_string()));
+        assert_eq!(
+            find_suggestion("plan", &available),
+            Some("planning".to_string())
+        );
     }
 
     #[test]
@@ -414,10 +389,7 @@ mod tests {
             "---\nskills: [missing-b]\n---\n# Reviewer\n",
         );
 
-        let agents = vec![
-            ("coder".to_string(), p1),
-            ("reviewer".to_string(), p2),
-        ];
+        let agents = vec![("coder".to_string(), p1), ("reviewer".to_string(), p2)];
         let skills: HashSet<String> = ["existing", "orphan"]
             .iter()
             .map(|s| s.to_string())
@@ -451,10 +423,7 @@ mod tests {
     #[test]
     fn unreadable_agent_file_treated_as_no_skills() {
         // Path to a file that doesn't exist — check_deps should not crash
-        let agents = vec![(
-            "ghost".to_string(),
-            PathBuf::from("/nonexistent/ghost.md"),
-        )];
+        let agents = vec![("ghost".to_string(), PathBuf::from("/nonexistent/ghost.md"))];
         let skills: HashSet<String> = HashSet::new();
 
         let warnings = check_deps(&agents, &skills).unwrap();

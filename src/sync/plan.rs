@@ -158,6 +158,7 @@ mod tests {
             source_path: PathBuf::from(format!("/tmp/source/agents/{name}.md")),
             dest_path: PathBuf::from(format!("agents/{name}.md")),
             source_hash: hash::hash_bytes(b"test content"),
+            rewritten_content: None,
         }
     }
 
@@ -231,7 +232,10 @@ mod tests {
         assert_eq!(plan.actions.len(), 1);
         assert!(matches!(
             &plan.actions[0],
-            PlannedAction::Skip { reason: "unchanged", .. }
+            PlannedAction::Skip {
+                reason: "unchanged",
+                ..
+            }
         ));
     }
 

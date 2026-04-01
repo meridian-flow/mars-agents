@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use crate::error::MarsError;
 use crate::lock::{ItemId, ItemKind};
 use crate::sync::plan::{PlannedAction, SyncPlan};
+use crate::sync::target::TargetItem;
 
 /// Options controlling sync behavior.
 #[derive(Debug, Clone)]
@@ -91,7 +92,7 @@ fn execute_action(
             let dest = root.join(&target.dest_path);
 
             // Read source content and install
-            let installed_checksum = install_item(&target.source_path, &dest, target.id.kind)?;
+            let installed_checksum = install_item(target, &dest)?;
 
             // Cache the installed content as base for future merges
             cache_base_content(cache_bases_dir, &installed_checksum, &dest, target.id.kind)?;
@@ -110,7 +111,7 @@ fn execute_action(
             let dest = root.join(&target.dest_path);
 
             // Install (overwrite) source content
-            let installed_checksum = install_item(&target.source_path, &dest, target.id.kind)?;
+            let installed_checksum = install_item(target, &dest)?;
 
             // Update base cache
             cache_base_content(cache_bases_dir, &installed_checksum, &dest, target.id.kind)?;
@@ -134,7 +135,7 @@ fn execute_action(
             let full_local_path = root.join(local_path);
 
             // Read source (theirs) content
-            let theirs_content = read_item_content(&target.source_path, target.id.kind)?;
+            let theirs_content = read_target_content_for_merge(target)?;
 
             // Read local content
             let local_content = read_item_content(&full_local_path, target.id.kind)?;
@@ -146,8 +147,12 @@ fn execute_action(
                 theirs: format!("{}@{}", target.source_name, "upstream"),
             };
 
-            let merge_result =
-                crate::merge::merge_content(base_content, &local_content, &theirs_content, &labels)?;
+            let merge_result = crate::merge::merge_content(
+                base_content,
+                &local_content,
+                &theirs_content,
+                &labels,
+            )?;
 
             // Write merged content
             crate::fs::atomic_write(&dest, &merge_result.content)?;
@@ -295,17 +300,34 @@ fn dry_run_action(action: &PlannedAction) -> ActionOutcome {
 /// Install an item (file or directory) to the destination.
 ///
 /// Returns the installed checksum (hash of what was written to disk).
-fn install_item(source: &Path, dest: &Path, kind: ItemKind) -> Result<String, MarsError> {
-    match kind {
+fn install_item(target: &TargetItem, dest: &Path) -> Result<String, MarsError> {
+    match target.id.kind {
         ItemKind::Agent => {
-            let content = std::fs::read(source)?;
+            let content = content_to_install(target)?;
             crate::fs::atomic_write(dest, &content)?;
             Ok(crate::hash::hash_bytes(&content))
         }
         ItemKind::Skill => {
-            crate::fs::atomic_install_dir(source, dest)?;
+            crate::fs::atomic_install_dir(&target.source_path, dest)?;
             crate::hash::compute_hash(dest, ItemKind::Skill)
         }
+    }
+}
+
+/// Read bytes to install for an agent, honoring in-memory rewrite overrides.
+fn content_to_install(target: &TargetItem) -> Result<Vec<u8>, MarsError> {
+    if let Some(content) = &target.rewritten_content {
+        Ok(content.as_bytes().to_vec())
+    } else {
+        Ok(std::fs::read(&target.source_path)?)
+    }
+}
+
+/// Read source content for merge operations.
+fn read_target_content_for_merge(target: &TargetItem) -> Result<Vec<u8>, MarsError> {
+    match target.id.kind {
+        ItemKind::Agent => content_to_install(target),
+        ItemKind::Skill => read_item_content(&target.source_path, target.id.kind),
     }
 }
 
@@ -434,6 +456,7 @@ mod tests {
             source_path,
             dest_path: PathBuf::from(format!("agents/{name}.md")),
             source_hash: hash::hash_bytes(content),
+            rewritten_content: None,
         }
     }
 
@@ -685,7 +708,10 @@ mod tests {
 
         let result = execute(root.path(), &plan, &options, &bases_dir).unwrap();
         assert!(matches!(result.outcomes[0].action, ActionTaken::Skipped));
-        assert_eq!(result.outcomes[0].dest_path, PathBuf::from("agents/stable.md"));
+        assert_eq!(
+            result.outcomes[0].dest_path,
+            PathBuf::from("agents/stable.md")
+        );
         assert_eq!(result.outcomes[0].source_name, "base");
     }
 
@@ -748,6 +774,7 @@ mod tests {
             source_path: source_skill,
             dest_path: PathBuf::from("skills/planning"),
             source_hash: skill_hash,
+            rewritten_content: None,
         };
 
         let plan = SyncPlan {

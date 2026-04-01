@@ -178,6 +178,7 @@ mod tests {
             source_path,
             dest_path,
             source_hash: source_hash.to_string(),
+            rewritten_content: None,
         }
     }
 

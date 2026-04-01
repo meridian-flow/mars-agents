@@ -6,6 +6,7 @@ use indexmap::IndexMap;
 use crate::config::{EffectiveConfig, FilterMode, SourceSpec};
 use crate::discover;
 use crate::error::MarsError;
+use crate::frontmatter;
 use crate::hash;
 use crate::lock::{ItemId, ItemKind, LockFile};
 use crate::resolve::ResolvedGraph;
@@ -33,6 +34,8 @@ pub struct TargetItem {
     pub dest_path: PathBuf,
     /// SHA-256 of source content.
     pub source_hash: String,
+    /// Optional in-memory content override after frontmatter rewrites.
+    pub rewritten_content: Option<String>,
 }
 
 /// Rename action produced by collision detection.
@@ -99,6 +102,7 @@ pub fn build(graph: &ResolvedGraph, config: &EffectiveConfig) -> Result<TargetSt
                 source_path: source_content_path,
                 dest_path: dest_path.clone(),
                 source_hash,
+                rewritten_content: None,
             };
 
             items.insert(dest_key, target_item);
@@ -204,6 +208,7 @@ pub fn build_with_collisions(
                 source_path: source_content_path,
                 dest_path,
                 source_hash,
+                rewritten_content: None,
             });
         }
     }
@@ -274,29 +279,21 @@ pub fn rewrite_skill_refs(
         return Ok(());
     }
 
-    // Build rename map: original_name → [(new_name, source_name)]
-    let mut rename_map: HashMap<String, Vec<(&str, &str)>> = HashMap::new();
+    // Build rename map for skills only:
+    // original skill name -> [(renamed skill name, source name)].
+    let mut skill_renames: HashMap<String, Vec<(String, String)>> = HashMap::new();
     for ra in renames {
-        rename_map
-            .entry(ra.original_name.clone())
-            .or_default()
-            .push((&ra.new_name, &ra.source_name));
+        let is_skill = target
+            .items
+            .values()
+            .any(|item| item.id.kind == ItemKind::Skill && item.id.name == ra.new_name);
+        if is_skill {
+            skill_renames
+                .entry(ra.original_name.clone())
+                .or_default()
+                .push((ra.new_name.clone(), ra.source_name.clone()));
+        }
     }
-
-    // Only rewrite skill renames (agents reference skills in their frontmatter)
-    let skill_renames: HashMap<&str, Vec<(&str, &str)>> = rename_map
-        .iter()
-        .filter(|(_, entries)| {
-            // Check if any renamed item is a skill
-            entries.iter().any(|(new_name, _)| {
-                target
-                    .items
-                    .values()
-                    .any(|item| &item.id.name == new_name && item.id.kind == ItemKind::Skill)
-            })
-        })
-        .map(|(k, v)| (k.as_str(), v.clone()))
-        .collect();
 
     if skill_renames.is_empty() {
         return Ok(());
@@ -311,67 +308,37 @@ pub fn rewrite_skill_refs(
         .collect();
 
     for key in agent_keys {
-        let item = &target.items[&key];
-        let content = match std::fs::read_to_string(&item.source_path) {
+        let (source_path, source_name) = {
+            let item = &target.items[&key];
+            (item.source_path.clone(), item.source_name.clone())
+        };
+        let content = match std::fs::read_to_string(&source_path) {
             Ok(c) => c,
             Err(_) => continue,
         };
 
-        // Check if this agent references any renamed skills
-        let skills = validate::parse_agent_skills(&item.source_path).unwrap_or_default();
-        let mut needs_rewrite = false;
-        for skill in &skills {
-            if skill_renames.contains_key(skill.as_str()) {
-                needs_rewrite = true;
-                break;
+        let mut renames_for_agent = IndexMap::new();
+        for (original_name, entries) in &skill_renames {
+            let selected = entries
+                .iter()
+                .find(|(_, source)| source == &source_name)
+                .or_else(|| entries.first());
+            if let Some((new_name, _)) = selected {
+                renames_for_agent.insert(original_name.clone(), new_name.clone());
             }
         }
-
-        if !needs_rewrite {
+        if renames_for_agent.is_empty() {
             continue;
         }
 
-        // Rewrite the content — find the skills: line in frontmatter and update refs
-        // For each renamed skill the agent references, pick the version from the same source
-        let mut new_content = content.clone();
-        for (original_name, entries) in &skill_renames {
-            if !skills.contains(&original_name.to_string()) {
-                continue;
+        match frontmatter::rewrite_content_skills(&content, &renames_for_agent) {
+            Ok(Some(new_content)) => {
+                if let Some(target_item) = target.items.get_mut(&key) {
+                    target_item.rewritten_content = Some(new_content);
+                }
             }
-
-            // Pick the rename from the same source as this agent, or the first one
-            let new_name = entries
-                .iter()
-                .find(|(_, src)| *src == item.source_name)
-                .or(entries.first())
-                .map(|(name, _)| *name)
-                .unwrap_or(original_name);
-
-            // Use regex-style replacement on the skills line
-            new_content = rewrite_skill_in_frontmatter(&new_content, original_name, new_name);
-        }
-
-        if new_content != content {
-            // Write the rewritten content to the source path for later install.
-            // Actually, we shouldn't modify the source tree. Instead, we need to
-            // update the source_hash to reflect the rewritten content.
-            // The approach: write a temp file and point source_path at it.
-            // For now, we update the hash to match what will be installed.
-            let new_hash = hash::hash_bytes(new_content.as_bytes());
-
-            // Write rewritten content to a temp location
-            let tmp_dir = std::env::temp_dir().join("mars-rewrite");
-            std::fs::create_dir_all(&tmp_dir)?;
-            let tmp_path = tmp_dir.join(format!("{}.md", item.id.name));
-            std::fs::write(&tmp_path, &new_content)?;
-
-            // Update the target item
-            if let Some(target_item) = target.items.get_mut(&key) {
-                target_item.source_path = tmp_path;
-                // Keep source_hash as the ORIGINAL (pre-rewrite) hash
-                // The installed_checksum will be different (post-rewrite)
-                let _ = new_hash; // installed_checksum computed at apply time
-            }
+            Ok(None) => {}
+            Err(_) => {}
         }
     }
 
@@ -465,72 +432,6 @@ fn dest_name_from_path(kind: ItemKind, path: &Path) -> String {
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_default(),
     }
-}
-
-/// Rewrite a skill reference in YAML frontmatter.
-///
-/// Only modifies the `skills:` line(s) in the frontmatter block.
-fn rewrite_skill_in_frontmatter(content: &str, old_name: &str, new_name: &str) -> String {
-    let mut result = String::new();
-    let mut in_frontmatter = false;
-    let mut frontmatter_started = false;
-    let mut in_skills_block = false;
-
-    for line in content.lines() {
-        if line.trim() == "---" {
-            if !frontmatter_started {
-                frontmatter_started = true;
-                in_frontmatter = true;
-            } else {
-                in_frontmatter = false;
-                in_skills_block = false;
-            }
-            result.push_str(line);
-            result.push('\n');
-            continue;
-        }
-
-        if in_frontmatter {
-            // Check for inline skills: [a, b, c]
-            if line.trim_start().starts_with("skills:") && line.contains('[') {
-                let replaced = line.replace(old_name, new_name);
-                result.push_str(&replaced);
-                result.push('\n');
-                continue;
-            }
-
-            // Check for block-style skills:
-            if line.trim_start().starts_with("skills:") {
-                in_skills_block = true;
-                result.push_str(line);
-                result.push('\n');
-                continue;
-            }
-
-            // Inside block-style skills list (indented with -)
-            if in_skills_block {
-                if line.trim_start().starts_with('-') {
-                    let replaced = line.replace(old_name, new_name);
-                    result.push_str(&replaced);
-                    result.push('\n');
-                    continue;
-                } else if !line.trim().is_empty() {
-                    // Non-list line ends the skills block
-                    in_skills_block = false;
-                }
-            }
-        }
-
-        result.push_str(line);
-        result.push('\n');
-    }
-
-    // Handle case where original content doesn't end with newline
-    if !content.ends_with('\n') && result.ends_with('\n') {
-        result.pop();
-    }
-
-    result
 }
 
 /// Apply filter mode to discovered items.
@@ -945,36 +846,110 @@ mod tests {
     // === Frontmatter rewriting tests ===
 
     #[test]
-    fn rewrite_skill_in_frontmatter_inline() {
-        let content = "---\nskills: [planning, review]\n---\n\n# Agent\n";
-        let result = rewrite_skill_in_frontmatter(content, "planning", "planning__org_base");
-        assert!(result.contains("planning__org_base"));
-        assert!(result.contains("review"));
+    fn rewrite_skill_refs_uses_exact_skill_matches() {
+        let dir = TempDir::new().unwrap();
+        let agent_path = dir.path().join("agents/coder.md");
+        fs::create_dir_all(agent_path.parent().unwrap()).unwrap();
+        fs::write(
+            &agent_path,
+            "---\nskills:\n- plan\n- planner\n---\n# Agent\n",
+        )
+        .unwrap();
+
+        let skill_path = dir.path().join("skills/plan__org_base");
+        fs::create_dir_all(&skill_path).unwrap();
+        fs::write(skill_path.join("SKILL.md"), "# Planning").unwrap();
+
+        let mut items = IndexMap::new();
+        items.insert(
+            "agents/coder.md".to_string(),
+            TargetItem {
+                id: ItemId {
+                    kind: ItemKind::Agent,
+                    name: "coder".to_string(),
+                },
+                source_name: "source-a".to_string(),
+                source_url: None,
+                source_path: agent_path.clone(),
+                dest_path: PathBuf::from("agents/coder.md"),
+                source_hash: hash::hash_bytes(fs::read(&agent_path).unwrap().as_slice()),
+                rewritten_content: None,
+            },
+        );
+        items.insert(
+            "skills/plan__org_base".to_string(),
+            TargetItem {
+                id: ItemId {
+                    kind: ItemKind::Skill,
+                    name: "plan__org_base".to_string(),
+                },
+                source_name: "source-a".to_string(),
+                source_url: None,
+                source_path: skill_path.clone(),
+                dest_path: PathBuf::from("skills/plan__org_base"),
+                source_hash: hash::compute_hash(&skill_path, ItemKind::Skill).unwrap(),
+                rewritten_content: None,
+            },
+        );
+
+        let mut target = TargetState { items };
+        let renames = vec![RenameAction {
+            original_name: "plan".to_string(),
+            new_name: "plan__org_base".to_string(),
+            source_name: "source-a".to_string(),
+        }];
+        let graph = ResolvedGraph {
+            nodes: IndexMap::new(),
+            order: vec![],
+        };
+
+        rewrite_skill_refs(&mut target, &renames, &graph).unwrap();
+
+        let rewritten = target.items["agents/coder.md"]
+            .rewritten_content
+            .as_ref()
+            .unwrap();
+        let fm = crate::frontmatter::parse(rewritten).unwrap();
+        assert_eq!(fm.skills(), vec!["plan__org_base", "planner"]);
     }
 
     #[test]
-    fn rewrite_skill_in_frontmatter_block_style() {
-        let content = "---\nskills:\n  - planning\n  - review\n---\n\n# Agent\n";
-        let result = rewrite_skill_in_frontmatter(content, "planning", "planning__org_base");
-        assert!(result.contains("planning__org_base"));
-        assert!(result.contains("review"));
-    }
+    fn rewrite_skill_refs_leaves_non_matching_agents_unchanged() {
+        let dir = TempDir::new().unwrap();
+        let agent_path = dir.path().join("agents/coder.md");
+        fs::create_dir_all(agent_path.parent().unwrap()).unwrap();
+        fs::write(&agent_path, "---\nskills: [review]\n---\n# Agent\n").unwrap();
 
-    #[test]
-    fn rewrite_preserves_non_frontmatter_content() {
-        let content = "---\nskills: [planning]\n---\n\nThis mentions planning in the body.\n";
-        let result = rewrite_skill_in_frontmatter(content, "planning", "planning__org_base");
-        // Only frontmatter should be rewritten
-        assert!(result.contains("skills: [planning__org_base]"));
-        // Body should be preserved as-is
-        assert!(result.contains("This mentions planning in the body."));
-    }
+        let mut items = IndexMap::new();
+        items.insert(
+            "agents/coder.md".to_string(),
+            TargetItem {
+                id: ItemId {
+                    kind: ItemKind::Agent,
+                    name: "coder".to_string(),
+                },
+                source_name: "source-a".to_string(),
+                source_url: None,
+                source_path: agent_path.clone(),
+                dest_path: PathBuf::from("agents/coder.md"),
+                source_hash: hash::hash_bytes(fs::read(&agent_path).unwrap().as_slice()),
+                rewritten_content: None,
+            },
+        );
 
-    #[test]
-    fn rewrite_no_matching_skill_unchanged() {
-        let content = "---\nskills: [review]\n---\n\n# Agent\n";
-        let result = rewrite_skill_in_frontmatter(content, "planning", "planning__org_base");
-        assert_eq!(result, content);
+        let mut target = TargetState { items };
+        let renames = vec![RenameAction {
+            original_name: "plan".to_string(),
+            new_name: "plan__org_base".to_string(),
+            source_name: "source-a".to_string(),
+        }];
+        let graph = ResolvedGraph {
+            nodes: IndexMap::new(),
+            order: vec![],
+        };
+
+        rewrite_skill_refs(&mut target, &renames, &graph).unwrap();
+        assert!(target.items["agents/coder.md"].rewritten_content.is_none());
     }
 
     // === Source with agents filter + skill deps ===

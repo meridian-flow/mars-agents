@@ -2,6 +2,7 @@ pub mod cli;
 pub mod config;
 pub mod discover;
 pub mod error;
+pub mod frontmatter;
 pub mod fs;
 pub mod hash;
 pub mod lock;
