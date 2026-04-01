@@ -23,6 +23,8 @@ pub struct SyncReport {
     pub applied: ApplyResult,
     pub pruned: Vec<apply::ActionOutcome>,
     pub warnings: Vec<ValidationWarning>,
+    /// Whether this was a dry run (`--diff`). Affects output wording only.
+    pub dry_run: bool,
 }
 
 impl SyncReport {
@@ -197,6 +199,7 @@ pub fn execute(root: &Path, request: &SyncRequest) -> Result<SyncReport, MarsErr
         applied,
         pruned,
         warnings,
+        dry_run: request.options.dry_run,
     })
 }
 

@@ -89,10 +89,22 @@ pub fn run(args: &AddArgs, root: &Path, json: bool) -> Result<i32, MarsError> {
         options: SyncOptions::default(),
     };
 
+    // Check if source already exists before executing (for accurate messaging).
+    let already_exists = crate::config::load(root)
+        .map(|c| c.sources.contains_key(&parsed.name))
+        .unwrap_or(false);
+
     let report = crate::sync::execute(root, &request)?;
 
     if !json {
-        output::print_info(&format!("added source `{}`", parsed.name));
+        if already_exists {
+            output::print_warn(&format!(
+                "source `{}` already exists — updated",
+                parsed.name
+            ));
+        } else {
+            output::print_info(&format!("added source `{}`", parsed.name));
+        }
     }
 
     output::print_sync_report(&report, json);

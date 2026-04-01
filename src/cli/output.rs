@@ -46,10 +46,17 @@ pub fn print_sync_report(report: &SyncReport, json: bool) {
     }
 }
 
+/// Whether this report is from a dry run (`--diff`).
+/// Returns true when the report was produced without writing any files.
+fn is_dry_run(report: &SyncReport) -> bool {
+    report.dry_run
+}
+
 fn print_sync_report_json(report: &SyncReport) {
     #[derive(Serialize)]
     struct JsonReport {
         ok: bool,
+        dry_run: bool,
         installed: usize,
         updated: usize,
         removed: usize,
@@ -88,6 +95,7 @@ fn print_sync_report_json(report: &SyncReport) {
 
     let json_report = JsonReport {
         ok: conflicts == 0,
+        dry_run: report.dry_run,
         installed,
         updated,
         removed,
@@ -145,16 +153,29 @@ fn print_sync_report_human(report: &SyncReport) {
         }
     }
 
-    // Summary line
+    // Summary line — use "would ..." wording for dry runs
     let _ = writeln!(stdout);
+    let dry = is_dry_run(report);
     if installed > 0 {
-        let _ = writeln!(stdout, "  installed   {installed} new items");
+        if dry {
+            let _ = writeln!(stdout, "  would install {installed} new items");
+        } else {
+            let _ = writeln!(stdout, "  installed   {installed} new items");
+        }
     }
     if updated > 0 {
-        let _ = writeln!(stdout, "  updated     {updated} items");
+        if dry {
+            let _ = writeln!(stdout, "  would update  {updated} items");
+        } else {
+            let _ = writeln!(stdout, "  updated     {updated} items");
+        }
     }
     if removed > 0 {
-        let _ = writeln!(stdout, "  removed     {removed} orphans");
+        if dry {
+            let _ = writeln!(stdout, "  would remove  {removed} orphans");
+        } else {
+            let _ = writeln!(stdout, "  removed     {removed} orphans");
+        }
     }
     if kept > 0 {
         let _ = writeln!(stdout, "  kept        {kept} locally modified");
@@ -330,6 +351,15 @@ pub fn print_success(msg: &str) {
     let mut stdout = StandardStream::stdout(color_choice());
     let _ = stdout.set_color(ColorSpec::new().set_fg(Some(Color::Green)));
     let _ = write!(stdout, "  ✓ ");
+    let _ = stdout.reset();
+    let _ = writeln!(stdout, "{msg}");
+}
+
+/// Print a warning message (yellow).
+pub fn print_warn(msg: &str) {
+    let mut stdout = StandardStream::stdout(color_choice());
+    let _ = stdout.set_color(ColorSpec::new().set_fg(Some(Color::Yellow)));
+    let _ = write!(stdout, "  ⚠ ");
     let _ = stdout.reset();
     let _ = writeln!(stdout, "{msg}");
 }
