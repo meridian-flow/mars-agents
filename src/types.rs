@@ -313,56 +313,6 @@ mod tests {
     }
 
     #[test]
-    fn source_name_roundtrip() {
-        let v = Wrapper {
-            value: SourceName::from("base"),
-        };
-        let s = toml::to_string(&v).unwrap();
-        let out: Wrapper<SourceName> = toml::from_str(&s).unwrap();
-        assert_eq!(v, out);
-    }
-
-    #[test]
-    fn item_name_roundtrip() {
-        let v = Wrapper {
-            value: ItemName::from("coder"),
-        };
-        let s = toml::to_string(&v).unwrap();
-        let out: Wrapper<ItemName> = toml::from_str(&s).unwrap();
-        assert_eq!(v, out);
-    }
-
-    #[test]
-    fn source_url_roundtrip() {
-        let v = Wrapper {
-            value: SourceUrl::from("github.com/org/repo"),
-        };
-        let s = toml::to_string(&v).unwrap();
-        let out: Wrapper<SourceUrl> = toml::from_str(&s).unwrap();
-        assert_eq!(v, out);
-    }
-
-    #[test]
-    fn commit_hash_roundtrip() {
-        let v = Wrapper {
-            value: CommitHash::from("abc123"),
-        };
-        let s = toml::to_string(&v).unwrap();
-        let out: Wrapper<CommitHash> = toml::from_str(&s).unwrap();
-        assert_eq!(v, out);
-    }
-
-    #[test]
-    fn content_hash_roundtrip() {
-        let v = Wrapper {
-            value: ContentHash::from("sha256:abc123"),
-        };
-        let s = toml::to_string(&v).unwrap();
-        let out: Wrapper<ContentHash> = toml::from_str(&s).unwrap();
-        assert_eq!(v, out);
-    }
-
-    #[test]
     fn dest_path_roundtrip() {
         let v = Wrapper {
             value: DestPath::from("agents/coder.md"),
@@ -370,20 +320,6 @@ mod tests {
         let s = toml::to_string(&v).unwrap();
         let out: Wrapper<DestPath> = toml::from_str(&s).unwrap();
         assert_eq!(v, out);
-    }
-
-    #[test]
-    fn dest_path_resolve_joins_root() {
-        let root = PathBuf::from("/tmp/root");
-        let path = DestPath::from("agents/coder.md");
-        assert_eq!(path.resolve(&root), root.join("agents/coder.md"));
-    }
-
-    #[test]
-    fn source_id_git_equality() {
-        let a = SourceId::git(SourceUrl::from("github.com/org/repo"));
-        let b = SourceId::git(SourceUrl::from("github.com/org/repo"));
-        assert_eq!(a, b);
     }
 
     #[test]

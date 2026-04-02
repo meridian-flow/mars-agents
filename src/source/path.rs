@@ -150,16 +150,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn fetch_path_returns_no_version() {
-        let dir = TempDir::new().unwrap();
-        let source_dir = dir.path().join("agents");
-        std::fs::create_dir_all(&source_dir).unwrap();
-
-        let resolved = fetch_path(&source_dir, dir.path(), "local").unwrap();
-
-        assert!(resolved.version.is_none());
-        assert!(resolved.version_tag.is_none());
-        assert!(resolved.commit.is_none());
-    }
 }

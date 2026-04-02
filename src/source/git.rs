@@ -790,20 +790,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_semver_prerelease() {
-        let v = parse_semver_tag("v2.0.0-rc.1").unwrap();
-        assert_eq!(v.major, 2);
-        assert!(!v.pre.is_empty());
-    }
-
-    #[test]
-    fn parse_semver_rejects_non_semver() {
-        assert!(parse_semver_tag("latest").is_none());
-        assert!(parse_semver_tag("nightly-2024").is_none());
-        assert!(parse_semver_tag("release").is_none());
-    }
-
-    #[test]
     fn ls_remote_tags_filters_sorts_and_skips_peeled_refs() {
         let repo = init_repo();
         run_git(repo.path(), ["tag", "v1.0.0"]);

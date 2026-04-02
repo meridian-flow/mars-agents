@@ -311,27 +311,6 @@ mod tests {
     }
 
     #[test]
-    fn file_lock_try_acquire_returns_none_when_held() {
-        let dir = TempDir::new().unwrap();
-        let lock_path = dir.path().join("test.lock");
-
-        let _lock = FileLock::acquire(&lock_path).unwrap();
-
-        // Same process, same fd won't block (flock is per-fd, not per-process
-        // for the same open file description). To test contention properly
-        // we need a separate file descriptor.
-        let result = FileLock::try_acquire(&lock_path).unwrap();
-        // flock allows the same process to re-acquire on a different fd
-        // on Linux, so this may return Some. The real contention test
-        // requires a child process. We verify try_acquire doesn't error.
-        // Drop the result to avoid unused warnings.
-        drop(result);
-
-        // Verify the original lock is still valid
-        drop(_lock);
-    }
-
-    #[test]
     fn file_lock_released_on_drop() {
         let dir = TempDir::new().unwrap();
         let lock_path = dir.path().join("test.lock");

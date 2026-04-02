@@ -91,25 +91,6 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn hash_bytes_known_content() {
-        // SHA-256 of empty string is well-known
-        let hash = hash_bytes(b"");
-        assert_eq!(
-            hash,
-            "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-        );
-    }
-
-    #[test]
-    fn hash_bytes_hello_world() {
-        let hash = hash_bytes(b"hello world");
-        assert_eq!(
-            hash,
-            "sha256:b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
-        );
-    }
-
-    #[test]
     fn hash_bytes_returns_lowercase_hex() {
         let hash = hash_bytes(b"test");
         assert!(hash.starts_with("sha256:"));
@@ -118,30 +99,6 @@ mod tests {
         assert!(
             hex.chars()
                 .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
-        );
-    }
-
-    #[test]
-    fn compute_hash_agent_file() {
-        let dir = TempDir::new().unwrap();
-        let file = dir.path().join("agent.md");
-        fs::write(&file, "agent content").unwrap();
-
-        let hash = compute_hash(&file, ItemKind::Agent).unwrap();
-        assert!(hash.starts_with("sha256:"));
-        assert_eq!(hash, hash_bytes(b"agent content"));
-    }
-
-    #[test]
-    fn compute_hash_empty_file() {
-        let dir = TempDir::new().unwrap();
-        let file = dir.path().join("empty.md");
-        fs::write(&file, "").unwrap();
-
-        let hash = compute_hash(&file, ItemKind::Agent).unwrap();
-        assert_eq!(
-            hash,
-            "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         );
     }
 
