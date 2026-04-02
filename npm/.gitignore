@@ -1,0 +1,4 @@
+# Platform binaries are added at publish time, not checked in
+@mars-agents/linux-x64/mars
+@mars-agents/darwin-arm64/mars
+@mars-agents/darwin-x64/mars

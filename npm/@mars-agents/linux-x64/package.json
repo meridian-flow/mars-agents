@@ -1,0 +1,14 @@
+{
+  "name": "@mars-agents/linux-x64",
+  "version": "0.0.1",
+  "description": "mars binary for Linux x64",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/haowjy/mars-agents.git"
+  },
+  "os": ["linux"],
+  "cpu": ["x64"],
+  "libc": ["glibc"],
+  "files": ["mars"]
+}

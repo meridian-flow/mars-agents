@@ -1,0 +1,44 @@
+#!/usr/bin/env node
+
+const { execFileSync } = require("child_process");
+
+const PLATFORMS = {
+  "darwin arm64": "@mars-agents/darwin-arm64",
+  "darwin x64": "@mars-agents/darwin-x64",
+  "linux x64": "@mars-agents/linux-x64",
+};
+
+const key = `${process.platform} ${process.arch}`;
+const pkg = PLATFORMS[key];
+
+if (!pkg) {
+  console.error(
+    `mars: unsupported platform ${process.platform} ${process.arch}\n` +
+    `Supported: linux-x64, darwin-arm64, darwin-x64\n` +
+    `Try: cargo install mars-agents`
+  );
+  process.exit(1);
+}
+
+let binaryPath;
+try {
+  binaryPath = require.resolve(`${pkg}/mars`);
+} catch {
+  console.error(
+    `mars: could not find binary package ${pkg}\n` +
+    `This usually means the optional dependency was not installed.\n` +
+    `Try reinstalling: npm i -g @mars-agents/cli\n` +
+    `Or install from source: cargo install mars-agents`
+  );
+  process.exit(1);
+}
+
+try {
+  execFileSync(binaryPath, process.argv.slice(2), {
+    stdio: "inherit",
+    env: process.env,
+  });
+} catch (e) {
+  // execFileSync throws on non-zero exit — forward the exit code
+  process.exit(e.status ?? 1);
+}

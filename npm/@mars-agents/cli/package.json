@@ -1,0 +1,22 @@
+{
+  "name": "@mars-agents/cli",
+  "version": "0.0.1",
+  "description": "Mars — agent package manager for .agents/ directories",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/haowjy/mars-agents.git"
+  },
+  "bin": {
+    "mars": "bin/mars"
+  },
+  "files": ["bin/mars"],
+  "engines": {
+    "node": ">=16"
+  },
+  "optionalDependencies": {
+    "@mars-agents/linux-x64": "0.0.1",
+    "@mars-agents/darwin-arm64": "0.0.1",
+    "@mars-agents/darwin-x64": "0.0.1"
+  }
+}
