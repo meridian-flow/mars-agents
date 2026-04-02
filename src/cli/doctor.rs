@@ -39,8 +39,7 @@ pub fn run(_args: &DoctorArgs, ctx: &super::MarsContext, json: bool) -> Result<i
         // Check file exists
         if !disk_path.exists() {
             issues.push(format!(
-                "lock references {} which doesn't exist on disk",
-                dest_path_str
+                "{dest_path_str} missing from disk. Run `mars sync` to reinstall or `mars repair` to rebuild"
             ));
             continue;
         }
@@ -151,7 +150,8 @@ pub fn run(_args: &DoctorArgs, ctx: &super::MarsContext, json: bool) -> Result<i
                                 agent.name
                             ),
                             None => format!(
-                                "agent `{}` references missing skill `{skill_name}`",
+                                "agent `{}` references missing skill `{skill_name}` — \
+                                 add a source that provides it, or create it locally in skills/{skill_name}/",
                                 agent.name
                             ),
                         };
@@ -180,8 +180,7 @@ fn check_link_health(ctx: &super::MarsContext, target: &str, issues: &mut Vec<St
 
     if !target_dir.exists() {
         issues.push(format!(
-            "link `{target}` — directory {} doesn't exist.              Run `mars link --unlink {target}` to remove stale entry.",
-            target_dir.display()
+            "link `{target}` — directory doesn't exist. Run `mars link --unlink {target}` to remove stale entry"
         ));
         return;
     }
@@ -193,7 +192,7 @@ fn check_link_health(ctx: &super::MarsContext, target: &str, issues: &mut Vec<St
         // Check if symlink exists
         if link_path.symlink_metadata().is_err() {
             issues.push(format!(
-                "link `{target}` — missing {target}/{subdir} symlink.                  Run `mars link {target}` to fix."
+                "link `{target}` — missing {target}/{subdir} symlink. Run `mars link {target}` to fix"
             ));
             continue;
         }
@@ -203,10 +202,11 @@ fn check_link_health(ctx: &super::MarsContext, target: &str, issues: &mut Vec<St
             Ok(actual_target) => {
                 // Resolve and compare
                 let resolved = target_dir.join(&actual_target);
-                let resolved_canon = resolved.canonicalize().ok();
-                let expected_canon = expected.canonicalize().ok();
-
-                if resolved_canon != expected_canon {
+                let points_to_managed = match (resolved.canonicalize(), expected.canonicalize()) {
+                    (Ok(a), Ok(b)) => a == b,
+                    _ => false,
+                };
+                if !points_to_managed {
                     issues.push(format!(
                         "link `{target}` — {target}/{subdir} points to {} (expected {})",
                         actual_target.display(),
@@ -222,7 +222,7 @@ fn check_link_health(ctx: &super::MarsContext, target: &str, issues: &mut Vec<St
             Err(_) => {
                 // Real directory, not a symlink
                 issues.push(format!(
-                    "link `{target}` — {target}/{subdir} is a real directory, not a symlink.                      Run `mars link {target}` to merge and link."
+                    "link `{target}` — {target}/{subdir} is a real directory, not a symlink. Run `mars link {target}` to merge and link"
                 ));
             }
         }

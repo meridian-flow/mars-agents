@@ -77,7 +77,7 @@ pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
 
-    /// Path to .agents/ root (default: auto-detect by walking up from cwd).
+    /// Path to managed root containing mars.toml (default: auto-detect).
     #[arg(long, global = true)]
     pub root: Option<PathBuf>,
 
@@ -88,7 +88,7 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Initialize a new .agents/ directory with mars.toml.
+    /// Initialize a managed root with mars.toml (default: .agents/).
     Init(init::InitArgs),
 
     /// Add a source (git URL, GitHub shorthand, or local path).
@@ -124,10 +124,10 @@ pub enum Command {
     /// Symlink agents/ and skills/ into another directory (e.g. .claude).
     Link(link::LinkArgs),
 
-    /// Validate a source package before publishing.
+    /// Validate a source package before publishing (structure, frontmatter, deps).
     Check(check::CheckArgs),
 
-    /// Validate state consistency.
+    /// Diagnose problems in an installed mars project (config, lock, files, links).
     Doctor(doctor::DoctorArgs),
 
     /// Rebuild state from lock + sources.
