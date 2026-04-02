@@ -253,21 +253,21 @@ pub fn resolve(
 
                 // Only add as pending if not already resolved
                 if !nodes.contains_key(dep_name.as_str()) {
-                    let dep_constraint = parse_version_constraint(Some(&dep_spec.version));
+                    let dep_constraint = parse_version_constraint(dep_spec.version.as_deref());
                     let dep_name_typed = SourceName::from(dep_name.clone());
                     pending.push_back(PendingSource {
                         name: dep_name_typed,
                         source_id: SourceId::git(dep_spec.url.clone()),
                         spec: SourceSpec::Git(GitSpec {
                             url: dep_spec.url.clone(),
-                            version: Some(dep_spec.version.clone()),
+                            version: dep_spec.version.clone(),
                         }),
                         constraint: dep_constraint,
                         required_by: pending_src.name.to_string(),
                     });
                 } else {
                     // Already resolved — record additional constraint for later validation
-                    let dep_constraint = parse_version_constraint(Some(&dep_spec.version));
+                    let dep_constraint = parse_version_constraint(dep_spec.version.as_deref());
                     constraints
                         .entry(SourceName::from(dep_name.clone()))
                         .or_default()
@@ -838,7 +838,7 @@ mod tests {
                 dep_name.to_string(),
                 DepSpec {
                     url: SourceUrl::from(dep_url),
-                    version: dep_ver.to_string(),
+                    version: Some(dep_ver.to_string()),
                     agents: vec![],
                     skills: vec![],
                 },

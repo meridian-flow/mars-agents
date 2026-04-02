@@ -31,7 +31,9 @@ pub struct PackageInfo {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DepSpec {
     pub url: SourceUrl,
-    pub version: String,
+    /// Version constraint (e.g. ">=0.1.0"). Optional — omit to track latest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
     /// Only depend on these agents from the source.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub agents: Vec<String>,
@@ -90,7 +92,7 @@ version = ">=0.5"
 
         let base_dep = &manifest.dependencies["base"];
         assert_eq!(base_dep.url, "https://github.com/org/base.git");
-        assert_eq!(base_dep.version, ">=1.0");
+        assert_eq!(base_dep.version.as_deref(), Some(">=1.0"));
 
         let utils_dep = &manifest.dependencies["utils"];
     }
@@ -145,7 +147,7 @@ version = "0.2.0"
                     "dep1".into(),
                     DepSpec {
                         url: "https://github.com/org/dep1.git".into(),
-                        version: ">=1.0".into(),
+                        version: Some(">=1.0".into()),
                         agents: vec![],
                         skills: vec![],
                     },
