@@ -289,12 +289,25 @@ fn list_shows_installed_items() {
         .assert()
         .success();
 
+    // Catalog view (default)
     mars()
         .args(["list", "--root", agents_dir.path().to_str().unwrap()])
         .assert()
         .success()
         .stdout(predicate::str::contains("coder"))
-        .stdout(predicate::str::contains("planning"))
+        .stdout(predicate::str::contains("AGENTS"))
+        .stdout(predicate::str::contains("SKILLS"));
+
+    // Status view
+    mars()
+        .args([
+            "list",
+            "--status",
+            "--root",
+            agents_dir.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success()
         .stdout(predicate::str::contains("ok"));
 }
 
@@ -542,7 +555,27 @@ fn json_output_valid() {
         .unwrap();
 
     let stdout = String::from_utf8(output.stdout).unwrap();
-    // Should be valid JSON
+    // Should be valid JSON with agents/skills keys
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert!(parsed.is_object());
+    assert!(parsed.get("agents").is_some());
+    assert!(parsed.get("skills").is_some());
+    let agents = parsed["agents"].as_array().unwrap();
+    assert!(!agents.is_empty());
+    assert!(agents[0].get("name").is_some());
+
+    // Status JSON should still return array format
+    let output = mars()
+        .args([
+            "list",
+            "--status",
+            "--json",
+            "--root",
+            agents_dir.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
     assert!(parsed.is_array());
     let arr = parsed.as_array().unwrap();

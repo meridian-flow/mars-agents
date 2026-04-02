@@ -37,6 +37,57 @@ pub struct ListEntry {
     pub status: String,
 }
 
+/// Catalog entry — name + description for discovery.
+#[derive(Debug, Serialize)]
+pub struct CatalogEntry {
+    pub name: String,
+    pub description: String,
+    pub kind: String,
+}
+
+/// Print catalog view (name: description, grouped by kind).
+pub fn print_catalog(agents: &[CatalogEntry], skills: &[CatalogEntry], kind_filter: Option<&str>) {
+    let show_agents = kind_filter.is_none()
+        || kind_filter == Some("agents")
+        || kind_filter == Some("agent");
+    let show_skills = kind_filter.is_none()
+        || kind_filter == Some("skills")
+        || kind_filter == Some("skill");
+
+    if show_agents && !agents.is_empty() {
+        println!("AGENTS");
+        for entry in agents {
+            if entry.description.is_empty() {
+                println!("- {}", entry.name);
+            } else {
+                println!("- {}: {}", entry.name, entry.description);
+            }
+        }
+    }
+
+    if show_agents && !agents.is_empty() && show_skills && !skills.is_empty() {
+        println!();
+    }
+
+    if show_skills && !skills.is_empty() {
+        println!("SKILLS");
+        for entry in skills {
+            if entry.description.is_empty() {
+                println!("- {}", entry.name);
+            } else {
+                println!("- {}: {}", entry.name, entry.description);
+            }
+        }
+    }
+
+    if (show_agents && agents.is_empty() && show_skills && skills.is_empty())
+        || (show_agents && !show_skills && agents.is_empty())
+        || (show_skills && !show_agents && skills.is_empty())
+    {
+        println!("  no managed items");
+    }
+}
+
 /// Print sync report as human-readable text or JSON.
 pub fn print_sync_report(report: &SyncReport, json: bool) {
     if json {
