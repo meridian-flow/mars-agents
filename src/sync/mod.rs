@@ -230,7 +230,26 @@ fn is_config_not_found(error: &MarsError) -> bool {
 fn apply_mutation(config: &mut Config, mutation: &ConfigMutation) -> Result<(), MarsError> {
     match mutation {
         ConfigMutation::UpsertSource { name, entry } => {
-            config.sources.insert(name.clone(), entry.clone());
+            if let Some(existing) = config.sources.get_mut(name) {
+                // Merge: update source location fields, preserve user customizations
+                existing.url = entry.url.clone();
+                existing.path = entry.path.clone();
+                existing.version = entry.version.clone();
+                // Only overwrite filters if the new entry explicitly sets them
+                if entry.filter.agents.is_some() {
+                    existing.filter.agents = entry.filter.agents.clone();
+                }
+                if entry.filter.skills.is_some() {
+                    existing.filter.skills = entry.filter.skills.clone();
+                }
+                if entry.filter.exclude.is_some() {
+                    existing.filter.exclude = entry.filter.exclude.clone();
+                }
+                // Never overwrite rename rules from add — those are set via `mars rename`
+                // entry.filter.rename is always None from the add command
+            } else {
+                config.sources.insert(name.clone(), entry.clone());
+            }
             Ok(())
         }
         ConfigMutation::RemoveSource { name } => {

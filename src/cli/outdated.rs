@@ -55,6 +55,27 @@ pub fn run(_args: &OutdatedArgs, root: &Path, json: bool) -> Result<i32, MarsErr
         };
 
         if versions.is_empty() {
+            // Untagged repo — compare locked commit vs current HEAD
+            let current_head = crate::source::git::ls_remote_head(url.as_ref())
+                .map(|sha| if sha.len() >= 12 { sha[..12].to_string() } else { sha })
+                .unwrap_or_else(|_| "-".to_string());
+            let locked_commit = lock
+                .sources
+                .get(name)
+                .and_then(|s| s.commit.as_ref().map(|c| c.to_string()))
+                .unwrap_or_else(|| "-".to_string());
+            let locked_short = if locked_commit.len() >= 12 {
+                locked_commit[..12].to_string()
+            } else {
+                locked_commit
+            };
+            entries.push(OutdatedEntry {
+                source: name.to_string(),
+                locked: locked_short,
+                constraint: "HEAD".to_string(),
+                updateable: current_head.clone(),
+                latest: current_head,
+            });
             continue;
         }
 
