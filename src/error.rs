@@ -85,6 +85,13 @@ pub enum MarsError {
         message: String,
     },
 
+    /// Sync refused to overwrite a file/directory not tracked in mars.lock.
+    #[error("source error: {source_name}: refusing to overwrite unmanaged path `{}`", path.display())]
+    UnmanagedCollision {
+        source_name: String,
+        path: PathBuf,
+    },
+
     #[error("resolution failed: {0}")]
     Resolution(#[from] ResolutionError),
 
@@ -152,6 +159,7 @@ impl MarsError {
             | MarsError::FrozenViolation { .. }
             | MarsError::LockedCommitUnreachable { .. } => 2,
             MarsError::Source { .. }
+            | MarsError::UnmanagedCollision { .. }
             | MarsError::Io(_)
             | MarsError::Http { .. }
             | MarsError::GitCli { .. } => 3,
@@ -287,6 +295,19 @@ mod tests {
     }
 
     #[test]
+    fn unmanaged_collision_error_formats_correctly() {
+        let err = MarsError::UnmanagedCollision {
+            source_name: "my-source".to_string(),
+            path: PathBuf::from("agents/coder.md"),
+        };
+        assert_eq!(
+            err.to_string(),
+            "source error: my-source: refusing to overwrite unmanaged path `agents/coder.md`"
+        );
+        assert_eq!(err.exit_code(), 3);
+    }
+
+    #[test]
     fn mars_error_exit_codes_match_spec() {
         let cases = vec![
             (
@@ -352,6 +373,13 @@ mod tests {
                 MarsError::Source {
                     source_name: "origin".to_string(),
                     message: "network failed".to_string(),
+                },
+                3,
+            ),
+            (
+                MarsError::UnmanagedCollision {
+                    source_name: "origin".to_string(),
+                    path: PathBuf::from("agents/coder.md"),
                 },
                 3,
             ),

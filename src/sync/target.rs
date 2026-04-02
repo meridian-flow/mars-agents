@@ -369,12 +369,9 @@ pub fn check_unmanaged_collisions(
                 continue;
             }
 
-            return Err(MarsError::Source {
+            return Err(MarsError::UnmanagedCollision {
                 source_name: target_item.source_name.to_string(),
-                message: format!(
-                    "refusing to overwrite unmanaged path `{}`",
-                    target_item.dest_path.display()
-                ),
+                path: target_item.dest_path.to_path_buf(),
             });
         }
     }

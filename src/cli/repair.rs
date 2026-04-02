@@ -97,12 +97,8 @@ fn execute_repair_with_collision_cleanup(
 }
 
 fn extract_unmanaged_collision_path(err: &MarsError) -> Option<&Path> {
-    let MarsError::Source { message, .. } = err else {
-        return None;
-    };
-
-    let prefix = "refusing to overwrite unmanaged path `";
-    let suffix = "`";
-    let trimmed = message.strip_prefix(prefix)?.strip_suffix(suffix)?;
-    Some(Path::new(trimmed))
+    match err {
+        MarsError::UnmanagedCollision { path, .. } => Some(path.as_path()),
+        _ => None,
+    }
 }
