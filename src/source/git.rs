@@ -405,6 +405,12 @@ fn fetch_git_clone(
     cache: &GlobalCache,
 ) -> Result<PathBuf, MarsError> {
     let cache_path = cache.git_dir().join(url_to_dirname(url));
+
+    // Acquire per-entry lock to prevent cross-repo races on the same cache entry.
+    // Held through fetch + checkout, released when _lock drops at function return.
+    let lock_path = cache_path.with_extension("lock");
+    let _lock = crate::fs::FileLock::acquire(&lock_path)?;
+
     let cache_path_display = cache_path.to_string_lossy().to_string();
     let was_cached = cache_path.exists();
 
