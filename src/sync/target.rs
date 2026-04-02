@@ -360,6 +360,15 @@ pub fn check_unmanaged_collisions(
 
         let disk_path = install_target.join(&target_item.dest_path);
         if disk_path.exists() {
+            // Check if disk content matches what we'd install — if so,
+            // this is a partial prior install (crash recovery), not an
+            // unmanaged user file. Safe to overwrite.
+            if let Ok(disk_hash) = hash::compute_hash(&disk_path, target_item.id.kind) {
+                if ContentHash::from(disk_hash) == target_item.source_hash {
+                    continue;
+                }
+            }
+
             return Err(MarsError::Source {
                 source_name: target_item.source_name.to_string(),
                 message: format!(
@@ -1062,5 +1071,51 @@ mod tests {
             .unwrap_err();
         let message = err.to_string();
         assert!(message.contains("refusing to overwrite unmanaged path"));
+    }
+
+    #[test]
+    fn unmanaged_collision_skipped_when_hash_matches() {
+        let content = "# managed agent";
+        let tree = make_source_tree(&[("coder.md", content)], &[]);
+        let (graph, config) = make_graph_and_config(vec![(
+            "base",
+            &tree,
+            Some("https://github.com/org/base"),
+            FilterMode::All,
+        )]);
+
+        let target = build(&graph, &config).unwrap();
+        let install_root = TempDir::new().unwrap();
+
+        // Simulate partial prior install: file on disk with same content
+        let existing = install_root.path().join("agents").join("coder.md");
+        fs::create_dir_all(existing.parent().unwrap()).unwrap();
+        fs::write(&existing, content).unwrap();
+
+        // Should succeed — disk content matches planned install (crash recovery)
+        check_unmanaged_collisions(install_root.path(), &LockFile::empty(), &target).unwrap();
+    }
+
+    #[test]
+    fn unmanaged_collision_still_errors_on_different_content() {
+        let tree = make_source_tree(&[("coder.md", "# managed")], &[]);
+        let (graph, config) = make_graph_and_config(vec![(
+            "base",
+            &tree,
+            Some("https://github.com/org/base"),
+            FilterMode::All,
+        )]);
+
+        let target = build(&graph, &config).unwrap();
+        let install_root = TempDir::new().unwrap();
+
+        // User-authored file with different content
+        let existing = install_root.path().join("agents").join("coder.md");
+        fs::create_dir_all(existing.parent().unwrap()).unwrap();
+        fs::write(&existing, "# different user content").unwrap();
+
+        let err = check_unmanaged_collisions(install_root.path(), &LockFile::empty(), &target)
+            .unwrap_err();
+        assert!(err.to_string().contains("refusing to overwrite unmanaged path"));
     }
 }
