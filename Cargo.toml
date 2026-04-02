@@ -2,6 +2,13 @@
 name = "mars-agents"
 version = "0.0.1"
 edition = "2024"
+description = "Agent package manager for .agents/ directories"
+license = "MIT"
+repository = "https://github.com/haowjy/mars-agents"
+homepage = "https://github.com/haowjy/mars-agents"
+readme = "README.md"
+keywords = ["agents", "package-manager", "ai", "cli"]
+categories = ["command-line-utilities", "development-tools"]
 
 [[bin]]
 name = "mars"
