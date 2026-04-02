@@ -83,6 +83,58 @@ pub fn run(_args: &DoctorArgs, ctx: &super::MarsContext, json: bool) -> Result<i
         }
     }
 
+    // Check skill dependencies — every agent's declared skills must exist
+    {
+        use std::collections::HashSet;
+        let mut agents: Vec<(String, std::path::PathBuf)> = Vec::new();
+        let mut available_skills: HashSet<String> = HashSet::new();
+
+        for (dest_path, item) in &lock.items {
+            match item.kind {
+                crate::lock::ItemKind::Agent => {
+                    let name = item.dest_path.to_string();
+                    let path = ctx.managed_root.join(dest_path);
+                    agents.push((name, path));
+                }
+                crate::lock::ItemKind::Skill => {
+                    // Extract skill name from dest path (e.g. "skills/planning" -> "planning")
+                    let skill_name = std::path::Path::new(dest_path.as_ref())
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or_default()
+                        .to_string();
+                    if !skill_name.is_empty() {
+                        available_skills.insert(skill_name);
+                    }
+                }
+            }
+        }
+
+        if let Ok(warnings) = crate::validate::check_deps(&agents, &available_skills) {
+            for w in &warnings {
+                match w {
+                    crate::validate::ValidationWarning::MissingSkill {
+                        agent,
+                        skill_name,
+                        suggestion,
+                    } => {
+                        let msg = match suggestion {
+                            Some(s) => format!(
+                                "agent `{}` references missing skill `{skill_name}` (did you mean `{s}`?)",
+                                agent.name
+                            ),
+                            None => format!(
+                                "agent `{}` references missing skill `{skill_name}`",
+                                agent.name
+                            ),
+                        };
+                        issues.push(msg);
+                    }
+                }
+            }
+        }
+    }
+
     // Check link health
     if let Ok(config) = crate::config::load(&ctx.managed_root) {
         for link_target in &config.settings.links {
