@@ -8,6 +8,7 @@
 //! - Maps `MarsError` to exit codes and stderr messages
 
 pub mod add;
+pub mod check;
 pub mod doctor;
 pub mod init;
 pub mod link;
@@ -123,6 +124,9 @@ pub enum Command {
     /// Symlink agents/ and skills/ into another directory (e.g. .claude).
     Link(link::LinkArgs),
 
+    /// Validate a source package before publishing.
+    Check(check::CheckArgs),
+
     /// Validate state consistency.
     Doctor(doctor::DoctorArgs),
 
@@ -148,6 +152,7 @@ pub fn dispatch(cli: Cli) -> i32 {
 fn dispatch_result(cli: Cli) -> Result<i32, MarsError> {
     match &cli.command {
         Command::Init(args) => init::run(args, cli.root.as_deref(), cli.json),
+        Command::Check(args) => check::run(args, cli.json),
         Command::Add(args) => {
             let ctx = find_agents_root(cli.root.as_deref())?;
             add::run(args, &ctx, cli.json)

@@ -409,6 +409,15 @@ pub fn print_warn(msg: &str) {
     let _ = writeln!(stdout, "{msg}");
 }
 
+/// Print an error message (red).
+pub fn print_error(msg: &str) {
+    let mut stdout = StandardStream::stdout(color_choice());
+    let _ = stdout.set_color(ColorSpec::new().set_fg(Some(Color::Red)));
+    let _ = write!(stdout, "  ✗ ");
+    let _ = stdout.reset();
+    let _ = writeln!(stdout, "{msg}");
+}
+
 /// Print an info message.
 pub fn print_info(msg: &str) {
     println!("  {msg}");
