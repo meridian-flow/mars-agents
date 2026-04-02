@@ -174,7 +174,10 @@ pub fn execute(root: &Path, request: &SyncRequest) -> Result<SyncReport, MarsErr
 
     // Step 9: Handle collisions + rewrite frontmatter refs.
     if !renames.is_empty() {
-        target::rewrite_skill_refs(&mut target_state, &renames, &graph)?;
+        let rewrite_warnings = target::rewrite_skill_refs(&mut target_state, &renames, &graph)?;
+        for w in &rewrite_warnings {
+            eprintln!("{w}");
+        }
     }
 
     // Step 10: Validate skill references.

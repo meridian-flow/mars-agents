@@ -163,9 +163,11 @@ pub fn rewrite_skill_refs(
     target: &mut TargetState,
     renames: &[RenameAction],
     graph: &ResolvedGraph,
-) -> Result<(), MarsError> {
+) -> Result<Vec<String>, MarsError> {
+    let mut warnings = Vec::new();
+
     if renames.is_empty() {
-        return Ok(());
+        return Ok(warnings);
     }
 
     // Build rename map for skills only:
@@ -185,7 +187,7 @@ pub fn rewrite_skill_refs(
     }
 
     if skill_renames.is_empty() {
-        return Ok(());
+        return Ok(warnings);
     }
 
     // For each agent in target, check if it references any renamed skills
@@ -233,11 +235,16 @@ pub fn rewrite_skill_refs(
                 }
             }
             Ok(None) => {}
-            Err(_) => {}
+            Err(e) => {
+                warnings.push(format!(
+                    "warning: could not rewrite skill refs in {}: {e}",
+                    source_path.display()
+                ));
+            }
         }
     }
 
-    Ok(())
+    Ok(warnings)
 }
 
 /// Refuse to overwrite existing on-disk files/directories that are not managed.
