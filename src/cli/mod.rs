@@ -26,7 +26,7 @@ use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
 
-use crate::error::MarsError;
+use crate::error::{LockError, MarsError};
 
 /// mars — agent package manager for .agents/
 #[derive(Debug, Parser)]
@@ -93,6 +93,9 @@ pub fn dispatch(cli: Cli) -> i32 {
         Ok(code) => code,
         Err(err) => {
             eprintln!("error: {err}");
+            if matches!(err, MarsError::Lock(LockError::Corrupt { .. })) {
+                eprintln!("hint: run `mars repair` to rebuild from agents.toml + sources");
+            }
             err.exit_code()
         }
     }

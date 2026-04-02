@@ -920,6 +920,73 @@ fn sync_frozen_returns_exit_code_two() {
 }
 
 #[test]
+fn sync_errors_when_lock_is_corrupt() {
+    let dir = TempDir::new().unwrap();
+    let source = create_source(&dir, "base", &[("coder", "# Coder")], &[]);
+
+    let agents_dir = dir.child("project").child(".agents");
+    mars()
+        .args(["init", dir.child("project").path().to_str().unwrap()])
+        .assert()
+        .success();
+
+    mars()
+        .args([
+            "add",
+            source.to_str().unwrap(),
+            "--root",
+            agents_dir.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    fs::write(agents_dir.child("agents.lock").path(), "INVALID").unwrap();
+
+    mars()
+        .args(["sync", "--root", agents_dir.path().to_str().unwrap()])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("lock file corrupt"))
+        .stderr(predicate::str::contains("run `mars repair`"));
+}
+
+#[test]
+fn repair_recovers_from_corrupt_lock() {
+    let dir = TempDir::new().unwrap();
+    let source = create_source(&dir, "base", &[("coder", "# Coder")], &[]);
+
+    let agents_dir = dir.child("project").child(".agents");
+    mars()
+        .args(["init", dir.child("project").path().to_str().unwrap()])
+        .assert()
+        .success();
+
+    mars()
+        .args([
+            "add",
+            source.to_str().unwrap(),
+            "--root",
+            agents_dir.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    fs::write(agents_dir.child("agents.lock").path(), "INVALID").unwrap();
+
+    mars()
+        .args(["repair", "--root", agents_dir.path().to_str().unwrap()])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("lock is corrupt, rebuilding"));
+
+    let repaired_lock = fs::read_to_string(agents_dir.child("agents.lock").path()).unwrap();
+    let lock_value: Value = toml::from_str(&repaired_lock).unwrap();
+    assert!(lock_value["items"].as_table().is_some());
+
+    assert!(agents_dir.child("agents").child("coder.md").exists());
+}
+
+#[test]
 fn add_nonexistent_path_does_not_pollute_config() {
     let dir = TempDir::new().unwrap();
     let agents_dir = dir.child("project").child(".agents");

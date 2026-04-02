@@ -2,8 +2,9 @@
 
 use std::path::Path;
 
-use crate::error::MarsError;
-use crate::sync::{ResolutionMode, SyncOptions, SyncRequest};
+use crate::error::{LockError, MarsError};
+use crate::lock::LockFile;
+use crate::sync::{ResolutionMode, SyncOptions, SyncRequest, SyncReport};
 
 use super::output;
 
@@ -21,6 +22,17 @@ pub fn run(_args: &RepairArgs, root: &Path, json: bool) -> Result<i32, MarsError
         output::print_info("repairing — re-syncing from sources...");
     }
 
+    let recovered_corrupt_lock = match crate::lock::load(root) {
+        Ok(_) => false,
+        Err(MarsError::Lock(LockError::Corrupt { message })) => {
+            eprintln!("warning: {message}");
+            eprintln!("warning: lock is corrupt, rebuilding from agents.toml + sources");
+            crate::lock::write(root, &LockFile::empty())?;
+            true
+        }
+        Err(err) => return Err(err),
+    };
+
     let request = SyncRequest {
         resolution: ResolutionMode::Normal,
         mutation: None,
@@ -32,9 +44,65 @@ pub fn run(_args: &RepairArgs, root: &Path, json: bool) -> Result<i32, MarsError
     };
 
     // Force sync: overwrites everything, rebuilds from sources.
-    let report = crate::sync::execute(root, &request)?;
+    let report = if recovered_corrupt_lock {
+        execute_repair_with_collision_cleanup(root, &request)?
+    } else {
+        crate::sync::execute(root, &request)?
+    };
 
     output::print_sync_report(&report, json);
 
     if report.has_conflicts() { Ok(1) } else { Ok(0) }
+}
+
+fn execute_repair_with_collision_cleanup(
+    root: &Path,
+    request: &SyncRequest,
+) -> Result<SyncReport, MarsError> {
+    const MAX_RETRIES: usize = 1024;
+    let mut retries = 0usize;
+
+    loop {
+        match crate::sync::execute(root, request) {
+            Ok(report) => return Ok(report),
+            Err(err) => {
+                if let Some(path) = extract_unmanaged_collision_path(&err) {
+                    if retries >= MAX_RETRIES {
+                        return Err(MarsError::InvalidRequest {
+                            message: format!(
+                                "repair exceeded {MAX_RETRIES} unmanaged-collision retries while rebuilding from corrupt lock"
+                            ),
+                        });
+                    }
+
+                    let full_path = root.join(path);
+                    if full_path.is_dir() {
+                        std::fs::remove_dir_all(&full_path)?;
+                    } else if full_path.exists() {
+                        std::fs::remove_file(&full_path)?;
+                    }
+
+                    eprintln!(
+                        "warning: removing unmanaged path `{}` to rebuild from corrupt lock",
+                        path.display()
+                    );
+                    retries += 1;
+                    continue;
+                }
+
+                return Err(err);
+            }
+        }
+    }
+}
+
+fn extract_unmanaged_collision_path(err: &MarsError) -> Option<&Path> {
+    let MarsError::Source { message, .. } = err else {
+        return None;
+    };
+
+    let prefix = "refusing to overwrite unmanaged path `";
+    let suffix = "`";
+    let trimmed = message.strip_prefix(prefix)?.strip_suffix(suffix)?;
+    Some(Path::new(trimmed))
 }
