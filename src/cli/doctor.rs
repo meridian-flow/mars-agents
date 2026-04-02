@@ -83,28 +83,55 @@ pub fn run(_args: &DoctorArgs, ctx: &super::MarsContext, json: bool) -> Result<i
         }
     }
 
-    // Check skill dependencies — every agent's declared skills must exist
+    // Check skill dependencies — every agent's declared skills must exist on disk.
+    // Scans the actual filesystem, not just the lock — catches both mars-managed
+    // and user-created local skills.
     {
         use std::collections::HashSet;
         let mut agents: Vec<(String, std::path::PathBuf)> = Vec::new();
         let mut available_skills: HashSet<String> = HashSet::new();
 
+        // Collect agents from lock (we know their paths)
         for (dest_path, item) in &lock.items {
-            match item.kind {
-                crate::lock::ItemKind::Agent => {
-                    let name = item.dest_path.to_string();
-                    let path = ctx.managed_root.join(dest_path);
-                    agents.push((name, path));
+            if item.kind == crate::lock::ItemKind::Agent {
+                let name = item.dest_path.to_string();
+                let path = ctx.managed_root.join(dest_path);
+                agents.push((name, path));
+            }
+        }
+
+        // Also scan for agent .md files on disk not in the lock (user-created)
+        let agents_dir = ctx.managed_root.join("agents");
+        if agents_dir.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(&agents_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.extension().and_then(|e| e.to_str()) == Some("md") {
+                        let name = path.file_stem()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or_default()
+                            .to_string();
+                        if !agents.iter().any(|(n, _)| n.ends_with(&format!("{name}.md"))) {
+                            agents.push((name, path));
+                        }
+                    }
                 }
-                crate::lock::ItemKind::Skill => {
-                    // Extract skill name from dest path (e.g. "skills/planning" -> "planning")
-                    let skill_name = std::path::Path::new(dest_path.as_ref())
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or_default()
-                        .to_string();
-                    if !skill_name.is_empty() {
-                        available_skills.insert(skill_name);
+            }
+        }
+
+        // Scan disk for ALL available skills (managed + unmanaged)
+        let skills_dir = ctx.managed_root.join("skills");
+        if skills_dir.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(&skills_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                            // Verify it has a SKILL.md (valid skill dir)
+                            if path.join("SKILL.md").exists() {
+                                available_skills.insert(name.to_string());
+                            }
+                        }
                     }
                 }
             }
