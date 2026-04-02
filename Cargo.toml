@@ -25,6 +25,7 @@ termcolor = "1"
 libc = "0.2.183"
 serde_json = "1.0.149"
 pathdiff = "0.2.3"
+walkdir = "2"
 
 [dev-dependencies]
 assert_fs = "1"
