@@ -363,10 +363,10 @@ pub fn check_unmanaged_collisions(
             // Check if disk content matches what we'd install — if so,
             // this is a partial prior install (crash recovery), not an
             // unmanaged user file. Safe to overwrite.
-            if let Ok(disk_hash) = hash::compute_hash(&disk_path, target_item.id.kind) {
-                if ContentHash::from(disk_hash) == target_item.source_hash {
-                    continue;
-                }
+            if let Ok(disk_hash) = hash::compute_hash(&disk_path, target_item.id.kind)
+                && disk_hash == target_item.source_hash.as_str()
+            {
+                continue;
             }
 
             return Err(MarsError::Source {
