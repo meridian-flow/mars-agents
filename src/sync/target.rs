@@ -272,7 +272,7 @@ pub fn build_with_collisions(
 pub fn rewrite_skill_refs(
     target: &mut TargetState,
     renames: &[RenameAction],
-    _graph: &ResolvedGraph,
+    graph: &ResolvedGraph,
 ) -> Result<(), MarsError> {
     if renames.is_empty() {
         return Ok(());
@@ -317,11 +317,17 @@ pub fn rewrite_skill_refs(
         };
 
         let mut renames_for_agent: IndexMap<String, String> = IndexMap::new();
+        let agent_deps: &[SourceName] = graph
+            .nodes
+            .get(&source_name)
+            .map(|n| n.deps.as_slice())
+            .unwrap_or(&[]);
+
         for (original_name, entries) in &skill_renames {
             let selected = entries
                 .iter()
                 .find(|(_, source)| source == &source_name)
-                .or_else(|| entries.first());
+                .or_else(|| entries.iter().find(|(_, source)| agent_deps.contains(source)));
             if let Some((new_name, _)) = selected {
                 renames_for_agent.insert(original_name.to_string(), new_name.to_string());
             }
@@ -988,6 +994,136 @@ mod tests {
 
         rewrite_skill_refs(&mut target, &renames, &graph).unwrap();
         assert!(target.items["agents/coder.md"].rewritten_content.is_none());
+    }
+
+    #[test]
+    fn rewrite_skill_refs_cross_package_uses_dep_graph() {
+        // Source A has an agent referencing skill "planning".
+        // Source B and C both provide "planning", causing collision rename.
+        // Source A depends on B (not C). The agent should get B's renamed version.
+        let dir = TempDir::new().unwrap();
+        let agent_path = dir.path().join("agents/coder.md");
+        fs::create_dir_all(agent_path.parent().unwrap()).unwrap();
+        fs::write(
+            &agent_path,
+            "---\nskills:\n- planning\n---\n# Agent\n",
+        )
+        .unwrap();
+
+        let skill_b_path = dir.path().join("skills/planning__org_b");
+        fs::create_dir_all(&skill_b_path).unwrap();
+        fs::write(skill_b_path.join("SKILL.md"), "# Planning from B").unwrap();
+
+        let skill_c_path = dir.path().join("skills/planning__org_c");
+        fs::create_dir_all(&skill_c_path).unwrap();
+        fs::write(skill_c_path.join("SKILL.md"), "# Planning from C").unwrap();
+
+        let mut items = IndexMap::new();
+        items.insert(
+            "agents/coder.md".into(),
+            TargetItem {
+                id: ItemId {
+                    kind: ItemKind::Agent,
+                    name: "coder".into(),
+                },
+                source_name: "source-a".into(),
+                source_id: SourceId::Path {
+                    canonical: agent_path.clone(),
+                },
+                source_path: agent_path.clone(),
+                dest_path: "agents/coder.md".into(),
+                source_hash: hash::hash_bytes(fs::read(&agent_path).unwrap().as_slice()).into(),
+                rewritten_content: None,
+            },
+        );
+        items.insert(
+            "skills/planning__org_b".into(),
+            TargetItem {
+                id: ItemId {
+                    kind: ItemKind::Skill,
+                    name: "planning__org_b".into(),
+                },
+                source_name: "source-b".into(),
+                source_id: SourceId::Path {
+                    canonical: skill_b_path.clone(),
+                },
+                source_path: skill_b_path.clone(),
+                dest_path: "skills/planning__org_b".into(),
+                source_hash: hash::compute_hash(&skill_b_path, ItemKind::Skill)
+                    .unwrap()
+                    .into(),
+                rewritten_content: None,
+            },
+        );
+        items.insert(
+            "skills/planning__org_c".into(),
+            TargetItem {
+                id: ItemId {
+                    kind: ItemKind::Skill,
+                    name: "planning__org_c".into(),
+                },
+                source_name: "source-c".into(),
+                source_id: SourceId::Path {
+                    canonical: skill_c_path.clone(),
+                },
+                source_path: skill_c_path.clone(),
+                dest_path: "skills/planning__org_c".into(),
+                source_hash: hash::compute_hash(&skill_c_path, ItemKind::Skill)
+                    .unwrap()
+                    .into(),
+                rewritten_content: None,
+            },
+        );
+
+        let mut target = TargetState { items };
+        let renames = vec![
+            RenameAction {
+                original_name: "planning".into(),
+                new_name: "planning__org_b".into(),
+                source_name: "source-b".into(),
+            },
+            RenameAction {
+                original_name: "planning".into(),
+                new_name: "planning__org_c".into(),
+                source_name: "source-c".into(),
+            },
+        ];
+
+        // Build a graph where source-a depends on source-b (not source-c)
+        let mut nodes = IndexMap::new();
+        nodes.insert(
+            SourceName::from("source-a"),
+            crate::resolve::ResolvedNode {
+                source_name: "source-a".into(),
+                source_id: SourceId::Path {
+                    canonical: dir.path().to_path_buf(),
+                },
+                resolved_ref: crate::source::ResolvedRef {
+                    source_name: "source-a".into(),
+                    version: None,
+                    version_tag: None,
+                    commit: None,
+                    tree_path: dir.path().to_path_buf(),
+                },
+                manifest: None,
+                deps: vec!["source-b".into()],
+            },
+        );
+        let graph = ResolvedGraph {
+            nodes,
+            order: vec!["source-a".into()],
+            id_index: std::collections::HashMap::new(),
+        };
+
+        rewrite_skill_refs(&mut target, &renames, &graph).unwrap();
+
+        let rewritten = target.items["agents/coder.md"]
+            .rewritten_content
+            .as_ref()
+            .expect("agent should have been rewritten");
+        let fm = crate::frontmatter::parse(rewritten).unwrap();
+        // Should pick source-b's version (the dependency), not source-c's
+        assert_eq!(fm.skills(), vec!["planning__org_b"]);
     }
 
     // === Source with agents filter + skill deps ===
