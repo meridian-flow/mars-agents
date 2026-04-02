@@ -71,7 +71,6 @@ pub fn url_to_dirname(url: &str) -> String {
 ///
 /// Accepts: `v1.0.0`, `v0.5.2`, `1.0.0`
 /// Rejects: `latest`, `nightly-2024`, or any non-semver tag.
-#[allow(dead_code)]
 fn parse_semver_tag(tag: &str) -> Option<semver::Version> {
     let version_str = tag.strip_prefix('v').unwrap_or(tag);
     semver::Version::parse(version_str).ok()
@@ -499,6 +498,15 @@ pub fn is_github_host(url: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn should_use_github_archive(url: &str) -> bool {
+    let trimmed = url.trim();
+    if trimmed.starts_with("git@") || trimmed.starts_with("ssh://") {
+        return false;
+    }
+
+    trimmed.starts_with("https://") && is_github_host(trimmed)
+}
+
 pub fn list_versions(url: &str, _cache: &GlobalCache) -> Result<Vec<AvailableVersion>, MarsError> {
     ls_remote_tags(url)
 }
@@ -515,7 +523,7 @@ pub fn fetch(
         resolved.sha = preferred_commit.to_string();
     }
 
-    let tree_path = if is_github_host(url) {
+    let tree_path = if should_use_github_archive(url) {
         match fetch_archive(url, &resolved.sha, cache) {
             Ok(path) => path,
             Err(MarsError::Http { status: 404, .. }) if options.preferred_commit.is_some() => {
@@ -894,5 +902,14 @@ mod tests {
     fn is_github_host_rejects_other_hosts() {
         assert!(!is_github_host("https://gitlab.com/org/repo"));
         assert!(!is_github_host("git@source.example.com:org/repo.git"));
+    }
+
+    #[test]
+    fn github_archive_only_for_https_github_urls() {
+        assert!(should_use_github_archive("https://github.com/org/repo"));
+        assert!(!should_use_github_archive("http://github.com/org/repo"));
+        assert!(!should_use_github_archive("github.com/org/repo"));
+        assert!(!should_use_github_archive("git@github.com:org/repo.git"));
+        assert!(!should_use_github_archive("ssh://git@github.com/org/repo"));
     }
 }

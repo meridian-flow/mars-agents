@@ -372,13 +372,17 @@ impl SourceFetcher for RealSourceProvider<'_> {
         url: &crate::types::SourceUrl,
         ref_name: &str,
         source_name: &str,
+        preferred_commit: Option<&str>,
     ) -> Result<ResolvedRef, MarsError> {
+        let fetch_options = source::git::FetchOptions {
+            preferred_commit: preferred_commit.map(CommitHash::from),
+        };
         source::git::fetch(
             url.as_ref(),
             Some(ref_name),
             source_name,
             self.cache,
-            &source::git::FetchOptions::default(),
+            &fetch_options,
         )
     }
 

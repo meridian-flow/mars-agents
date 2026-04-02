@@ -90,6 +90,7 @@ pub trait SourceFetcher {
         url: &SourceUrl,
         ref_name: &str,
         source_name: &str,
+        preferred_commit: Option<&str>,
     ) -> Result<ResolvedRef, MarsError>;
 
     /// Resolve a local path source into a concrete tree reference.
@@ -195,7 +196,6 @@ pub fn resolve(
             spec: source.spec.clone(),
             constraint,
             required_by: "agents.toml".into(),
-            is_direct: true,
         });
     }
 
@@ -264,7 +264,6 @@ pub fn resolve(
                         }),
                         constraint: dep_constraint,
                         required_by: pending_src.name.to_string(),
-                        is_direct: false,
                     });
                 } else {
                     // Already resolved — record additional constraint for later validation
@@ -310,8 +309,6 @@ struct PendingSource {
     spec: SourceSpec,
     constraint: VersionConstraint,
     required_by: String,
-    #[allow(dead_code)]
-    is_direct: bool,
 }
 
 /// Resolve a single source to a concrete version/ref.
@@ -358,17 +355,54 @@ fn resolve_git_source(
     if has_ref_pin {
         for (_, constraint) in constraints {
             if let VersionConstraint::RefPin(ref_name) = constraint {
-                return provider.fetch_git_ref(url, ref_name, name.as_ref());
+                return provider.fetch_git_ref(url, ref_name, name.as_ref(), None);
             }
         }
     }
+
+    // Check if any constraint is "Latest" — if so, pick newest (not MVS)
+    let has_latest = constraints
+        .iter()
+        .any(|(_, c)| matches!(c, VersionConstraint::Latest));
+
+    let locked_source = locked.and_then(|lf| lf.sources.get(name));
+    let locked_commit = locked_source.and_then(|ls| ls.commit.as_deref());
+
+    let upgrade_maximize = options.maximize
+        && (options.upgrade_targets.is_empty() || options.upgrade_targets.contains(name));
+
+    // Determine whether to maximize this source:
+    // - explicit maximize mode (mars upgrade)
+    // - "latest" constraint means "newest available"
+    let maximize = has_latest || upgrade_maximize;
 
     // List available versions
     let available = provider.list_versions(url)?;
 
     if available.is_empty() {
-        // No semver tags → treat as "latest commit"
-        return provider.fetch_git_ref(url, "HEAD", name.as_ref());
+        // No semver tags → treat as "latest commit", with locked-commit replay.
+        // For untagged sources, replay lock by default unless explicitly upgrading.
+        let preferred_commit = if !upgrade_maximize {
+            locked_commit
+        } else {
+            None
+        };
+        match provider.fetch_git_ref(url, "HEAD", name.as_ref(), preferred_commit) {
+            Ok(resolved) => return Ok(resolved),
+            Err(err @ MarsError::LockedCommitUnreachable { .. }) if options.frozen => {
+                return Err(err);
+            }
+            Err(MarsError::LockedCommitUnreachable {
+                commit,
+                url: source_url,
+            }) => {
+                eprintln!(
+                    "warning: locked commit {commit} for {source_url} is unreachable; re-resolving from HEAD"
+                );
+                return provider.fetch_git_ref(url, "HEAD", name.as_ref(), None);
+            }
+            Err(err) => return Err(err),
+        }
     }
 
     // Collect all semver constraints
@@ -380,13 +414,6 @@ fn resolve_git_source(
         })
         .collect();
 
-    // Check if any constraint is "Latest" — if so, pick newest (not MVS)
-    let has_latest = constraints
-        .iter()
-        .any(|(_, c)| matches!(c, VersionConstraint::Latest));
-
-    let locked_source = locked.and_then(|lf| lf.sources.get(name));
-
     // Get locked version for this source (if any)
     let locked_version = locked_source
         .and_then(|ls| ls.version.as_ref())
@@ -394,14 +421,6 @@ fn resolve_git_source(
             let v = v.strip_prefix('v').unwrap_or(v);
             Version::parse(v).ok()
         });
-    let locked_commit = locked_source.and_then(|ls| ls.commit.as_deref());
-
-    // Determine whether to maximize this source:
-    // - explicit maximize mode (mars upgrade)
-    // - "latest" constraint means "newest available"
-    let maximize = has_latest
-        || (options.maximize
-            && (options.upgrade_targets.is_empty() || options.upgrade_targets.contains(name)));
 
     // Select version
     let selected = select_version(
@@ -732,16 +751,34 @@ mod tests {
 
         fn fetch_git_ref(
             &self,
-            _url: &SourceUrl,
+            url: &SourceUrl,
             ref_name: &str,
             source_name: &str,
+            preferred_commit: Option<&str>,
         ) -> Result<ResolvedRef, MarsError> {
+            self.seen_preferred_commits
+                .borrow_mut()
+                .push(preferred_commit.map(str::to_string));
+
+            if let Some(commit) = preferred_commit
+                && self.unreachable_preferred_commits.contains(commit)
+            {
+                return Err(MarsError::LockedCommitUnreachable {
+                    commit: commit.to_string(),
+                    url: url.to_string(),
+                });
+            }
+
             let tree_path = self.trees.get(source_name).cloned().unwrap_or_default();
             Ok(ResolvedRef {
                 source_name: source_name.into(),
                 version: None,
                 version_tag: None,
-                commit: Some(format!("ref:{ref_name}").into()),
+                commit: Some(
+                    preferred_commit
+                        .map(|c| c.into())
+                        .unwrap_or_else(|| format!("ref:{ref_name}").into()),
+                ),
                 tree_path,
             })
         }
@@ -1687,6 +1724,119 @@ mod tests {
         let node = &graph.nodes["a"];
         assert!(node.resolved_ref.version.is_none());
         assert_eq!(node.resolved_ref.commit, Some("ref:HEAD".into()));
+    }
+
+    #[test]
+    fn untagged_source_uses_locked_commit_when_available() {
+        let dir = TempDir::new().unwrap();
+        let tree = dir.path().join("a");
+        std::fs::create_dir_all(&tree).unwrap();
+
+        let mut provider = MockProvider::new();
+        provider.add_source("a", tree, None);
+
+        let config = make_config(vec![("a", git_spec("https://example.com/a.git", None))]);
+
+        let locked_commit = "locked-untagged-sha";
+        let mut lock = LockFile::empty();
+        lock.sources.insert(
+            "a".into(),
+            crate::lock::LockedSource {
+                url: Some("https://example.com/a.git".into()),
+                path: None,
+                version: None,
+                commit: Some(locked_commit.into()),
+                tree_hash: None,
+            },
+        );
+
+        let graph = resolve(&config, &provider, Some(&lock), &default_options()).unwrap();
+        assert_eq!(
+            graph.nodes["a"].resolved_ref.commit.as_deref(),
+            Some(locked_commit)
+        );
+        assert_eq!(
+            provider.seen_preferred_commits(),
+            vec![Some(locked_commit.to_string())]
+        );
+    }
+
+    #[test]
+    fn untagged_source_falls_back_to_head_when_locked_commit_unreachable() {
+        let dir = TempDir::new().unwrap();
+        let tree = dir.path().join("a");
+        std::fs::create_dir_all(&tree).unwrap();
+
+        let mut provider = MockProvider::new();
+        provider.add_source("a", tree, None);
+
+        let config = make_config(vec![("a", git_spec("https://example.com/a.git", None))]);
+
+        let unreachable_commit = "missing-locked-sha";
+        provider.mark_unreachable_preferred_commit(unreachable_commit);
+
+        let mut lock = LockFile::empty();
+        lock.sources.insert(
+            "a".into(),
+            crate::lock::LockedSource {
+                url: Some("https://example.com/a.git".into()),
+                path: None,
+                version: None,
+                commit: Some(unreachable_commit.into()),
+                tree_hash: None,
+            },
+        );
+
+        let graph = resolve(&config, &provider, Some(&lock), &default_options()).unwrap();
+        assert_eq!(
+            graph.nodes["a"].resolved_ref.commit.as_deref(),
+            Some("ref:HEAD")
+        );
+        assert_eq!(
+            provider.seen_preferred_commits(),
+            vec![Some(unreachable_commit.to_string()), None]
+        );
+    }
+
+    #[test]
+    fn frozen_mode_errors_for_untagged_locked_commit_unreachable() {
+        let dir = TempDir::new().unwrap();
+        let tree = dir.path().join("a");
+        std::fs::create_dir_all(&tree).unwrap();
+
+        let mut provider = MockProvider::new();
+        provider.add_source("a", tree, None);
+
+        let config = make_config(vec![("a", git_spec("https://example.com/a.git", None))]);
+
+        let unreachable_commit = "missing-locked-sha";
+        provider.mark_unreachable_preferred_commit(unreachable_commit);
+
+        let mut lock = LockFile::empty();
+        lock.sources.insert(
+            "a".into(),
+            crate::lock::LockedSource {
+                url: Some("https://example.com/a.git".into()),
+                path: None,
+                version: None,
+                commit: Some(unreachable_commit.into()),
+                tree_hash: None,
+            },
+        );
+
+        let options = ResolveOptions {
+            frozen: true,
+            ..default_options()
+        };
+        let result = resolve(&config, &provider, Some(&lock), &options);
+        assert!(matches!(
+            result,
+            Err(MarsError::LockedCommitUnreachable { .. })
+        ));
+        assert_eq!(
+            provider.seen_preferred_commits(),
+            vec![Some(unreachable_commit.to_string())]
+        );
     }
 
     // ========== Topological sort tests ==========
