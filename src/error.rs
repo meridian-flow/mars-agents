@@ -176,11 +176,11 @@ mod tests {
     #[test]
     fn mars_error_from_config_error() {
         let cfg_err = ConfigError::NotFound {
-            path: PathBuf::from("/missing/agents.toml"),
+            path: PathBuf::from("/missing/mars.toml"),
         };
         let mars_err: MarsError = cfg_err.into();
         assert!(matches!(mars_err, MarsError::Config(_)));
-        assert!(mars_err.to_string().contains("/missing/agents.toml"));
+        assert!(mars_err.to_string().contains("/missing/mars.toml"));
     }
 
     #[test]

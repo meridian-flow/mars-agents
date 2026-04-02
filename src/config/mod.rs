@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{ConfigError, MarsError};
 use crate::types::{ItemName, RenameMap, SourceId, SourceName, SourceUrl};
 
-/// Top-level agents.toml configuration.
+/// Top-level mars.toml configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Config {
     #[serde(default)]
@@ -15,7 +15,7 @@ pub struct Config {
     pub settings: Settings,
 }
 
-/// User-declared source entry in agents.toml.
+/// User-declared source entry in mars.toml.
 ///
 /// Sources are either git URLs (versioned, fetched via source adapters) or local paths
 /// (unversioned, always syncs current state). Uses `url` XOR `path` to
@@ -45,7 +45,7 @@ pub struct FilterConfig {
     pub rename: Option<RenameMap>,
 }
 
-/// Dev override config (agents.local.toml).
+/// Dev override config (mars.local.toml).
 ///
 /// Gitignored — each developer can work with local checkouts while
 /// production config points at git.
@@ -97,7 +97,7 @@ pub enum FilterMode {
     Exclude(Vec<ItemName>),
 }
 
-/// Effective configuration after merging agents.toml and agents.local.toml.
+/// Effective configuration after merging mars.toml and mars.local.toml.
 ///
 /// This is what the rest of the pipeline operates on.
 #[derive(Debug, Clone)]
@@ -118,10 +118,10 @@ pub struct EffectiveSource {
     pub original_git: Option<GitSpec>,
 }
 
-const CONFIG_FILE: &str = "agents.toml";
-const LOCAL_CONFIG_FILE: &str = "agents.local.toml";
+const CONFIG_FILE: &str = "mars.toml";
+const LOCAL_CONFIG_FILE: &str = "mars.local.toml";
 
-/// Load agents.toml from the given root directory.
+/// Load mars.toml from the given root directory.
 pub fn load(root: &Path) -> Result<Config, MarsError> {
     let path = root.join(CONFIG_FILE);
     let content = std::fs::read_to_string(&path).map_err(|e| {
@@ -136,7 +136,7 @@ pub fn load(root: &Path) -> Result<Config, MarsError> {
     Ok(config)
 }
 
-/// Load agents.local.toml (returns Default if absent).
+/// Load mars.local.toml (returns Default if absent).
 pub fn load_local(root: &Path) -> Result<LocalConfig, MarsError> {
     let path = root.join(LOCAL_CONFIG_FILE);
     match std::fs::read_to_string(&path) {
@@ -243,7 +243,7 @@ pub fn merge_with_root(
     // Warn if override references a source not in config
     for override_name in local.overrides.keys() {
         if !config.sources.contains_key(override_name) {
-            eprintln!("warning: override `{override_name}` references a source not in agents.toml");
+            eprintln!("warning: override `{override_name}` references a source not in mars.toml");
         }
     }
 
@@ -285,7 +285,7 @@ fn should_upgrade_legacy_git_url(url: &str) -> bool {
     !url.contains("://") && !url.starts_with("git@") && url.contains('/') && url.contains('.')
 }
 
-/// Write agents.toml atomically.
+/// Write mars.toml atomically.
 pub fn save(root: &Path, config: &Config) -> Result<(), MarsError> {
     let path = root.join(CONFIG_FILE);
     let content = toml::to_string_pretty(config).map_err(|e| ConfigError::Invalid {
@@ -294,7 +294,7 @@ pub fn save(root: &Path, config: &Config) -> Result<(), MarsError> {
     crate::fs::atomic_write(&path, content.as_bytes())
 }
 
-/// Write agents.local.toml atomically.
+/// Write mars.local.toml atomically.
 pub fn save_local(root: &Path, local: &LocalConfig) -> Result<(), MarsError> {
     let path = root.join(LOCAL_CONFIG_FILE);
     let content = toml::to_string_pretty(local).map_err(|e| ConfigError::Invalid {
@@ -492,7 +492,7 @@ path = "/local/path"
 url = "https://github.com/org/base.git"
 version = "v1.0"
 "#;
-        std::fs::write(dir.path().join("agents.toml"), toml_str).unwrap();
+        std::fs::write(dir.path().join("mars.toml"), toml_str).unwrap();
         let config = load(dir.path()).unwrap();
         assert_eq!(config.sources.len(), 1);
     }
@@ -504,7 +504,7 @@ version = "v1.0"
 [sources.base]
 url = "github.com/org/base"
 "#;
-        std::fs::write(dir.path().join("agents.toml"), toml_str).unwrap();
+        std::fs::write(dir.path().join("mars.toml"), toml_str).unwrap();
 
         let config = load(dir.path()).unwrap();
         assert_eq!(
@@ -520,7 +520,7 @@ url = "github.com/org/base"
 [sources.base]
 url = "git@github.com:org/base.git"
 "#;
-        std::fs::write(dir.path().join("agents.toml"), toml_str).unwrap();
+        std::fs::write(dir.path().join("mars.toml"), toml_str).unwrap();
 
         let config = load(dir.path()).unwrap();
         assert_eq!(
@@ -552,7 +552,7 @@ url = "git@github.com:org/base.git"
 [overrides.base]
 path = "/home/dev/local-base"
 "#;
-        std::fs::write(dir.path().join("agents.local.toml"), toml_str).unwrap();
+        std::fs::write(dir.path().join("mars.local.toml"), toml_str).unwrap();
         let local = load_local(dir.path()).unwrap();
         assert_eq!(local.overrides.len(), 1);
         assert_eq!(

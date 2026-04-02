@@ -26,7 +26,7 @@ pub fn run(_args: &RepairArgs, ctx: &super::MarsContext, json: bool) -> Result<i
         Ok(_) => false,
         Err(MarsError::Lock(LockError::Corrupt { message })) => {
             eprintln!("warning: {message}");
-            eprintln!("warning: lock is corrupt, rebuilding from agents.toml + sources");
+            eprintln!("warning: lock is corrupt, rebuilding from mars.toml + sources");
             crate::lock::write(&ctx.managed_root, &LockFile::empty())?;
             true
         }

@@ -93,7 +93,7 @@ impl std::fmt::Display for ItemKind {
     }
 }
 
-const LOCK_FILE: &str = "agents.lock";
+const LOCK_FILE: &str = "mars.lock";
 
 /// Load the lock file from the given root directory.
 ///

@@ -60,19 +60,19 @@ pub enum ResolutionMode {
 /// Config mutation to apply atomically under flock.
 #[derive(Debug, Clone)]
 pub enum ConfigMutation {
-    /// Add or update a source in agents.toml.
+    /// Add or update a source in mars.toml.
     UpsertSource {
         name: SourceName,
         entry: SourceEntry,
     },
-    /// Remove a source from agents.toml.
+    /// Remove a source from mars.toml.
     RemoveSource { name: SourceName },
-    /// Add or update an override in agents.local.toml.
+    /// Add or update an override in mars.local.toml.
     SetOverride {
         source_name: SourceName,
         local_path: PathBuf,
     },
-    /// Remove an override from agents.local.toml.
+    /// Remove an override from mars.local.toml.
     ClearOverride { source_name: SourceName },
     /// Set or update a rename mapping for one managed item.
     SetRename {
@@ -295,7 +295,7 @@ fn apply_mutation(config: &mut Config, mutation: &ConfigMutation) -> Result<(), 
             if !config.sources.contains_key(name) {
                 return Err(MarsError::Source {
                     source_name: name.to_string(),
-                    message: format!("source `{name}` not found in agents.toml"),
+                    message: format!("source `{name}` not found in mars.toml"),
                 });
             }
             config.sources.shift_remove(name);
@@ -305,7 +305,7 @@ fn apply_mutation(config: &mut Config, mutation: &ConfigMutation) -> Result<(), 
             if !config.sources.contains_key(source_name) {
                 return Err(MarsError::Source {
                     source_name: source_name.to_string(),
-                    message: format!("source `{source_name}` not found in agents.toml"),
+                    message: format!("source `{source_name}` not found in mars.toml"),
                 });
             }
             Ok(())
@@ -320,7 +320,7 @@ fn apply_mutation(config: &mut Config, mutation: &ConfigMutation) -> Result<(), 
                 .get_mut(source_name)
                 .ok_or_else(|| MarsError::Source {
                     source_name: source_name.to_string(),
-                    message: format!("source `{source_name}` not found in agents.toml"),
+                    message: format!("source `{source_name}` not found in mars.toml"),
                 })?;
             let rename_map = source
                 .filter
@@ -376,7 +376,7 @@ fn validate_targets(
             if !effective.sources.contains_key(name) {
                 return Err(MarsError::Source {
                     source_name: name.to_string(),
-                    message: format!("source `{name}` not found in agents.toml"),
+                    message: format!("source `{name}` not found in mars.toml"),
                 });
             }
         }
@@ -690,7 +690,7 @@ mod tests {
 
         let report = execute(root.path(), &request).unwrap();
         assert!(!report.applied.outcomes.is_empty());
-        assert!(root.path().join("agents.toml").exists());
+        assert!(root.path().join("mars.toml").exists());
 
         let saved = crate::config::load(root.path()).unwrap();
         assert!(saved.sources.contains_key("base"));
@@ -731,7 +731,7 @@ mod tests {
         let saved = crate::config::load(root.path()).unwrap();
         assert!(!saved.sources.contains_key("base"));
         assert!(!root.path().join("agents/coder.md").exists());
-        assert!(!root.path().join("agents.lock").exists());
+        assert!(!root.path().join("mars.lock").exists());
     }
 
     // === Integration tests for the pipeline stages ===

@@ -7,11 +7,11 @@ Agent package manager for `.agents/`. Manages agent profiles and skills across t
 1. **Resolve first, then act.** Every command that mutates the filesystem fully resolves the target state first (version resolution, dependency checking, conflict detection, diff computation), then applies changes. If any conflict or error is detected during resolution, zero mutations occur. The user sees all problems at once, fixes them, and retries. No partial state. This applies to `sync`, `link`, `add`, `remove` — every write path.
    - *Why*: Partial failures leave users in states that are hard to diagnose and harder to recover from. A user who sees "3 conflicts" can fix all three and retry. A user whose command half-completed has to figure out what happened before they can fix anything. The resolve-first model also means the error output is complete — you never get "fixed conflict 1, now here's conflict 2" one at a time.
 
-2. **Managed root is always a subdirectory.** The directory containing `agents.toml` (e.g. `.agents/`, `.claude/`) is always a child of the project root. `root.parent()` is always the project root. This invariant is enforced at construction (`MarsContext::new`) and assumed everywhere.
+2. **Managed root is always a subdirectory.** The directory containing `mars.toml` (e.g. `.agents/`, `.claude/`) is always a child of the project root. `root.parent()` is always the project root. This invariant is enforced at construction (`MarsContext::new`) and assumed everywhere.
    - *Why*: Local source paths in config (`path = "./my-agents"`) resolve relative to the project root. Symlink targets in `mars link` resolve relative to the project root. If the managed root IS the project root, `root.parent()` goes one level too high and everything resolves wrong. A single invariant checked once at construction prevents an entire class of path resolution bugs.
 
 3. **Atomic writes.** Every file write uses tmp + rename. Crash mid-write leaves the old file intact. No torn state on disk. Recovery IS startup — if mars is killed, the next command sees consistent state.
-   - *Why*: Mars manages files that agents and tools read continuously. A half-written `agents.toml` or truncated agent profile breaks every tool that reads `.agents/`. tmp + rename is atomic on POSIX — the file is either the old version or the new version, never a partial write. No recovery logic needed because there's nothing to recover from.
+   - *Why*: Mars manages files that agents and tools read continuously. A half-written `mars.toml` or truncated agent profile breaks every tool that reads `.agents/`. tmp + rename is atomic on POSIX — the file is either the old version or the new version, never a partial write. No recovery logic needed because there's nothing to recover from.
 
 4. **Lock file is authority.** `mars.lock` is the single source of truth for what's installed. If it's not in the lock, it's not managed. If the lock says it's there but disk disagrees, that's drift (doctor catches it, repair fixes it).
    - *Why*: Without a single authority, mars can't distinguish "user added this file manually" from "mars installed this and something changed it." The lock makes ownership explicit — mars only touches files it owns, and ownership is determined by lock presence, not filename patterns or directory location. This is what makes it safe to have unmanaged files coexist with managed ones.
@@ -24,7 +24,7 @@ Agent package manager for `.agents/`. Manages agent profiles and skills across t
 ```
 project/
   .agents/                 <- managed root (default)
-    agents.toml            <- config: sources, settings, links
+    mars.toml            <- config: sources, settings, links
     .mars/                 <- internal (sync.lock, cache)
     agents/                <- installed agent profiles (.md)
     skills/                <- installed skills (dirs with SKILL.md)
@@ -69,4 +69,4 @@ Global cache at `~/.mars/cache/` (override with `MARS_CACHE_DIR`).
 
 ### Version Resolution
 
-Default: latest semver tag. Fallback: default branch HEAD. Constraints in `agents.toml` use semver ranges (`^1.0`, `~2.3`, `>=1.0 <3.0`). Pin to exact ref with `ref:` prefix.
+Default: latest semver tag. Fallback: default branch HEAD. Constraints in `mars.toml` use semver ranges (`^1.0`, `~2.3`, `>=1.0 <3.0`). Pin to exact ref with `ref:` prefix.

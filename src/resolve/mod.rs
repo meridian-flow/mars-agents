@@ -195,7 +195,7 @@ pub fn resolve(
             source_id: source.id.clone(),
             spec: source.spec.clone(),
             constraint,
-            required_by: "agents.toml".into(),
+            required_by: "mars.toml".into(),
         });
     }
 

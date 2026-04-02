@@ -1,7 +1,7 @@
-//! `mars init [TARGET] [--link DIR...]` — scaffold a mars-managed directory with `agents.toml`.
+//! `mars init [TARGET] [--link DIR...]` — scaffold a mars-managed directory with `mars.toml`.
 //!
 //! TARGET is a simple directory name (default: `.agents`), not a path.
-//! Creates `<cwd>/TARGET/agents.toml`. Use `--root` for explicit path control.
+//! Creates `<cwd>/TARGET/mars.toml`. Use `--root` for explicit path control.
 //!
 //! Idempotent: re-running when already initialized is a no-op for init
 //! but still processes `--link` flags.
@@ -57,7 +57,7 @@ pub fn run(args: &InitArgs, explicit_root: Option<&Path>, json: bool) -> Result<
     };
 
     // 2. Idempotency check
-    let config_path = managed_root.join("agents.toml");
+    let config_path = managed_root.join("mars.toml");
     let already_initialized = config_path.exists();
 
     if !already_initialized {
@@ -74,7 +74,7 @@ pub fn run(args: &InitArgs, explicit_root: Option<&Path>, json: bool) -> Result<
 
         if !json {
             output::print_success(&format!(
-                "initialized {} with agents.toml",
+                "initialized {} with mars.toml",
                 managed_root.display()
             ));
         }
@@ -191,7 +191,7 @@ mod tests {
         crate::config::save(&agents_dir, &config).unwrap();
 
         // Verify the file was created correctly
-        assert!(agents_dir.join("agents.toml").exists());
+        assert!(agents_dir.join("mars.toml").exists());
         let _ = args; // suppress unused warning
     }
 

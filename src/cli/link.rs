@@ -9,7 +9,7 @@
 //!
 //! If any conflict exists, zero mutations occur. The user sees all problems at once.
 //!
-//! Persists the link in `agents.toml [settings] links` so `mars doctor` can verify it.
+//! Persists the link in `mars.toml [settings] links` so `mars doctor` can verify it.
 
 use std::path::{Path, PathBuf};
 
@@ -68,6 +68,31 @@ pub fn run(args: &LinkArgs, ctx: &super::MarsContext, json: bool) -> Result<i32,
 
     let target_name = normalize_link_target(&args.target)?;
     let target_dir = ctx.project_root.join(&target_name);
+
+    // Reject self-link — linking the managed root to itself creates circular symlinks
+    if let (Ok(target_canon), Ok(root_canon)) = (
+        target_dir.canonicalize().or_else(|_| Ok::<_, std::io::Error>(target_dir.clone())),
+        ctx.managed_root.canonicalize(),
+    ) {
+        if target_canon == root_canon {
+            return Err(MarsError::Link {
+                target: target_name,
+                message: "cannot link the managed root to itself".to_string(),
+            });
+        }
+    }
+
+    // Verify config exists before any mutations (resolve-first principle)
+    let config_path = ctx.managed_root.join("mars.toml");
+    if !config_path.exists() {
+        return Err(MarsError::Link {
+            target: target_name,
+            message: format!(
+                "mars.toml not found at {} — run `mars init` first",
+                ctx.managed_root.display()
+            ),
+        });
+    }
 
     // Warn if target isn't a well-known tool dir
     if !json

@@ -64,7 +64,7 @@ fn init_creates_agents_toml() {
         .stdout(predicate::str::contains("initialized"));
 
     let agents_dir = dir.child(".agents");
-    assert!(agents_dir.child("agents.toml").exists());
+    assert!(agents_dir.child("mars.toml").exists());
     assert!(agents_dir.child(".mars").exists());
     assert!(agents_dir.child(".gitignore").exists());
 }
@@ -125,7 +125,7 @@ fn add_local_source_and_sync() {
     );
 
     // Verify lock file exists
-    assert!(agents_dir.child("agents.lock").exists());
+    assert!(agents_dir.child("mars.lock").exists());
 }
 
 #[test]
@@ -160,7 +160,7 @@ fn add_second_source_preserves_first_source_items_in_lock() {
         .assert()
         .success();
 
-    let lock_content = fs::read_to_string(agents_dir.child("agents.lock").path()).unwrap();
+    let lock_content = fs::read_to_string(agents_dir.child("mars.lock").path()).unwrap();
     let lock: Value = toml::from_str(&lock_content).unwrap();
     let items = lock["items"].as_table().unwrap();
 
@@ -369,7 +369,7 @@ fn sync_diff_does_not_modify_files() {
     // Manually init so we have the dir without any sync
     fs::create_dir_all(agents_dir.child(".mars").path()).unwrap();
     fs::write(
-        agents_dir.child("agents.toml").path(),
+        agents_dir.child("mars.toml").path(),
         format!(
             "[sources.src]\npath = \"{}\"\n",
             source.display().to_string().replace('\\', "/")
@@ -661,10 +661,10 @@ fn override_writes_local_config() {
         .success()
         .stdout(predicate::str::contains("override"));
 
-    // agents.local.toml should exist
-    assert!(agents_dir.child("agents.local.toml").exists());
+    // mars.local.toml should exist
+    assert!(agents_dir.child("mars.local.toml").exists());
 
-    let content = fs::read_to_string(agents_dir.child("agents.local.toml").path()).unwrap();
+    let content = fs::read_to_string(agents_dir.child("mars.local.toml").path()).unwrap();
     assert!(content.contains("base"));
     assert!(content.contains("local-override"));
 }
@@ -887,7 +887,7 @@ fn rename_applies_path_mapping_during_sync() {
     );
     assert!(!agents_dir.child("agents").child("coder.md").exists());
 
-    let lock_content = fs::read_to_string(agents_dir.child("agents.lock").path()).unwrap();
+    let lock_content = fs::read_to_string(agents_dir.child("mars.lock").path()).unwrap();
     let lock: Value = toml::from_str(&lock_content).unwrap();
     assert!(
         lock["items"]
@@ -973,7 +973,7 @@ fn sync_errors_when_lock_is_corrupt() {
         .assert()
         .success();
 
-    fs::write(agents_dir.child("agents.lock").path(), "INVALID").unwrap();
+    fs::write(agents_dir.child("mars.lock").path(), "INVALID").unwrap();
 
     mars()
         .args(["sync", "--root", agents_dir.path().to_str().unwrap()])
@@ -1004,7 +1004,7 @@ fn repair_recovers_from_corrupt_lock() {
         .assert()
         .success();
 
-    fs::write(agents_dir.child("agents.lock").path(), "INVALID").unwrap();
+    fs::write(agents_dir.child("mars.lock").path(), "INVALID").unwrap();
 
     mars()
         .args(["repair", "--root", agents_dir.path().to_str().unwrap()])
@@ -1012,7 +1012,7 @@ fn repair_recovers_from_corrupt_lock() {
         .success()
         .stderr(predicate::str::contains("lock is corrupt, rebuilding"));
 
-    let repaired_lock = fs::read_to_string(agents_dir.child("agents.lock").path()).unwrap();
+    let repaired_lock = fs::read_to_string(agents_dir.child("mars.lock").path()).unwrap();
     let lock_value: Value = toml::from_str(&repaired_lock).unwrap();
     assert!(lock_value["items"].as_table().is_some());
 
@@ -1040,7 +1040,7 @@ fn add_nonexistent_path_does_not_pollute_config() {
         .assert()
         .failure();
 
-    let config_content = fs::read_to_string(agents_dir.child("agents.toml").path()).unwrap();
+    let config_content = fs::read_to_string(agents_dir.child("mars.toml").path()).unwrap();
     let config: Value = toml::from_str(&config_content).unwrap();
     let sources = config["sources"].as_table().unwrap();
     assert!(
