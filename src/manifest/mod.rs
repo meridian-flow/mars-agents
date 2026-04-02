@@ -32,6 +32,12 @@ pub struct PackageInfo {
 pub struct DepSpec {
     pub url: SourceUrl,
     pub version: String,
+    /// Only depend on these agents from the source.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agents: Vec<String>,
+    /// Only depend on these skills from the source.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skills: Vec<String>,
 }
 
 const MANIFEST_FILE: &str = "mars.toml";
@@ -140,6 +146,8 @@ version = "0.2.0"
                     DepSpec {
                         url: "https://github.com/org/dep1.git".into(),
                         version: ">=1.0".into(),
+                        agents: vec![],
+                        skills: vec![],
                     },
                 );
                 m
@@ -148,6 +156,24 @@ version = "0.2.0"
         let serialized = toml::to_string_pretty(&manifest).unwrap();
         let deserialized: Manifest = toml::from_str(&serialized).unwrap();
         assert_eq!(manifest, deserialized);
+    }
+
+    #[test]
+    fn parse_manifest_with_filtered_deps() {
+        let toml_str = r#"
+[package]
+name = "my-workflow"
+version = "0.1.0"
+
+[dependencies.anthropic-skills]
+url = "https://github.com/anthropics/skills"
+version = ">=0.1.0"
+skills = ["frontend-design"]
+"#;
+        let manifest: Manifest = toml::from_str(toml_str).unwrap();
+        let dep = &manifest.dependencies["anthropic-skills"];
+        assert!(dep.agents.is_empty());
+        assert_eq!(dep.skills, vec!["frontend-design"]);
     }
 
     #[test]
