@@ -283,6 +283,19 @@ pub fn execute(ctx: &MarsContext, request: &SyncRequest) -> Result<SyncReport, M
         }
     }
 
+    // Step 13c: Remove any orphan-removal actions targeting _self items.
+    // The diff engine (step 12) doesn't know about _self items, so it marks
+    // old _self lock entries as orphans. We handle _self lifecycle explicitly
+    // above (inject symlinks + explicit prune), so strip the diff engine's
+    // Remove actions for _self items to prevent double-removal.
+    sync_plan.actions.retain(|action| {
+        if let plan::PlannedAction::Remove { locked } = action {
+            locked.source.as_ref() != "_self"
+        } else {
+            true
+        }
+    });
+
     // Step 14: Frozen gate.
     if request.options.frozen {
         let has_changes = sync_plan.actions.iter().any(|a| {
