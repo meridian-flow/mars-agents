@@ -15,7 +15,7 @@ pub struct LockFile {
     /// Schema version, currently 1.
     pub version: u32,
     #[serde(default)]
-    pub sources: IndexMap<SourceName, LockedSource>,
+    pub dependencies: IndexMap<SourceName, LockedSource>,
     #[serde(default)]
     pub items: IndexMap<DestPath, LockedItem>,
 }
@@ -25,7 +25,7 @@ impl LockFile {
     pub fn empty() -> Self {
         LockFile {
             version: 1,
-            sources: IndexMap::new(),
+            dependencies: IndexMap::new(),
             items: IndexMap::new(),
         }
     }
@@ -136,12 +136,12 @@ pub fn build(
 ) -> Result<LockFile, MarsError> {
     use crate::sync::apply::ActionTaken;
 
-    let mut sources = IndexMap::new();
+    let mut dependencies = IndexMap::new();
     let mut items = IndexMap::new();
 
-    // Build source entries directly from resolved graph provenance.
+    // Build dependency entries directly from resolved graph provenance.
     for (name, node) in &graph.nodes {
-        sources.insert(name.clone(), to_locked_source(node));
+        dependencies.insert(name.clone(), to_locked_source(node));
     }
 
     // Build item entries from apply outcomes
@@ -213,12 +213,12 @@ pub fn build(
     }
 
     // Sort keys for deterministic output.
-    sources.sort_keys();
+    dependencies.sort_keys();
     items.sort_keys();
 
     Ok(LockFile {
         version: 1,
-        sources,
+        dependencies,
         items,
     })
 }
@@ -251,8 +251,8 @@ mod tests {
     use tempfile::TempDir;
 
     fn sample_lock() -> LockFile {
-        let mut sources = IndexMap::new();
-        sources.insert(
+        let mut dependencies = IndexMap::new();
+        dependencies.insert(
             "base".into(),
             LockedSource {
                 url: Some("https://github.com/org/base.git".into()),
@@ -289,7 +289,7 @@ mod tests {
 
         LockFile {
             version: 1,
-            sources,
+            dependencies,
             items,
         }
     }
@@ -299,7 +299,7 @@ mod tests {
         let toml_str = r#"
 version = 1
 
-[sources.base]
+[dependencies.base]
 url = "https://github.com/org/base.git"
 version = "v1.0.0"
 commit = "abc123"
@@ -315,7 +315,7 @@ dest_path = "agents/coder.md"
 "#;
         let lock: LockFile = toml::from_str(toml_str).unwrap();
         assert_eq!(lock.version, 1);
-        assert_eq!(lock.sources.len(), 1);
+        assert_eq!(lock.dependencies.len(), 1);
         assert_eq!(lock.items.len(), 1);
 
         let item = &lock.items["agents/coder.md"];
@@ -353,7 +353,7 @@ dest_path = "agents/coder.md"
     fn empty_lock_file() {
         let lock = LockFile::empty();
         assert_eq!(lock.version, 1);
-        assert!(lock.sources.is_empty());
+        assert!(lock.dependencies.is_empty());
         assert!(lock.items.is_empty());
 
         // Roundtrip empty
@@ -367,7 +367,7 @@ dest_path = "agents/coder.md"
         let dir = TempDir::new().unwrap();
         let lock = load(dir.path()).unwrap();
         assert_eq!(lock.version, 1);
-        assert!(lock.sources.is_empty());
+        assert!(lock.dependencies.is_empty());
         assert!(lock.items.is_empty());
     }
 
@@ -394,7 +394,7 @@ dest_path = "agents/coder.md"
         let toml_str = r#"
 version = 1
 
-[sources.local]
+[dependencies.local]
 path = "/home/dev/agents"
 
 [items."agents/helper.md"]
@@ -405,7 +405,7 @@ installed_checksum = "sha256:222"
 dest_path = "agents/helper.md"
 "#;
         let lock: LockFile = toml::from_str(toml_str).unwrap();
-        let source = &lock.sources["local"];
+        let source = &lock.dependencies["local"];
         assert!(source.url.is_none());
         assert_eq!(source.path.as_deref(), Some("/home/dev/agents"));
         assert!(source.commit.is_none());
@@ -503,18 +503,18 @@ dest_path = "agents/helper.md"
         );
         let old_lock = LockFile {
             version: 1,
-            sources: old_sources,
+            dependencies: old_sources,
             items: IndexMap::new(),
         };
 
         let new_lock = build(&graph, &applied, &old_lock).unwrap();
 
-        let base = &new_lock.sources["base"];
+        let base = &new_lock.dependencies["base"];
         assert_eq!(base.url.as_ref(), Some(&git_url));
         assert_eq!(base.version.as_deref(), Some("v1.2.3"));
         assert_eq!(base.commit.as_deref(), Some("abc123"));
 
-        let local = &new_lock.sources["local"];
+        let local = &new_lock.dependencies["local"];
         assert!(local.url.is_none());
         assert_eq!(
             local.path.as_deref(),

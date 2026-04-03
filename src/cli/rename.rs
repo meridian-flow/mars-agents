@@ -17,7 +17,7 @@ pub struct RenameArgs {
 
 /// Run `mars rename`.
 pub fn run(args: &RenameArgs, ctx: &super::MarsContext, json: bool) -> Result<i32, MarsError> {
-    let lock = crate::lock::load(&ctx.managed_root)?;
+    let lock = crate::lock::load(&ctx.project_root)?;
 
     // Validate `from` is a managed item
     let from_dest = DestPath::from(args.from.as_str());
@@ -39,7 +39,7 @@ pub fn run(args: &RenameArgs, ctx: &super::MarsContext, json: bool) -> Result<i3
         options: SyncOptions::default(),
     };
 
-    let report = crate::sync::execute(&ctx.managed_root, &request)?;
+    let report = crate::sync::execute(&ctx.project_root, &ctx.managed_root, &request)?;
 
     if !json {
         output::print_info(&format!("renamed {} → {}", args.from, args.to));

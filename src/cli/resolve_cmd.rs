@@ -17,7 +17,7 @@ pub struct ResolveArgs {
 
 /// Run `mars resolve`.
 pub fn run(args: &ResolveArgs, ctx: &super::MarsContext, json: bool) -> Result<i32, MarsError> {
-    let mut lock = crate::lock::load(&ctx.managed_root)?;
+    let mut lock = crate::lock::load(&ctx.project_root)?;
     let mut resolved_files = Vec::new();
     let mut still_conflicted = Vec::new();
 
@@ -61,7 +61,7 @@ pub fn run(args: &ResolveArgs, ctx: &super::MarsContext, json: bool) -> Result<i
 
     // Write updated lock
     if !resolved_files.is_empty() {
-        crate::lock::write(&ctx.managed_root, &lock)?;
+        crate::lock::write(&ctx.project_root, &lock)?;
     }
 
     if json {

@@ -6,7 +6,6 @@ pub mod frontmatter;
 pub mod fs;
 pub mod hash;
 pub mod lock;
-pub mod manifest;
 pub mod merge;
 pub mod resolve;
 pub mod source;

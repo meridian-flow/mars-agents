@@ -17,15 +17,15 @@ pub struct RemoveArgs {
 pub fn run(args: &RemoveArgs, ctx: &super::MarsContext, json: bool) -> Result<i32, MarsError> {
     let request = SyncRequest {
         resolution: ResolutionMode::Normal,
-        mutation: Some(ConfigMutation::RemoveSource {
+        mutation: Some(ConfigMutation::RemoveDependency {
             name: SourceName::from(args.source.as_str()),
         }),
         options: SyncOptions::default(),
     };
-    let report = crate::sync::execute(&ctx.managed_root, &request)?;
+    let report = crate::sync::execute(&ctx.project_root, &ctx.managed_root, &request)?;
 
     if !json {
-        output::print_info(&format!("removed source `{}`", args.source));
+        output::print_info(&format!("removed dependency `{}`", args.source));
     }
 
     output::print_sync_report(&report, json);

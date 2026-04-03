@@ -14,7 +14,7 @@ pub fn run(_args: &DoctorArgs, ctx: &super::MarsContext, json: bool) -> Result<i
     let mut issues = Vec::new();
 
     // Check config is valid
-    match crate::config::load(&ctx.managed_root) {
+    match crate::config::load(&ctx.project_root) {
         Ok(_) => {}
         Err(e) => {
             issues.push(format!("config error: {e}"));
@@ -22,7 +22,7 @@ pub fn run(_args: &DoctorArgs, ctx: &super::MarsContext, json: bool) -> Result<i
     }
 
     // Check lock file
-    let lock = match crate::lock::load(&ctx.managed_root) {
+    let lock = match crate::lock::load(&ctx.project_root) {
         Ok(l) => l,
         Err(e) => {
             issues.push(format!("lock file error: {e}"));
@@ -67,12 +67,12 @@ pub fn run(_args: &DoctorArgs, ctx: &super::MarsContext, json: bool) -> Result<i
     }
 
     // Check agent→skill references
-    if let Ok(config) = crate::config::load(&ctx.managed_root) {
-        let local = crate::config::load_local(&ctx.managed_root).unwrap_or_default();
-        if let Ok(effective) = crate::config::merge_with_root(config, local, &ctx.managed_root) {
+    if let Ok(config) = crate::config::load(&ctx.project_root) {
+        let local = crate::config::load_local(&ctx.project_root).unwrap_or_default();
+        if let Ok(effective) = crate::config::merge_with_root(config, local, &ctx.project_root) {
             // Check that all sources in config have corresponding lock entries
             for source_name in effective.sources.keys() {
-                if !lock.sources.contains_key(source_name) {
+                if !lock.dependencies.contains_key(source_name) {
                     issues.push(format!(
                         "source `{source_name}` is in config but not in lock — run `mars sync`"
                     ));
@@ -145,7 +145,7 @@ pub fn run(_args: &DoctorArgs, ctx: &super::MarsContext, json: bool) -> Result<i
     }
 
     // Check link health
-    if let Ok(config) = crate::config::load(&ctx.managed_root) {
+    if let Ok(config) = crate::config::load(&ctx.project_root) {
         for link_target in &config.settings.links {
             check_link_health(ctx, link_target, &mut issues);
         }

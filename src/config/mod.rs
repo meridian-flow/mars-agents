@@ -7,21 +7,30 @@ use crate::error::{ConfigError, MarsError};
 use crate::types::{ItemName, RenameMap, SourceId, SourceName, SourceUrl};
 
 /// Top-level mars.toml configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct Config {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package: Option<PackageInfo>,
     #[serde(default)]
-    pub sources: IndexMap<SourceName, SourceEntry>,
+    pub dependencies: IndexMap<SourceName, DependencyEntry>,
     #[serde(default)]
     pub settings: Settings,
 }
 
-/// User-declared source entry in mars.toml.
-///
-/// Sources are either git URLs (versioned, fetched via source adapters) or local paths
-/// (unversioned, always syncs current state). Uses `url` XOR `path` to
-/// determine type — validation happens in `merge()`.
+/// Package metadata.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct SourceEntry {
+pub struct PackageInfo {
+    pub name: String,
+    pub version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+/// Unified dependency specification — replaces both old DepSpec and SourceEntry.
+/// Used in [dependencies] for both "what to install locally" (consumer)
+/// and "what downstream consumers inherit" (package manifest).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DependencyEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<SourceUrl>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -30,6 +39,17 @@ pub struct SourceEntry {
     pub version: Option<String>,
     #[serde(flatten)]
     pub filter: FilterConfig,
+}
+
+/// Source-manifest view extracted from mars.toml.
+///
+/// In source repositories, `mars.toml` may include `[package]` +
+/// `[dependencies]` only, or coexist with consumer sections.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Manifest {
+    pub package: PackageInfo,
+    #[serde(default)]
+    pub dependencies: IndexMap<String, DependencyEntry>,
 }
 
 /// Shared include/exclude/rename filter configuration for a source.
@@ -64,6 +84,9 @@ pub struct OverrideEntry {
 /// Global settings — extensible via additional fields.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct Settings {
+    /// Custom managed output directory (e.g. ".claude"). Default: ".agents".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub managed_root: Option<String>,
     /// Directories to symlink agents/ and skills/ into (e.g. [".claude"]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub links: Vec<String>,
@@ -136,6 +159,37 @@ pub fn load(root: &Path) -> Result<Config, MarsError> {
     Ok(config)
 }
 
+/// Load source manifest data from mars.toml in a source tree root.
+///
+/// Returns `None` when mars.toml is absent or when it has no `[package]`
+/// section (consumer config only).
+pub fn load_manifest(source_root: &Path) -> Result<Option<Manifest>, MarsError> {
+    let path = source_root.join(CONFIG_FILE);
+    match std::fs::read_to_string(&path) {
+        Ok(content) => {
+            let parsed: Config =
+                toml::from_str(&content).map_err(|e| crate::error::ConfigError::Invalid {
+                    message: format!("failed to parse {}: {e}", path.display()),
+                })?;
+            let Some(package) = parsed.package else {
+                return Ok(None);
+            };
+            // For manifest purposes, filter to only deps with url+version (package deps)
+            let deps: IndexMap<String, DependencyEntry> = parsed
+                .dependencies
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect();
+            Ok(Some(Manifest {
+                package,
+                dependencies: deps,
+            }))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(MarsError::Io(e)),
+    }
+}
+
 /// Load mars.local.toml (returns Default if absent).
 pub fn load_local(root: &Path) -> Result<LocalConfig, MarsError> {
     let path = root.join(LOCAL_CONFIG_FILE);
@@ -167,7 +221,15 @@ pub fn merge_with_root(
 ) -> Result<EffectiveConfig, MarsError> {
     let mut sources = IndexMap::new();
 
-    for (name, entry) in &config.sources {
+    for (name, entry) in &config.dependencies {
+        // Reject reserved name
+        if name.as_ref() == "_self" {
+            return Err(ConfigError::Invalid {
+                message: "dependency name `_self` is reserved for local package items".into(),
+            }
+            .into());
+        }
+
         // Validate url XOR path
         let base_spec = match (&entry.url, &entry.path) {
             (Some(url), None) => SourceSpec::Git(GitSpec {
@@ -240,10 +302,12 @@ pub fn merge_with_root(
         );
     }
 
-    // Warn if override references a source not in config
+    // Warn if override references a dependency not in config
     for override_name in local.overrides.keys() {
-        if !config.sources.contains_key(override_name) {
-            eprintln!("warning: override `{override_name}` references a source not in mars.toml");
+        if !config.dependencies.contains_key(override_name) {
+            eprintln!(
+                "warning: override `{override_name}` references a dependency not in mars.toml"
+            );
         }
     }
 
@@ -271,8 +335,8 @@ fn source_id_for_spec(root: &Path, spec: &SourceSpec) -> SourceId {
 }
 
 fn migrate_legacy_source_urls(config: &mut Config) {
-    for source in config.sources.values_mut() {
-        if let Some(url) = source.url.as_mut() {
+    for dep in config.dependencies.values_mut() {
+        if let Some(url) = dep.url.as_mut() {
             let raw = url.as_str();
             if should_upgrade_legacy_git_url(raw) {
                 *url = SourceUrl::from(format!("https://{raw}"));
@@ -309,15 +373,15 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn parse_git_source() {
+    fn parse_git_dependency() {
         let toml_str = r#"
-[sources.base]
+[dependencies.base]
 url = "https://github.com/org/base.git"
 version = "v1.0"
 "#;
         let config: Config = toml::from_str(toml_str).unwrap();
-        assert_eq!(config.sources.len(), 1);
-        let entry = &config.sources["base"];
+        assert_eq!(config.dependencies.len(), 1);
+        let entry = &config.dependencies["base"];
         assert_eq!(
             entry.url.as_deref(),
             Some("https://github.com/org/base.git")
@@ -327,39 +391,59 @@ version = "v1.0"
     }
 
     #[test]
-    fn parse_path_source() {
+    fn parse_path_dependency() {
         let toml_str = r#"
-[sources.local]
+[dependencies.local]
 path = "../my-agents"
 "#;
         let config: Config = toml::from_str(toml_str).unwrap();
-        let entry = &config.sources["local"];
+        let entry = &config.dependencies["local"];
         assert!(entry.url.is_none());
         assert_eq!(entry.path.as_deref(), Some(Path::new("../my-agents")));
     }
 
     #[test]
-    fn parse_mixed_sources() {
+    fn parse_mixed_dependencies() {
         let toml_str = r#"
-[sources.remote]
+[dependencies.remote]
 url = "https://github.com/org/remote.git"
 version = "v2.0"
 agents = ["coder", "reviewer"]
 
-[sources.local]
+[dependencies.local]
 path = "/home/dev/agents"
 exclude = ["experimental"]
 "#;
         let config: Config = toml::from_str(toml_str).unwrap();
-        assert_eq!(config.sources.len(), 2);
-        assert!(config.sources.contains_key("remote"));
-        assert!(config.sources.contains_key("local"));
+        assert_eq!(config.dependencies.len(), 2);
+        assert!(config.dependencies.contains_key("remote"));
+        assert!(config.dependencies.contains_key("local"));
+    }
+
+    #[test]
+    fn parse_package_and_dependencies_coexist() {
+        let toml_str = r#"
+[package]
+name = "my-agents"
+version = "0.1.0"
+
+[dependencies.base]
+url = "https://github.com/org/base.git"
+version = ">=1.0.0"
+
+[dependencies.local]
+path = "../local-agents"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert!(config.package.is_some());
+        assert!(config.dependencies.contains_key("base"));
+        assert!(config.dependencies.contains_key("local"));
     }
 
     #[test]
     fn parse_include_filter() {
         let toml_str = r#"
-[sources.base]
+[dependencies.base]
 url = "https://github.com/org/base.git"
 agents = ["coder"]
 skills = ["review"]
@@ -380,7 +464,7 @@ skills = ["review"]
     #[test]
     fn parse_exclude_filter() {
         let toml_str = r#"
-[sources.base]
+[dependencies.base]
 url = "https://github.com/org/base.git"
 exclude = ["experimental", "deprecated"]
 "#;
@@ -399,7 +483,7 @@ exclude = ["experimental", "deprecated"]
     #[test]
     fn error_on_both_include_and_exclude() {
         let toml_str = r#"
-[sources.bad]
+[dependencies.bad]
 url = "https://github.com/org/bad.git"
 agents = ["coder"]
 exclude = ["reviewer"]
@@ -411,14 +495,14 @@ exclude = ["reviewer"]
         let err = result.unwrap_err().to_string();
         assert!(
             err.contains("bad"),
-            "error should mention source name: {err}"
+            "error should mention dependency name: {err}"
         );
     }
 
     #[test]
     fn error_on_neither_url_nor_path() {
         let toml_str = r#"
-[sources.empty]
+[dependencies.empty]
 version = "v1.0"
 "#;
         let config: Config = toml::from_str(toml_str).unwrap();
@@ -435,7 +519,7 @@ version = "v1.0"
     #[test]
     fn error_on_both_url_and_path() {
         let toml_str = r#"
-[sources.both]
+[dependencies.both]
 url = "https://github.com/org/repo.git"
 path = "/local/path"
 "#;
@@ -450,11 +534,11 @@ path = "/local/path"
     #[test]
     fn roundtrip_config() {
         let config = Config {
-            sources: {
+            dependencies: {
                 let mut m = IndexMap::new();
                 m.insert(
                     "base".into(),
-                    SourceEntry {
+                    DependencyEntry {
                         url: Some("https://github.com/org/base.git".into()),
                         path: None,
                         version: Some("v1.0".into()),
@@ -468,7 +552,7 @@ path = "/local/path"
                 );
                 m.insert(
                     "local".into(),
-                    SourceEntry {
+                    DependencyEntry {
                         url: None,
                         path: Some(PathBuf::from("../my-agents")),
                         version: None,
@@ -478,6 +562,7 @@ path = "/local/path"
                 m
             },
             settings: Settings::default(),
+            ..Config::default()
         };
         let serialized = toml::to_string_pretty(&config).unwrap();
         let deserialized: Config = toml::from_str(&serialized).unwrap();
@@ -488,27 +573,27 @@ path = "/local/path"
     fn load_from_disk() {
         let dir = TempDir::new().unwrap();
         let toml_str = r#"
-[sources.base]
+[dependencies.base]
 url = "https://github.com/org/base.git"
 version = "v1.0"
 "#;
         std::fs::write(dir.path().join("mars.toml"), toml_str).unwrap();
         let config = load(dir.path()).unwrap();
-        assert_eq!(config.sources.len(), 1);
+        assert_eq!(config.dependencies.len(), 1);
     }
 
     #[test]
     fn load_migrates_legacy_bare_domain_url() {
         let dir = TempDir::new().unwrap();
         let toml_str = r#"
-[sources.base]
+[dependencies.base]
 url = "github.com/org/base"
 "#;
         std::fs::write(dir.path().join("mars.toml"), toml_str).unwrap();
 
         let config = load(dir.path()).unwrap();
         assert_eq!(
-            config.sources["base"].url.as_deref(),
+            config.dependencies["base"].url.as_deref(),
             Some("https://github.com/org/base")
         );
     }
@@ -517,14 +602,14 @@ url = "github.com/org/base"
     fn load_does_not_migrate_ssh_url() {
         let dir = TempDir::new().unwrap();
         let toml_str = r#"
-[sources.base]
+[dependencies.base]
 url = "git@github.com:org/base.git"
 "#;
         std::fs::write(dir.path().join("mars.toml"), toml_str).unwrap();
 
         let config = load(dir.path()).unwrap();
         assert_eq!(
-            config.sources["base"].url.as_deref(),
+            config.dependencies["base"].url.as_deref(),
             Some("git@github.com:org/base.git")
         );
     }
@@ -536,6 +621,45 @@ url = "git@github.com:org/base.git"
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("not found"), "should be NotFound: {err}");
+    }
+
+    #[test]
+    fn load_manifest_returns_none_without_package() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("mars.toml"),
+            r#"
+[dependencies.base]
+url = "https://github.com/org/base.git"
+"#,
+        )
+        .unwrap();
+
+        let manifest = load_manifest(dir.path()).unwrap();
+        assert!(manifest.is_none());
+    }
+
+    #[test]
+    fn load_manifest_returns_package_and_dependencies() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("mars.toml"),
+            r#"
+[package]
+name = "pkg"
+version = "1.2.3"
+
+[dependencies.base]
+url = "https://github.com/org/base.git"
+version = ">=1.0.0"
+"#,
+        )
+        .unwrap();
+
+        let manifest = load_manifest(dir.path()).unwrap().unwrap();
+        assert_eq!(manifest.package.name, "pkg");
+        assert_eq!(manifest.package.version, "1.2.3");
+        assert!(manifest.dependencies.contains_key("base"));
     }
 
     #[test]
@@ -564,11 +688,11 @@ path = "/home/dev/local-base"
     #[test]
     fn merge_with_empty_local() {
         let config = Config {
-            sources: {
+            dependencies: {
                 let mut m = IndexMap::new();
                 m.insert(
                     "base".into(),
-                    SourceEntry {
+                    DependencyEntry {
                         url: Some("https://github.com/org/base.git".into()),
                         path: None,
                         version: Some("v1.0".into()),
@@ -578,6 +702,7 @@ path = "/home/dev/local-base"
                 m
             },
             settings: Settings::default(),
+            ..Config::default()
         };
         let local = LocalConfig::default();
         let effective = merge(config, local).unwrap();
@@ -597,11 +722,11 @@ path = "/home/dev/local-base"
     #[test]
     fn merge_override_replaces_with_path() {
         let config = Config {
-            sources: {
+            dependencies: {
                 let mut m = IndexMap::new();
                 m.insert(
                     "base".into(),
-                    SourceEntry {
+                    DependencyEntry {
                         url: Some("https://github.com/org/base.git".into()),
                         path: None,
                         version: Some("v1.0".into()),
@@ -611,6 +736,7 @@ path = "/home/dev/local-base"
                 m
             },
             settings: Settings::default(),
+            ..Config::default()
         };
         let local = LocalConfig {
             overrides: {
@@ -628,13 +754,11 @@ path = "/home/dev/local-base"
         let source = &effective.sources["base"];
         assert!(source.is_overridden);
 
-        // Spec should be the override path
         match &source.spec {
             SourceSpec::Path(p) => assert_eq!(p, &PathBuf::from("/home/dev/local-base")),
             SourceSpec::Git(_) => panic!("expected Path override"),
         }
 
-        // Original git should be preserved
         let orig = source.original_git.as_ref().unwrap();
         assert_eq!(orig.url, "https://github.com/org/base.git");
         assert_eq!(orig.version.as_deref(), Some("v1.0"));
@@ -643,11 +767,11 @@ path = "/home/dev/local-base"
     #[test]
     fn merge_all_filter_mode() {
         let config = Config {
-            sources: {
+            dependencies: {
                 let mut m = IndexMap::new();
                 m.insert(
                     "base".into(),
-                    SourceEntry {
+                    DependencyEntry {
                         url: Some("https://github.com/org/base.git".into()),
                         path: None,
                         version: None,
@@ -657,6 +781,7 @@ path = "/home/dev/local-base"
                 m
             },
             settings: Settings::default(),
+            ..Config::default()
         };
         let effective = merge(config, LocalConfig::default()).unwrap();
         assert!(matches!(effective.sources["base"].filter, FilterMode::All));
@@ -666,11 +791,11 @@ path = "/home/dev/local-base"
     fn save_and_reload() {
         let dir = TempDir::new().unwrap();
         let config = Config {
-            sources: {
+            dependencies: {
                 let mut m = IndexMap::new();
                 m.insert(
                     "base".into(),
-                    SourceEntry {
+                    DependencyEntry {
                         url: Some("https://github.com/org/base.git".into()),
                         path: None,
                         version: Some("v2.0".into()),
@@ -680,6 +805,7 @@ path = "/home/dev/local-base"
                 m
             },
             settings: Settings::default(),
+            ..Config::default()
         };
         save(dir.path(), &config).unwrap();
         let reloaded = load(dir.path()).unwrap();
@@ -689,15 +815,49 @@ path = "/home/dev/local-base"
     #[test]
     fn rename_map_preserved() {
         let toml_str = r#"
-[sources.base]
+[dependencies.base]
 url = "https://github.com/org/base.git"
 
-[sources.base.rename]
+[dependencies.base.rename]
 old-name = "new-name"
 "#;
         let config: Config = toml::from_str(toml_str).unwrap();
         let effective = merge(config, LocalConfig::default()).unwrap();
         let source = &effective.sources["base"];
         assert_eq!(source.rename.get("old-name").unwrap(), "new-name");
+    }
+
+    #[test]
+    fn self_dependency_name_rejected() {
+        let toml_str = r#"
+[dependencies._self]
+url = "https://github.com/org/base.git"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        let local = LocalConfig::default();
+        let result = merge(config, local);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("_self") && err.contains("reserved"),
+            "should reject _self: {err}"
+        );
+    }
+
+    #[test]
+    fn managed_root_setting_roundtrip() {
+        let config = Config {
+            settings: Settings {
+                managed_root: Some(".claude".into()),
+                links: vec![],
+            },
+            ..Config::default()
+        };
+        let serialized = toml::to_string_pretty(&config).unwrap();
+        let deserialized: Config = toml::from_str(&serialized).unwrap();
+        assert_eq!(
+            deserialized.settings.managed_root.as_deref(),
+            Some(".claude")
+        );
     }
 }

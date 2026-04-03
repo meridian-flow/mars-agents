@@ -15,10 +15,9 @@ use std::path::Path;
 use indexmap::IndexMap;
 use semver::{Version, VersionReq};
 
-use crate::config::{EffectiveConfig, GitSpec, SourceSpec};
+use crate::config::{EffectiveConfig, GitSpec, Manifest, SourceSpec};
 use crate::error::{MarsError, ResolutionError};
 use crate::lock::LockFile;
-use crate::manifest::Manifest;
 use crate::source::{AvailableVersion, ResolvedRef};
 use crate::types::{SourceId, SourceName, SourceUrl};
 
@@ -253,13 +252,17 @@ pub fn resolve(
 
                 // Only add as pending if not already resolved
                 if !nodes.contains_key(dep_name.as_str()) {
+                    let dep_url = match &dep_spec.url {
+                        Some(u) => u.clone(),
+                        None => continue, // skip path-only manifest deps (shouldn't happen in practice)
+                    };
                     let dep_constraint = parse_version_constraint(dep_spec.version.as_deref());
                     let dep_name_typed = SourceName::from(dep_name.clone());
                     pending.push_back(PendingSource {
                         name: dep_name_typed,
-                        source_id: SourceId::git(dep_spec.url.clone()),
+                        source_id: SourceId::git(dep_url.clone()),
                         spec: SourceSpec::Git(GitSpec {
-                            url: dep_spec.url.clone(),
+                            url: dep_url,
                             version: dep_spec.version.clone(),
                         }),
                         constraint: dep_constraint,
@@ -365,7 +368,7 @@ fn resolve_git_source(
         .iter()
         .any(|(_, c)| matches!(c, VersionConstraint::Latest));
 
-    let locked_source = locked.and_then(|lf| lf.sources.get(name));
+    let locked_source = locked.and_then(|lf| lf.dependencies.get(name));
     let locked_commit = locked_source.and_then(|ls| ls.commit.as_deref());
 
     let upgrade_maximize = options.maximize
@@ -638,9 +641,9 @@ fn topological_sort(
 mod tests {
     use super::*;
     use crate::config::{
-        EffectiveConfig, EffectiveSource, FilterMode, GitSpec, Settings, SourceSpec,
+        DependencyEntry, EffectiveConfig, EffectiveSource, FilterConfig, FilterMode, GitSpec,
+        Manifest, PackageInfo, Settings, SourceSpec,
     };
-    use crate::manifest::{DepSpec, Manifest, PackageInfo};
     use crate::types::{RenameMap, SourceId, SourceUrl};
     use indexmap::IndexMap;
     use std::cell::RefCell;
@@ -836,11 +839,11 @@ mod tests {
         for (dep_name, dep_url, dep_ver) in deps {
             dependencies.insert(
                 dep_name.to_string(),
-                DepSpec {
-                    url: SourceUrl::from(dep_url),
+                DependencyEntry {
+                    url: Some(SourceUrl::from(dep_url)),
+                    path: None,
                     version: Some(dep_ver.to_string()),
-                    agents: vec![],
-                    skills: vec![],
+                    filter: FilterConfig::default(),
                 },
             );
         }
@@ -1302,7 +1305,7 @@ mod tests {
 
         // Lock file says v1.1.0
         let mut lock = LockFile::empty();
-        lock.sources.insert(
+        lock.dependencies.insert(
             "a".into(),
             crate::lock::LockedSource {
                 url: Some("https://example.com/a.git".into()),
@@ -1340,7 +1343,7 @@ mod tests {
 
         // Lock file says v1.0.0 — no longer satisfies ^2.0
         let mut lock = LockFile::empty();
-        lock.sources.insert(
+        lock.dependencies.insert(
             "a".into(),
             crate::lock::LockedSource {
                 url: Some("https://example.com/a.git".into()),
@@ -1374,7 +1377,7 @@ mod tests {
 
         let locked_commit = "locked-sha-123";
         let mut lock = LockFile::empty();
-        lock.sources.insert(
+        lock.dependencies.insert(
             "a".into(),
             crate::lock::LockedSource {
                 url: Some("https://example.com/a.git".into()),
@@ -1415,7 +1418,7 @@ mod tests {
         provider.mark_unreachable_preferred_commit(unreachable_commit);
 
         let mut lock = LockFile::empty();
-        lock.sources.insert(
+        lock.dependencies.insert(
             "a".into(),
             crate::lock::LockedSource {
                 url: Some("https://example.com/a.git".into()),
@@ -1460,7 +1463,7 @@ mod tests {
         provider.mark_unreachable_preferred_commit(unreachable_commit);
 
         let mut lock = LockFile::empty();
-        lock.sources.insert(
+        lock.dependencies.insert(
             "a".into(),
             crate::lock::LockedSource {
                 url: Some("https://example.com/a.git".into()),
@@ -1508,7 +1511,7 @@ mod tests {
         provider.mark_unreachable_preferred_commit(unreachable_commit);
 
         let mut lock = LockFile::empty();
-        lock.sources.insert(
+        lock.dependencies.insert(
             "a".into(),
             crate::lock::LockedSource {
                 url: Some("https://example.com/a.git".into()),
@@ -1740,7 +1743,7 @@ mod tests {
 
         let locked_commit = "locked-untagged-sha";
         let mut lock = LockFile::empty();
-        lock.sources.insert(
+        lock.dependencies.insert(
             "a".into(),
             crate::lock::LockedSource {
                 url: Some("https://example.com/a.git".into()),
@@ -1777,7 +1780,7 @@ mod tests {
         provider.mark_unreachable_preferred_commit(unreachable_commit);
 
         let mut lock = LockFile::empty();
-        lock.sources.insert(
+        lock.dependencies.insert(
             "a".into(),
             crate::lock::LockedSource {
                 url: Some("https://example.com/a.git".into()),
@@ -1814,7 +1817,7 @@ mod tests {
         provider.mark_unreachable_preferred_commit(unreachable_commit);
 
         let mut lock = LockFile::empty();
-        lock.sources.insert(
+        lock.dependencies.insert(
             "a".into(),
             crate::lock::LockedSource {
                 url: Some("https://example.com/a.git".into()),

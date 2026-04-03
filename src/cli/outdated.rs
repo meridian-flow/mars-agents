@@ -22,26 +22,26 @@ struct OutdatedEntry {
 
 /// Run `mars outdated`.
 pub fn run(_args: &OutdatedArgs, ctx: &super::MarsContext, json: bool) -> Result<i32, MarsError> {
-    let lock = crate::lock::load(&ctx.managed_root)?;
-    let config = crate::config::load(&ctx.managed_root)?;
+    let lock = crate::lock::load(&ctx.project_root)?;
+    let config = crate::config::load(&ctx.project_root)?;
     let cache = crate::source::GlobalCache::new()?;
 
     let mut entries = Vec::new();
 
-    for (name, source_entry) in &config.sources {
-        // Only check git sources with versions
-        let url = match &source_entry.url {
+    for (name, dep_entry) in &config.dependencies {
+        // Only check git dependencies with versions
+        let url = match &dep_entry.url {
             Some(u) => u,
-            None => continue, // local path sources have no version
+            None => continue, // local path deps have no version
         };
 
         let locked_version = lock
-            .sources
+            .dependencies
             .get(name)
             .and_then(|s| s.version.clone())
             .unwrap_or_else(|| "-".to_string());
 
-        let constraint = source_entry
+        let constraint = dep_entry
             .version
             .clone()
             .unwrap_or_else(|| "latest".to_string());
@@ -64,7 +64,7 @@ pub fn run(_args: &OutdatedArgs, ctx: &super::MarsContext, json: bool) -> Result
                 })
                 .unwrap_or_else(|_| "-".to_string());
             let locked_commit = lock
-                .sources
+                .dependencies
                 .get(name)
                 .and_then(|s| s.commit.as_ref().map(|c| c.to_string()))
                 .unwrap_or_else(|| "-".to_string());
@@ -92,7 +92,7 @@ pub fn run(_args: &OutdatedArgs, ctx: &super::MarsContext, json: bool) -> Result
 
         // Find latest version matching current constraint
         let parsed_constraint =
-            crate::resolve::parse_version_constraint(source_entry.version.as_deref());
+            crate::resolve::parse_version_constraint(dep_entry.version.as_deref());
         let updateable = match &parsed_constraint {
             crate::resolve::VersionConstraint::Semver(req) => versions
                 .iter()
@@ -124,7 +124,7 @@ pub fn run(_args: &OutdatedArgs, ctx: &super::MarsContext, json: bool) -> Result
 
 fn print_outdated_table(entries: &[OutdatedEntry]) {
     if entries.is_empty() {
-        output::print_info("no git sources to check");
+        output::print_info("no git dependencies to check");
         return;
     }
 

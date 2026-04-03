@@ -1,6 +1,6 @@
 //! `mars add <source>` — add or update a source, then sync.
 
-use crate::config::{FilterConfig, SourceEntry};
+use crate::config::{DependencyEntry, FilterConfig};
 use crate::error::{ConfigError, MarsError};
 use crate::source::parse;
 use crate::sync::{ConfigMutation, ResolutionMode, SyncOptions, SyncRequest};
@@ -27,19 +27,19 @@ pub struct AddArgs {
     pub exclude: Vec<String>,
 }
 
-/// Parsed source specifier.
-struct ParsedSource {
+/// Parsed dependency specifier.
+struct ParsedDependency {
     name: SourceName,
-    entry: SourceEntry,
+    entry: DependencyEntry,
 }
 
 /// Run `mars add`.
 pub fn run(args: &AddArgs, ctx: &super::MarsContext, json: bool) -> Result<i32, MarsError> {
-    // Parse source specifier
-    let parsed = parse_source_specifier(&args.source)?;
+    // Parse dependency specifier
+    let parsed = parse_dependency_specifier(&args.source)?;
 
-    // Build SourceEntry with filters
-    let entry = SourceEntry {
+    // Build DependencyEntry with filters
+    let entry = DependencyEntry {
         url: parsed.entry.url,
         path: parsed.entry.path,
         version: parsed.entry.version,
@@ -80,28 +80,28 @@ pub fn run(args: &AddArgs, ctx: &super::MarsContext, json: bool) -> Result<i32, 
 
     let request = SyncRequest {
         resolution: ResolutionMode::Normal,
-        mutation: Some(ConfigMutation::UpsertSource {
+        mutation: Some(ConfigMutation::UpsertDependency {
             name: parsed.name.clone(),
             entry,
         }),
         options: SyncOptions::default(),
     };
 
-    // Check if source already exists before executing (for accurate messaging).
-    let already_exists = crate::config::load(&ctx.managed_root)
-        .map(|c| c.sources.contains_key(&parsed.name))
+    // Check if dependency already exists before executing (for accurate messaging).
+    let already_exists = crate::config::load(&ctx.project_root)
+        .map(|c| c.dependencies.contains_key(&parsed.name))
         .unwrap_or(false);
 
-    let report = crate::sync::execute(&ctx.managed_root, &request)?;
+    let report = crate::sync::execute(&ctx.project_root, &ctx.managed_root, &request)?;
 
     if !json {
         if already_exists {
             output::print_warn(&format!(
-                "source `{}` already exists — updated",
+                "dependency `{}` already exists — updated",
                 parsed.name
             ));
         } else {
-            output::print_info(&format!("added source `{}`", parsed.name));
+            output::print_info(&format!("added dependency `{}`", parsed.name));
         }
     }
 
@@ -110,7 +110,7 @@ pub fn run(args: &AddArgs, ctx: &super::MarsContext, json: bool) -> Result<i32, 
     if report.has_conflicts() { Ok(1) } else { Ok(0) }
 }
 
-/// Parse a source specifier string into a name + SourceEntry.
+/// Parse a dependency specifier string into a name + DependencyEntry.
 ///
 /// Formats:
 /// - `owner/repo` → GitHub shorthand (no `.` in first segment, exactly one `/`)
@@ -118,16 +118,16 @@ pub fn run(args: &AddArgs, ctx: &super::MarsContext, json: bool) -> Result<i32, 
 /// - `github.com/owner/repo` → full git URL
 /// - `https://github.com/owner/repo.git` → full git URL
 /// - `./path` or `../path` or `/absolute` → local path
-fn parse_source_specifier(spec: &str) -> Result<ParsedSource, MarsError> {
+fn parse_dependency_specifier(spec: &str) -> Result<ParsedDependency, MarsError> {
     let parsed = parse::parse(spec).map_err(|e| {
         MarsError::Config(ConfigError::Invalid {
             message: e.to_string(),
         })
     })?;
 
-    Ok(ParsedSource {
+    Ok(ParsedDependency {
         name: SourceName::from(parsed.name),
-        entry: SourceEntry {
+        entry: DependencyEntry {
             url: parsed.url,
             path: parsed.path,
             version: parsed.version,
@@ -143,7 +143,7 @@ mod tests {
 
     #[test]
     fn parse_github_shorthand() {
-        let parsed = parse_source_specifier("haowjy/meridian-base").unwrap();
+        let parsed = parse_dependency_specifier("haowjy/meridian-base").unwrap();
         assert_eq!(parsed.name, "meridian-base");
         assert_eq!(
             parsed.entry.url.as_deref(),
@@ -155,7 +155,7 @@ mod tests {
 
     #[test]
     fn parse_github_shorthand_with_version() {
-        let parsed = parse_source_specifier("haowjy/meridian-base@v0.5.0").unwrap();
+        let parsed = parse_dependency_specifier("haowjy/meridian-base@v0.5.0").unwrap();
         assert_eq!(parsed.name, "meridian-base");
         assert_eq!(
             parsed.entry.url.as_deref(),
@@ -166,7 +166,8 @@ mod tests {
 
     #[test]
     fn parse_full_url() {
-        let parsed = parse_source_specifier("github.com/haowjy/meridian-dev-workflow@v2").unwrap();
+        let parsed =
+            parse_dependency_specifier("github.com/haowjy/meridian-dev-workflow@v2").unwrap();
         assert_eq!(parsed.name, "meridian-dev-workflow");
         assert_eq!(
             parsed.entry.url.as_deref(),
@@ -177,7 +178,8 @@ mod tests {
 
     #[test]
     fn parse_https_url() {
-        let parsed = parse_source_specifier("https://github.com/someone/cool-agents.git").unwrap();
+        let parsed =
+            parse_dependency_specifier("https://github.com/someone/cool-agents.git").unwrap();
         assert_eq!(parsed.name, "cool-agents");
         assert_eq!(
             parsed.entry.url.as_deref(),
@@ -187,7 +189,7 @@ mod tests {
 
     #[test]
     fn parse_ssh_url() {
-        let parsed = parse_source_specifier("git@github.com:someone/cool-agents.git").unwrap();
+        let parsed = parse_dependency_specifier("git@github.com:someone/cool-agents.git").unwrap();
         assert_eq!(parsed.name, "cool-agents");
         assert_eq!(
             parsed.entry.url.as_deref(),
@@ -198,7 +200,8 @@ mod tests {
 
     #[test]
     fn parse_ssh_url_keeps_at_suffix_in_path() {
-        let parsed = parse_source_specifier("git@github.com:someone/cool-agents.git@v2").unwrap();
+        let parsed =
+            parse_dependency_specifier("git@github.com:someone/cool-agents.git@v2").unwrap();
         assert_eq!(parsed.name, "cool-agents.git@v2");
         assert_eq!(
             parsed.entry.url.as_deref(),
@@ -209,7 +212,7 @@ mod tests {
 
     #[test]
     fn parse_local_path_relative() {
-        let parsed = parse_source_specifier("./my-agents").unwrap();
+        let parsed = parse_dependency_specifier("./my-agents").unwrap();
         assert_eq!(parsed.name, "my-agents");
         assert!(parsed.entry.url.is_none());
         assert_eq!(parsed.entry.path.as_deref(), Some(Path::new("./my-agents")));
@@ -217,7 +220,7 @@ mod tests {
 
     #[test]
     fn parse_local_path_parent() {
-        let parsed = parse_source_specifier("../meridian-dev-workflow").unwrap();
+        let parsed = parse_dependency_specifier("../meridian-dev-workflow").unwrap();
         assert_eq!(parsed.name, "meridian-dev-workflow");
         assert!(parsed.entry.url.is_none());
         assert_eq!(
@@ -228,7 +231,7 @@ mod tests {
 
     #[test]
     fn parse_local_path_absolute() {
-        let parsed = parse_source_specifier("/home/dev/agents").unwrap();
+        let parsed = parse_dependency_specifier("/home/dev/agents").unwrap();
         assert_eq!(parsed.name, "agents");
         assert!(parsed.entry.url.is_none());
         assert_eq!(

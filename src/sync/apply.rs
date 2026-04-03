@@ -900,7 +900,7 @@ mod tests {
         );
         let lock = crate::lock::LockFile {
             version: 1,
-            sources: indexmap::IndexMap::new(),
+            dependencies: indexmap::IndexMap::new(),
             items: lock_items,
         };
 

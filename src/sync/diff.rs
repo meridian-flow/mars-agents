@@ -255,7 +255,7 @@ mod tests {
         lock_items.insert("agents/coder.md".into(), locked_item);
         let lock = LockFile {
             version: 1,
-            sources: IndexMap::new(),
+            dependencies: IndexMap::new(),
             items: lock_items,
         };
 
@@ -292,7 +292,7 @@ mod tests {
         lock_items.insert("agents/coder.md".into(), locked_item);
         let lock = LockFile {
             version: 1,
-            sources: IndexMap::new(),
+            dependencies: IndexMap::new(),
             items: lock_items,
         };
 
@@ -330,7 +330,7 @@ mod tests {
         lock_items.insert("agents/coder.md".into(), locked_item);
         let lock = LockFile {
             version: 1,
-            sources: IndexMap::new(),
+            dependencies: IndexMap::new(),
             items: lock_items,
         };
 
@@ -368,7 +368,7 @@ mod tests {
         lock_items.insert("agents/coder.md".into(), locked_item);
         let lock = LockFile {
             version: 1,
-            sources: IndexMap::new(),
+            dependencies: IndexMap::new(),
             items: lock_items,
         };
 
@@ -393,7 +393,7 @@ mod tests {
         lock_items.insert("agents/old-agent.md".into(), locked_item);
         let lock = LockFile {
             version: 1,
-            sources: IndexMap::new(),
+            dependencies: IndexMap::new(),
             items: lock_items,
         };
 
@@ -434,7 +434,7 @@ mod tests {
         lock_items.insert("agents/coder.md".into(), locked_item);
         let lock = LockFile {
             version: 1,
-            sources: IndexMap::new(),
+            dependencies: IndexMap::new(),
             items: lock_items,
         };
 
@@ -506,7 +506,7 @@ mod tests {
         );
         let lock = LockFile {
             version: 1,
-            sources: IndexMap::new(),
+            dependencies: IndexMap::new(),
             items: lock_items,
         };
 
@@ -582,7 +582,7 @@ mod tests {
         );
         let lock = LockFile {
             version: 1,
-            sources: IndexMap::new(),
+            dependencies: IndexMap::new(),
             items: lock_items,
         };
 

@@ -27,7 +27,7 @@ pub struct ListArgs {
 
 /// Run `mars list`.
 pub fn run(args: &ListArgs, ctx: &super::MarsContext, json: bool) -> Result<i32, MarsError> {
-    let lock = crate::lock::load(&ctx.managed_root)?;
+    let lock = crate::lock::load(&ctx.project_root)?;
 
     if args.status {
         return run_status(args, &ctx.managed_root, &lock, json);

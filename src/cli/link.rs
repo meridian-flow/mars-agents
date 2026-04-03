@@ -84,13 +84,13 @@ pub fn run(args: &LinkArgs, ctx: &super::MarsContext, json: bool) -> Result<i32,
     }
 
     // Verify config exists before any mutations (resolve-first principle)
-    let config_path = ctx.managed_root.join("mars.toml");
+    let config_path = ctx.project_root.join("mars.toml");
     if !config_path.exists() {
         return Err(MarsError::Link {
             target: target_name,
             message: format!(
                 "mars.toml not found at {} — run `mars init` first",
-                ctx.managed_root.display()
+                ctx.project_root.display()
             ),
         });
     }
@@ -247,10 +247,10 @@ pub fn run(args: &LinkArgs, ctx: &super::MarsContext, json: bool) -> Result<i32,
     }
 
     // Persist link in config (already under sync lock from above).
-    let mut config = crate::config::load(&ctx.managed_root)?;
+    let mut config = crate::config::load(&ctx.project_root)?;
     if !config.settings.links.contains(&target_name) {
         config.settings.links.push(target_name.clone());
-        crate::config::save(&ctx.managed_root, &config)?;
+        crate::config::save(&ctx.project_root, &config)?;
     }
 
     // Output
@@ -521,6 +521,7 @@ fn unlink(
 
     // Remove from settings (under sync lock)
     crate::sync::mutate_link_config(
+        &ctx.project_root,
         &ctx.managed_root,
         &crate::sync::LinkMutation::Clear {
             target: target_name.to_string(),

@@ -28,7 +28,7 @@ struct WhyResult {
 
 /// Run `mars why`.
 pub fn run(args: &WhyArgs, ctx: &super::MarsContext, json: bool) -> Result<i32, MarsError> {
-    let lock = crate::lock::load(&ctx.managed_root)?;
+    let lock = crate::lock::load(&ctx.project_root)?;
 
     // Find the item by name (try matching dest_path, name stem, or skill dir name)
     let mut found = None;

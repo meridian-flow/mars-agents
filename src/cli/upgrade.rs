@@ -27,7 +27,7 @@ pub fn run(args: &UpgradeArgs, ctx: &super::MarsContext, json: bool) -> Result<i
         options: SyncOptions::default(),
     };
 
-    let report = crate::sync::execute(&ctx.managed_root, &request)?;
+    let report = crate::sync::execute(&ctx.project_root, &ctx.managed_root, &request)?;
 
     output::print_sync_report(&report, json);
 

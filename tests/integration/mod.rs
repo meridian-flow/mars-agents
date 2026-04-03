@@ -58,17 +58,13 @@ fn init_creates_agents_toml() {
     let dir = TempDir::new().unwrap();
 
     mars()
-        .args([
-            "init",
-            "--root",
-            dir.path().join(".agents").to_str().unwrap(),
-        ])
+        .args(["init", "--root", dir.path().to_str().unwrap()])
         .assert()
         .success()
         .stdout(predicate::str::contains("initialized"));
 
     let agents_dir = dir.child(".agents");
-    assert!(agents_dir.child("mars.toml").exists());
+    assert!(dir.child("mars.toml").exists());
     assert!(agents_dir.child(".mars").exists());
     assert!(agents_dir.child(".gitignore").exists());
 }
@@ -78,21 +74,13 @@ fn init_twice_is_idempotent() {
     let dir = TempDir::new().unwrap();
 
     mars()
-        .args([
-            "init",
-            "--root",
-            dir.path().join(".agents").to_str().unwrap(),
-        ])
+        .args(["init", "--root", dir.path().to_str().unwrap()])
         .assert()
         .success();
 
     // Second init should succeed (idempotent) with info message
     mars()
-        .args([
-            "init",
-            "--root",
-            dir.path().join(".agents").to_str().unwrap(),
-        ])
+        .args(["init", "--root", dir.path().to_str().unwrap()])
         .assert()
         .success()
         .stdout(predicate::str::contains("already initialized"));
@@ -114,11 +102,7 @@ fn add_local_source_and_sync() {
         .args([
             "init",
             "--root",
-            dir.child("project")
-                .child(".agents")
-                .path()
-                .to_str()
-                .unwrap(),
+            dir.child("project").path().to_str().unwrap(),
         ])
         .assert()
         .success();
@@ -129,7 +113,7 @@ fn add_local_source_and_sync() {
             "add",
             source.to_str().unwrap(),
             "--root",
-            agents_dir.path().to_str().unwrap(),
+            dir.child("project").path().to_str().unwrap(),
         ])
         .assert()
         .success();
@@ -145,7 +129,7 @@ fn add_local_source_and_sync() {
     );
 
     // Verify lock file exists
-    assert!(agents_dir.child("mars.lock").exists());
+    assert!(dir.child("project").child("mars.lock").exists());
 }
 
 #[test]
@@ -154,16 +138,12 @@ fn add_second_source_preserves_first_source_items_in_lock() {
     let source_one = create_source(&dir, "base1", &[("coder", "# Coder from base1")], &[]);
     let source_two = create_source(&dir, "base2", &[("reviewer", "# Reviewer from base2")], &[]);
 
-    let agents_dir = dir.child("project").child(".agents");
+    let _agents_dir = dir.child("project").child(".agents");
     mars()
         .args([
             "init",
             "--root",
-            dir.child("project")
-                .child(".agents")
-                .path()
-                .to_str()
-                .unwrap(),
+            dir.child("project").path().to_str().unwrap(),
         ])
         .assert()
         .success();
@@ -173,7 +153,7 @@ fn add_second_source_preserves_first_source_items_in_lock() {
             "add",
             source_one.to_str().unwrap(),
             "--root",
-            agents_dir.path().to_str().unwrap(),
+            dir.child("project").path().to_str().unwrap(),
         ])
         .assert()
         .success();
@@ -183,12 +163,12 @@ fn add_second_source_preserves_first_source_items_in_lock() {
             "add",
             source_two.to_str().unwrap(),
             "--root",
-            agents_dir.path().to_str().unwrap(),
+            dir.child("project").path().to_str().unwrap(),
         ])
         .assert()
         .success();
 
-    let lock_content = fs::read_to_string(agents_dir.child("mars.lock").path()).unwrap();
+    let lock_content = fs::read_to_string(dir.child("project").child("mars.lock").path()).unwrap();
     let lock: Value = toml::from_str(&lock_content).unwrap();
     let items = lock["items"].as_table().unwrap();
 
@@ -222,16 +202,12 @@ fn sync_idempotent() {
     let dir = TempDir::new().unwrap();
     let source = create_source(&dir, "src", &[("reviewer", "# Reviewer")], &[]);
 
-    let agents_dir = dir.child("project").child(".agents");
+    let _agents_dir = dir.child("project").child(".agents");
     mars()
         .args([
             "init",
             "--root",
-            dir.child("project")
-                .child(".agents")
-                .path()
-                .to_str()
-                .unwrap(),
+            dir.child("project").path().to_str().unwrap(),
         ])
         .assert()
         .success();
@@ -241,14 +217,18 @@ fn sync_idempotent() {
             "add",
             source.to_str().unwrap(),
             "--root",
-            agents_dir.path().to_str().unwrap(),
+            dir.child("project").path().to_str().unwrap(),
         ])
         .assert()
         .success();
 
     // Second sync should report up to date
     mars()
-        .args(["sync", "--root", agents_dir.path().to_str().unwrap()])
+        .args([
+            "sync",
+            "--root",
+            dir.child("project").path().to_str().unwrap(),
+        ])
         .assert()
         .success()
         .stdout(predicate::str::contains("already up to date"));
@@ -268,11 +248,7 @@ fn remove_prunes_files() {
         .args([
             "init",
             "--root",
-            dir.child("project")
-                .child(".agents")
-                .path()
-                .to_str()
-                .unwrap(),
+            dir.child("project").path().to_str().unwrap(),
         ])
         .assert()
         .success();
@@ -282,7 +258,7 @@ fn remove_prunes_files() {
             "add",
             source.to_str().unwrap(),
             "--root",
-            agents_dir.path().to_str().unwrap(),
+            dir.child("project").path().to_str().unwrap(),
         ])
         .assert()
         .success();
@@ -295,7 +271,7 @@ fn remove_prunes_files() {
             "remove",
             "base",
             "--root",
-            agents_dir.path().to_str().unwrap(),
+            dir.child("project").path().to_str().unwrap(),
         ])
         .assert()
         .success();
@@ -318,16 +294,12 @@ fn list_shows_installed_items() {
         &[("planning", "# Planning")],
     );
 
-    let agents_dir = dir.child("project").child(".agents");
+    let _agents_dir = dir.child("project").child(".agents");
     mars()
         .args([
             "init",
             "--root",
-            dir.child("project")
-                .child(".agents")
-                .path()
-                .to_str()
-                .unwrap(),
+            dir.child("project").path().to_str().unwrap(),
         ])
         .assert()
         .success();
@@ -337,14 +309,18 @@ fn list_shows_installed_items() {
             "add",
             source.to_str().unwrap(),
             "--root",
-            agents_dir.path().to_str().unwrap(),
+            dir.child("project").path().to_str().unwrap(),
         ])
         .assert()
         .success();
 
     // Catalog view (default)
     mars()
-        .args(["list", "--root", agents_dir.path().to_str().unwrap()])
+        .args([
+            "list",
+            "--root",
+            dir.child("project").path().to_str().unwrap(),
+        ])
         .assert()
         .success()
         .stdout(predicate::str::contains("coder"))
@@ -357,7 +333,7 @@ fn list_shows_installed_items() {
             "list",
             "--status",
             "--root",
-            agents_dir.path().to_str().unwrap(),
+            dir.child("project").path().to_str().unwrap(),
         ])
         .assert()
         .success()
@@ -378,16 +354,12 @@ fn why_traces_skill_to_source() {
         &[("planning", "# Planning skill")],
     );
 
-    let agents_dir = dir.child("project").child(".agents");
+    let _agents_dir = dir.child("project").child(".agents");
     mars()
         .args([
             "init",
             "--root",
-            dir.child("project")
-                .child(".agents")
-                .path()
-                .to_str()
-                .unwrap(),
+            dir.child("project").path().to_str().unwrap(),
         ])
         .assert()
         .success();
@@ -397,7 +369,7 @@ fn why_traces_skill_to_source() {
             "add",
             source.to_str().unwrap(),
             "--root",
-            agents_dir.path().to_str().unwrap(),
+            dir.child("project").path().to_str().unwrap(),
         ])
         .assert()
         .success();
@@ -407,7 +379,7 @@ fn why_traces_skill_to_source() {
             "why",
             "planning",
             "--root",
-            agents_dir.path().to_str().unwrap(),
+            dir.child("project").path().to_str().unwrap(),
         ])
         .assert()
         .success()
@@ -429,9 +401,9 @@ fn sync_diff_does_not_modify_files() {
     // Manually init so we have the dir without any sync
     fs::create_dir_all(agents_dir.child(".mars").path()).unwrap();
     fs::write(
-        agents_dir.child("mars.toml").path(),
+        dir.child("project").child("mars.toml").path(),
         format!(
-            "[sources.src]\npath = \"{}\"\n",
+            "[dependencies.src]\npath = \"{}\"\n",
             source.display().to_string().replace('\\', "/")
         ),
     )
@@ -442,7 +414,7 @@ fn sync_diff_does_not_modify_files() {
             "sync",
             "--diff",
             "--root",
-            agents_dir.path().to_str().unwrap(),
+            dir.child("project").path().to_str().unwrap(),
         ])
         .assert()
         .success();
@@ -465,11 +437,7 @@ fn sync_force_overwrites_local_changes() {
         .args([
             "init",
             "--root",
-            dir.child("project")
-                .child(".agents")
-                .path()
-                .to_str()
-                .unwrap(),
+            dir.child("project").path().to_str().unwrap(),
         ])
         .assert()
         .success();
@@ -479,7 +447,7 @@ fn sync_force_overwrites_local_changes() {
             "add",
             source.to_str().unwrap(),
             "--root",
-            agents_dir.path().to_str().unwrap(),
+            dir.child("project").path().to_str().unwrap(),
         ])
         .assert()
         .success();
@@ -497,7 +465,7 @@ fn sync_force_overwrites_local_changes() {
             "sync",
             "--force",
             "--root",
-            agents_dir.path().to_str().unwrap(),
+            dir.child("project").path().to_str().unwrap(),
         ])
         .assert()
         .success();
@@ -529,11 +497,7 @@ fn add_with_agents_filter() {
         .args([
             "init",
             "--root",
-            dir.child("project")
-                .child(".agents")
-                .path()
-                .to_str()
-                .unwrap(),
+            dir.child("project").path().to_str().unwrap(),
         ])
         .assert()
         .success();
@@ -545,7 +509,7 @@ fn add_with_agents_filter() {
             "--agents",
             "coder",
             "--root",
-            agents_dir.path().to_str().unwrap(),
+            dir.child("project").path().to_str().unwrap(),
         ])
         .assert()
         .success();
@@ -566,16 +530,12 @@ fn root_discovery_from_subdir() {
     let source = create_source(&dir, "src", &[("agent", "# Agent")], &[]);
 
     // Init and add
-    let agents_dir = dir.child("project").child(".agents");
+    let _agents_dir = dir.child("project").child(".agents");
     mars()
         .args([
             "init",
             "--root",
-            dir.child("project")
-                .child(".agents")
-                .path()
-                .to_str()
-                .unwrap(),
+            dir.child("project").path().to_str().unwrap(),
         ])
         .assert()
         .success();
@@ -585,7 +545,7 @@ fn root_discovery_from_subdir() {
             "add",
             source.to_str().unwrap(),
             "--root",
-            agents_dir.path().to_str().unwrap(),
+            dir.child("project").path().to_str().unwrap(),
         ])
         .assert()
         .success();
@@ -612,16 +572,12 @@ fn json_output_valid() {
     let dir = TempDir::new().unwrap();
     let source = create_source(&dir, "base", &[("coder", "# Coder")], &[]);
 
-    let agents_dir = dir.child("project").child(".agents");
+    let _agents_dir = dir.child("project").child(".agents");
     mars()
         .args([
             "init",
             "--root",
-            dir.child("project")
-                .child(".agents")
-                .path()
-                .to_str()
-                .unwrap(),
+            dir.child("project").path().to_str().unwrap(),
         ])
         .assert()
         .success();
@@ -631,7 +587,7 @@ fn json_output_valid() {
             "add",
             source.to_str().unwrap(),
             "--root",
-            agents_dir.path().to_str().unwrap(),
+            dir.child("project").path().to_str().unwrap(),
         ])
         .assert()
         .success();
@@ -642,7 +598,7 @@ fn json_output_valid() {
             "list",
             "--json",
             "--root",
-            agents_dir.path().to_str().unwrap(),
+            dir.child("project").path().to_str().unwrap(),
         ])
         .output()
         .unwrap();
@@ -664,7 +620,7 @@ fn json_output_valid() {
             "--status",
             "--json",
             "--root",
-            agents_dir.path().to_str().unwrap(),
+            dir.child("project").path().to_str().unwrap(),
         ])
         .output()
         .unwrap();
@@ -686,16 +642,12 @@ fn doctor_reports_healthy_state() {
     let dir = TempDir::new().unwrap();
     let source = create_source(&dir, "base", &[("coder", "# Coder")], &[]);
 
-    let agents_dir = dir.child("project").child(".agents");
+    let _agents_dir = dir.child("project").child(".agents");
     mars()
         .args([
             "init",
             "--root",
-            dir.child("project")
-                .child(".agents")
-                .path()
-                .to_str()
-                .unwrap(),
+            dir.child("project").path().to_str().unwrap(),
         ])
         .assert()
         .success();
@@ -705,13 +657,17 @@ fn doctor_reports_healthy_state() {
             "add",
             source.to_str().unwrap(),
             "--root",
-            agents_dir.path().to_str().unwrap(),
+            dir.child("project").path().to_str().unwrap(),
         ])
         .assert()
         .success();
 
     mars()
-        .args(["doctor", "--root", agents_dir.path().to_str().unwrap()])
+        .args([
+            "doctor",
+            "--root",
+            dir.child("project").path().to_str().unwrap(),
+        ])
         .assert()
         .success()
         .stdout(predicate::str::contains("all checks passed"));
@@ -732,16 +688,12 @@ fn override_writes_local_config() {
         &[],
     );
 
-    let agents_dir = dir.child("project").child(".agents");
+    let _agents_dir = dir.child("project").child(".agents");
     mars()
         .args([
             "init",
             "--root",
-            dir.child("project")
-                .child(".agents")
-                .path()
-                .to_str()
-                .unwrap(),
+            dir.child("project").path().to_str().unwrap(),
         ])
         .assert()
         .success();
@@ -751,7 +703,7 @@ fn override_writes_local_config() {
             "add",
             source.to_str().unwrap(),
             "--root",
-            agents_dir.path().to_str().unwrap(),
+            dir.child("project").path().to_str().unwrap(),
         ])
         .assert()
         .success();
@@ -763,16 +715,16 @@ fn override_writes_local_config() {
             "--path",
             override_path.to_str().unwrap(),
             "--root",
-            agents_dir.path().to_str().unwrap(),
+            dir.child("project").path().to_str().unwrap(),
         ])
         .assert()
         .success()
         .stdout(predicate::str::contains("override"));
 
     // mars.local.toml should exist
-    assert!(agents_dir.child("mars.local.toml").exists());
+    assert!(dir.child("project").child("mars.local.toml").exists());
 
-    let content = fs::read_to_string(agents_dir.child("mars.local.toml").path()).unwrap();
+    let content = fs::read_to_string(dir.child("project").child("mars.local.toml").path()).unwrap();
     assert!(content.contains("base"));
     assert!(content.contains("local-override"));
 }
@@ -796,11 +748,7 @@ fn conflict_flow_with_resolve() {
         .args([
             "init",
             "--root",
-            dir.child("project")
-                .child(".agents")
-                .path()
-                .to_str()
-                .unwrap(),
+            dir.child("project").path().to_str().unwrap(),
         ])
         .assert()
         .success();
@@ -810,7 +758,7 @@ fn conflict_flow_with_resolve() {
             "add",
             source.to_str().unwrap(),
             "--root",
-            agents_dir.path().to_str().unwrap(),
+            dir.child("project").path().to_str().unwrap(),
         ])
         .assert()
         .success();
@@ -828,7 +776,11 @@ fn conflict_flow_with_resolve() {
 
     // Sync — should produce conflict (exit code 1)
     mars()
-        .args(["sync", "--root", agents_dir.path().to_str().unwrap()])
+        .args([
+            "sync",
+            "--root",
+            dir.child("project").path().to_str().unwrap(),
+        ])
         .assert()
         .code(1);
 
@@ -844,7 +796,11 @@ fn conflict_flow_with_resolve() {
 
     // Run resolve
     mars()
-        .args(["resolve", "--root", agents_dir.path().to_str().unwrap()])
+        .args([
+            "resolve",
+            "--root",
+            dir.child("project").path().to_str().unwrap(),
+        ])
         .assert()
         .success();
 }
@@ -887,11 +843,7 @@ fn add_rejects_unmanaged_file_collision() {
         .args([
             "init",
             "--root",
-            dir.child("project")
-                .child(".agents")
-                .path()
-                .to_str()
-                .unwrap(),
+            dir.child("project").path().to_str().unwrap(),
         ])
         .assert()
         .success();
@@ -905,7 +857,7 @@ fn add_rejects_unmanaged_file_collision() {
             "add",
             source.to_str().unwrap(),
             "--root",
-            agents_dir.path().to_str().unwrap(),
+            dir.child("project").path().to_str().unwrap(),
         ])
         .assert()
         .failure()
@@ -932,11 +884,7 @@ fn sync_force_clears_previous_conflict_markers() {
         .args([
             "init",
             "--root",
-            dir.child("project")
-                .child(".agents")
-                .path()
-                .to_str()
-                .unwrap(),
+            dir.child("project").path().to_str().unwrap(),
         ])
         .assert()
         .success();
@@ -946,7 +894,7 @@ fn sync_force_clears_previous_conflict_markers() {
             "add",
             source.to_str().unwrap(),
             "--root",
-            agents_dir.path().to_str().unwrap(),
+            dir.child("project").path().to_str().unwrap(),
         ])
         .assert()
         .success();
@@ -960,7 +908,11 @@ fn sync_force_clears_previous_conflict_markers() {
     .unwrap();
 
     mars()
-        .args(["sync", "--root", agents_dir.path().to_str().unwrap()])
+        .args([
+            "sync",
+            "--root",
+            dir.child("project").path().to_str().unwrap(),
+        ])
         .assert()
         .code(1);
 
@@ -970,7 +922,7 @@ fn sync_force_clears_previous_conflict_markers() {
             "sync",
             "--force",
             "--root",
-            agents_dir.path().to_str().unwrap(),
+            dir.child("project").path().to_str().unwrap(),
         ])
         .assert()
         .success();
@@ -989,11 +941,7 @@ fn rename_applies_path_mapping_during_sync() {
         .args([
             "init",
             "--root",
-            dir.child("project")
-                .child(".agents")
-                .path()
-                .to_str()
-                .unwrap(),
+            dir.child("project").path().to_str().unwrap(),
         ])
         .assert()
         .success();
@@ -1003,7 +951,7 @@ fn rename_applies_path_mapping_during_sync() {
             "add",
             source.to_str().unwrap(),
             "--root",
-            agents_dir.path().to_str().unwrap(),
+            dir.child("project").path().to_str().unwrap(),
         ])
         .assert()
         .success();
@@ -1014,7 +962,7 @@ fn rename_applies_path_mapping_during_sync() {
             "agents/coder.md",
             "agents/coder-renamed.md",
             "--root",
-            agents_dir.path().to_str().unwrap(),
+            dir.child("project").path().to_str().unwrap(),
         ])
         .assert()
         .success();
@@ -1027,7 +975,7 @@ fn rename_applies_path_mapping_during_sync() {
     );
     assert!(!agents_dir.child("agents").child("coder.md").exists());
 
-    let lock_content = fs::read_to_string(agents_dir.child("mars.lock").path()).unwrap();
+    let lock_content = fs::read_to_string(dir.child("project").child("mars.lock").path()).unwrap();
     let lock: Value = toml::from_str(&lock_content).unwrap();
     assert!(
         lock["items"]
@@ -1042,7 +990,7 @@ fn init_with_root_uses_resolved_root_path_in_message() {
     let dir = TempDir::new().unwrap();
     let project = dir.child("proj");
     project.create_dir_all().unwrap();
-    let root = project.path().join(".agents");
+    let root = project.path().to_path_buf();
 
     mars()
         .args(["init", "--root", root.to_str().unwrap()])
@@ -1062,16 +1010,12 @@ fn sync_frozen_returns_exit_code_two() {
     let dir = TempDir::new().unwrap();
     let source = create_source(&dir, "base", &[("coder", "# v1")], &[]);
 
-    let agents_dir = dir.child("project").child(".agents");
+    let _agents_dir = dir.child("project").child(".agents");
     mars()
         .args([
             "init",
             "--root",
-            dir.child("project")
-                .child(".agents")
-                .path()
-                .to_str()
-                .unwrap(),
+            dir.child("project").path().to_str().unwrap(),
         ])
         .assert()
         .success();
@@ -1081,7 +1025,7 @@ fn sync_frozen_returns_exit_code_two() {
             "add",
             source.to_str().unwrap(),
             "--root",
-            agents_dir.path().to_str().unwrap(),
+            dir.child("project").path().to_str().unwrap(),
         ])
         .assert()
         .success();
@@ -1093,7 +1037,7 @@ fn sync_frozen_returns_exit_code_two() {
             "sync",
             "--frozen",
             "--root",
-            agents_dir.path().to_str().unwrap(),
+            dir.child("project").path().to_str().unwrap(),
         ])
         .assert()
         .code(2)
@@ -1105,16 +1049,12 @@ fn sync_errors_when_lock_is_corrupt() {
     let dir = TempDir::new().unwrap();
     let source = create_source(&dir, "base", &[("coder", "# Coder")], &[]);
 
-    let agents_dir = dir.child("project").child(".agents");
+    let _agents_dir = dir.child("project").child(".agents");
     mars()
         .args([
             "init",
             "--root",
-            dir.child("project")
-                .child(".agents")
-                .path()
-                .to_str()
-                .unwrap(),
+            dir.child("project").path().to_str().unwrap(),
         ])
         .assert()
         .success();
@@ -1124,15 +1064,19 @@ fn sync_errors_when_lock_is_corrupt() {
             "add",
             source.to_str().unwrap(),
             "--root",
-            agents_dir.path().to_str().unwrap(),
+            dir.child("project").path().to_str().unwrap(),
         ])
         .assert()
         .success();
 
-    fs::write(agents_dir.child("mars.lock").path(), "INVALID").unwrap();
+    fs::write(dir.child("project").child("mars.lock").path(), "INVALID").unwrap();
 
     mars()
-        .args(["sync", "--root", agents_dir.path().to_str().unwrap()])
+        .args([
+            "sync",
+            "--root",
+            dir.child("project").path().to_str().unwrap(),
+        ])
         .assert()
         .code(2)
         .stderr(predicate::str::contains("lock file corrupt"))
@@ -1149,11 +1093,7 @@ fn repair_recovers_from_corrupt_lock() {
         .args([
             "init",
             "--root",
-            dir.child("project")
-                .child(".agents")
-                .path()
-                .to_str()
-                .unwrap(),
+            dir.child("project").path().to_str().unwrap(),
         ])
         .assert()
         .success();
@@ -1163,20 +1103,24 @@ fn repair_recovers_from_corrupt_lock() {
             "add",
             source.to_str().unwrap(),
             "--root",
-            agents_dir.path().to_str().unwrap(),
+            dir.child("project").path().to_str().unwrap(),
         ])
         .assert()
         .success();
 
-    fs::write(agents_dir.child("mars.lock").path(), "INVALID").unwrap();
+    fs::write(dir.child("project").child("mars.lock").path(), "INVALID").unwrap();
 
     mars()
-        .args(["repair", "--root", agents_dir.path().to_str().unwrap()])
+        .args([
+            "repair",
+            "--root",
+            dir.child("project").path().to_str().unwrap(),
+        ])
         .assert()
         .success()
         .stderr(predicate::str::contains("lock is corrupt, rebuilding"));
 
-    let repaired_lock = fs::read_to_string(agents_dir.child("mars.lock").path()).unwrap();
+    let repaired_lock = fs::read_to_string(dir.child("project").child("mars.lock").path()).unwrap();
     let lock_value: Value = toml::from_str(&repaired_lock).unwrap();
     assert!(lock_value["items"].as_table().is_some());
 
@@ -1186,17 +1130,13 @@ fn repair_recovers_from_corrupt_lock() {
 #[test]
 fn add_nonexistent_path_does_not_pollute_config() {
     let dir = TempDir::new().unwrap();
-    let agents_dir = dir.child("project").child(".agents");
+    let _agents_dir = dir.child("project").child(".agents");
 
     mars()
         .args([
             "init",
             "--root",
-            dir.child("project")
-                .child(".agents")
-                .path()
-                .to_str()
-                .unwrap(),
+            dir.child("project").path().to_str().unwrap(),
         ])
         .assert()
         .success();
@@ -1207,17 +1147,18 @@ fn add_nonexistent_path_does_not_pollute_config() {
             "add",
             missing.to_str().unwrap(),
             "--root",
-            agents_dir.path().to_str().unwrap(),
+            dir.child("project").path().to_str().unwrap(),
         ])
         .assert()
         .failure();
 
-    let config_content = fs::read_to_string(agents_dir.child("mars.toml").path()).unwrap();
+    let config_content =
+        fs::read_to_string(dir.child("project").child("mars.toml").path()).unwrap();
     let config: Value = toml::from_str(&config_content).unwrap();
-    let sources = config["sources"].as_table().unwrap();
+    let deps = config["dependencies"].as_table().unwrap();
     assert!(
-        sources.is_empty(),
-        "expected no sources after failed add, got: {config_content}"
+        deps.is_empty(),
+        "expected no dependencies after failed add, got: {config_content}"
     );
 }
 

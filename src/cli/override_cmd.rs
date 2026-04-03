@@ -27,7 +27,7 @@ pub fn run(args: &OverrideArgs, ctx: &super::MarsContext, json: bool) -> Result<
         }),
         options: SyncOptions::default(),
     };
-    let report = crate::sync::execute(&ctx.managed_root, &request)?;
+    let report = crate::sync::execute(&ctx.project_root, &ctx.managed_root, &request)?;
 
     if !json {
         output::print_success(&format!(
