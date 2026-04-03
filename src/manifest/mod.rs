@@ -94,7 +94,7 @@ version = ">=0.5"
         assert_eq!(base_dep.url, "https://github.com/org/base.git");
         assert_eq!(base_dep.version.as_deref(), Some(">=1.0"));
 
-        let utils_dep = &manifest.dependencies["utils"];
+        let _utils_dep = &manifest.dependencies["utils"];
     }
 
     #[test]

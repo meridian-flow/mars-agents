@@ -154,7 +154,7 @@ mod tests {
                 assert_eq!(skill_name, "missing-skill");
                 assert!(suggestion.is_none());
             }
-            other => panic!("expected MissingSkill, got {other:?}"),
+            // only variant is MissingSkill; exhaustive match above
         }
     }
 
@@ -214,7 +214,7 @@ mod tests {
             ValidationWarning::MissingSkill { suggestion, .. } => {
                 assert_eq!(suggestion.as_deref(), Some("planning"));
             }
-            _ => unreachable!(),
+            // only variant is MissingSkill; exhaustive match above
         }
     }
 
