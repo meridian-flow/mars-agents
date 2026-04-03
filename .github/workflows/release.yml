@@ -221,7 +221,7 @@ jobs:
               npm version "$VERSION" --no-git-tag-version --allow-same-version
               cp "$GITHUB_WORKSPACE/artifacts/$binary" mars
               chmod +x mars
-              npm publish --provenance --access public
+              npm publish --provenance --access public --tag latest
             )
           }
 
@@ -250,7 +250,7 @@ jobs:
               }
               require('fs').writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
             "
-            npm publish --provenance --access public
+            npm publish --provenance --access public --tag latest
           )
 
   cargo-publish:

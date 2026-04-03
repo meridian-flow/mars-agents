@@ -20,11 +20,11 @@ Mars is an agent package manager for `.agents/` directories. It installs agent p
 
 ```text
 project/
-  .agents/                   # managed root (default)
-    mars.toml               # desired sources + settings
-    mars.lock               # generated lock/ownership/provenance
-    mars.local.toml         # local overrides (gitignored)
-    .mars/                  # internal state (sync.lock, cache)
+  mars.toml                  # config: [dependencies], [settings], [package]
+  mars.lock                  # generated lock/ownership/provenance
+  mars.local.toml            # local overrides (gitignored)
+  .mars/                     # internal state (sync.lock, cache)
+  .agents/                   # managed root (default, configurable via settings.managed_root)
     agents/                 # installed agent profiles
     skills/                 # installed skills
   .claude/                   # optional linked tool dir
@@ -137,10 +137,10 @@ Notes:
 
 ## Releasing
 
+**Always use patch bumps** — mars is pre-1.0 alpha. No minor/major bumps until we're ready to declare stability.
+
 ```bash
-./scripts/release.sh patch --push    # 0.0.1 → 0.0.2, push to trigger CI
-./scripts/release.sh minor --push    # 0.0.2 → 0.1.0
-./scripts/release.sh 1.0.0 --push    # explicit version
+./scripts/release.sh patch --push    # 0.0.3 → 0.0.4, push to trigger CI
 ./scripts/release.sh patch --dry     # run checks only, don't tag
 ```
 
