@@ -1079,16 +1079,20 @@ only_skills = true
     #[test]
     fn filter_config_has_any_filter() {
         assert!(!FilterConfig::default().has_any_filter());
-        assert!(FilterConfig {
-            only_skills: true,
-            ..FilterConfig::default()
-        }
-        .has_any_filter());
-        assert!(FilterConfig {
-            agents: Some(vec!["coder".into()]),
-            ..FilterConfig::default()
-        }
-        .has_any_filter());
+        assert!(
+            FilterConfig {
+                only_skills: true,
+                ..FilterConfig::default()
+            }
+            .has_any_filter()
+        );
+        assert!(
+            FilterConfig {
+                agents: Some(vec!["coder".into()]),
+                ..FilterConfig::default()
+            }
+            .has_any_filter()
+        );
     }
 
     #[test]

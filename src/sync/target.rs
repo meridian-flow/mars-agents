@@ -436,7 +436,9 @@ fn apply_filter(
             // Include agents + their transitive skill deps only
             let skills: Vec<_> = discovered
                 .iter()
-                .filter(|item| item.id.kind == ItemKind::Skill && skill_deps.contains(&item.id.name))
+                .filter(|item| {
+                    item.id.kind == ItemKind::Skill && skill_deps.contains(&item.id.name)
+                })
                 .cloned()
                 .collect();
 

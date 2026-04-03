@@ -402,7 +402,10 @@ fn is_config_not_found(error: &MarsError) -> bool {
 /// Apply a config mutation to the in-memory config.
 ///
 /// Public so that CLI commands can batch mutations before triggering sync.
-pub fn apply_config_mutation(config: &mut Config, mutation: &ConfigMutation) -> Result<(), MarsError> {
+pub fn apply_config_mutation(
+    config: &mut Config,
+    mutation: &ConfigMutation,
+) -> Result<(), MarsError> {
     apply_mutation(config, mutation).map(|_| ())
 }
 
@@ -1567,7 +1570,10 @@ mod tests {
             dep.filter.rename.is_some(),
             "rename should be preserved across filter changes"
         );
-        assert_eq!(dep.filter.rename.as_ref().unwrap().get("old").unwrap(), "new");
+        assert_eq!(
+            dep.filter.rename.as_ref().unwrap().get("old").unwrap(),
+            "new"
+        );
     }
 
     #[test]
@@ -1661,10 +1667,8 @@ mod tests {
             &[("planning", "# Planning skill")],
         );
 
-        let (graph, config) = make_graph_config(
-            &fixture,
-            vec![("base", src_idx, FilterMode::OnlySkills)],
-        );
+        let (graph, config) =
+            make_graph_config(&fixture, vec![("base", src_idx, FilterMode::OnlySkills)]);
 
         let (target, _) = target::build_with_collisions(&graph, &config).unwrap();
         // Should only have the skill, not the agent
@@ -1685,10 +1689,8 @@ mod tests {
             ],
         );
 
-        let (graph, config) = make_graph_config(
-            &fixture,
-            vec![("base", src_idx, FilterMode::OnlyAgents)],
-        );
+        let (graph, config) =
+            make_graph_config(&fixture, vec![("base", src_idx, FilterMode::OnlyAgents)]);
 
         let (target, _) = target::build_with_collisions(&graph, &config).unwrap();
         // Should have the agent + its transitive skill dep, but NOT standalone
@@ -1701,15 +1703,10 @@ mod tests {
     #[test]
     fn pipeline_only_agents_no_agents_source() {
         let mut fixture = TestFixture::new();
-        let src_idx = fixture.add_source(
-            &[],
-            &[("planning", "# Planning skill")],
-        );
+        let src_idx = fixture.add_source(&[], &[("planning", "# Planning skill")]);
 
-        let (graph, config) = make_graph_config(
-            &fixture,
-            vec![("base", src_idx, FilterMode::OnlyAgents)],
-        );
+        let (graph, config) =
+            make_graph_config(&fixture, vec![("base", src_idx, FilterMode::OnlyAgents)]);
 
         let (target, _) = target::build_with_collisions(&graph, &config).unwrap();
         // No agents means nothing gets installed
