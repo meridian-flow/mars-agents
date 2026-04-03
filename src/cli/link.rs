@@ -107,6 +107,7 @@ pub fn run(args: &LinkArgs, ctx: &super::MarsContext, json: bool) -> Result<i32,
 
     // Acquire sync lock for the entire operation (scan + act + persist).
     // Prevents races with concurrent mars sync or mars link.
+    std::fs::create_dir_all(ctx.managed_root.join(".mars"))?;
     let lock_path = ctx.managed_root.join(".mars").join("sync.lock");
     let _sync_lock = crate::fs::FileLock::acquire(&lock_path)?;
 
@@ -521,8 +522,7 @@ fn unlink(
 
     // Remove from settings (under sync lock)
     crate::sync::mutate_link_config(
-        &ctx.project_root,
-        &ctx.managed_root,
+        ctx,
         &crate::sync::LinkMutation::Clear {
             target: target_name.to_string(),
         },

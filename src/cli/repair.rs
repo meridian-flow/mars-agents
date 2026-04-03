@@ -1,7 +1,5 @@
 //! `mars repair` — rebuild state from lock + sources.
 
-use std::path::Path;
-
 use crate::error::{LockError, MarsError};
 use crate::lock::LockFile;
 use crate::sync::{ResolutionMode, SyncOptions, SyncReport, SyncRequest};
@@ -45,9 +43,9 @@ pub fn run(_args: &RepairArgs, ctx: &super::MarsContext, json: bool) -> Result<i
 
     // Force sync: overwrites everything, rebuilds from sources.
     let report = if recovered_corrupt_lock {
-        execute_repair_with_collision_cleanup(&ctx.project_root, &ctx.managed_root, &request)?
+        execute_repair_with_collision_cleanup(ctx, &request)?
     } else {
-        crate::sync::execute(&ctx.project_root, &ctx.managed_root, &request)?
+        crate::sync::execute(ctx, &request)?
     };
 
     output::print_sync_report(&report, json);
@@ -56,15 +54,14 @@ pub fn run(_args: &RepairArgs, ctx: &super::MarsContext, json: bool) -> Result<i
 }
 
 fn execute_repair_with_collision_cleanup(
-    project_root: &Path,
-    managed_root: &Path,
+    ctx: &super::MarsContext,
     request: &SyncRequest,
 ) -> Result<SyncReport, MarsError> {
     const MAX_RETRIES: usize = 1024;
     let mut retries = 0usize;
 
     loop {
-        match crate::sync::execute(project_root, managed_root, request) {
+        match crate::sync::execute(ctx, request) {
             Ok(report) => return Ok(report),
             Err(err) => {
                 if let Some(path) = extract_unmanaged_collision_path(&err) {
@@ -76,7 +73,7 @@ fn execute_repair_with_collision_cleanup(
                         });
                     }
 
-                    let full_path = managed_root.join(path);
+                    let full_path = ctx.managed_root.join(path);
                     if full_path.is_dir() {
                         std::fs::remove_dir_all(&full_path)?;
                     } else if full_path.exists() {
@@ -97,7 +94,7 @@ fn execute_repair_with_collision_cleanup(
     }
 }
 
-fn extract_unmanaged_collision_path(err: &MarsError) -> Option<&Path> {
+fn extract_unmanaged_collision_path(err: &MarsError) -> Option<&std::path::Path> {
     match err {
         MarsError::UnmanagedCollision { path, .. } => Some(path.as_path()),
         _ => None,

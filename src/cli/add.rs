@@ -92,7 +92,7 @@ pub fn run(args: &AddArgs, ctx: &super::MarsContext, json: bool) -> Result<i32, 
         .map(|c| c.dependencies.contains_key(&parsed.name))
         .unwrap_or(false);
 
-    let report = crate::sync::execute(&ctx.project_root, &ctx.managed_root, &request)?;
+    let report = crate::sync::execute(ctx, &request)?;
 
     if !json {
         if already_exists {

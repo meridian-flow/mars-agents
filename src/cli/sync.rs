@@ -33,7 +33,7 @@ pub fn run(args: &SyncArgs, ctx: &super::MarsContext, json: bool) -> Result<i32,
         },
     };
 
-    let report = crate::sync::execute(&ctx.project_root, &ctx.managed_root, &request)?;
+    let report = crate::sync::execute(ctx, &request)?;
 
     output::print_sync_report(&report, json);
 

@@ -30,6 +30,7 @@ use std::path::{Path, PathBuf};
 use clap::{Parser, Subcommand};
 
 use crate::error::{ConfigError, LockError, MarsError};
+pub use crate::types::MarsContext;
 
 /// Directories where mars materializes agents/skills output.
 /// `.agents/` remains the default target for `mars init`.
@@ -38,15 +39,6 @@ pub const WELL_KNOWN: &[&str] = &[".agents"];
 /// Tool-specific directories that commonly need linking.
 /// `mars link` warns if the target isn't in TOOL_DIRS or WELL_KNOWN.
 pub const TOOL_DIRS: &[&str] = &[".claude", ".cursor"];
-
-/// Resolved context for a mars command.
-#[derive(Debug)]
-pub struct MarsContext {
-    /// Managed output directory (e.g. /project/.agents).
-    pub managed_root: PathBuf,
-    /// Project root containing mars.toml and mars.lock.
-    pub project_root: PathBuf,
-}
 
 impl MarsContext {
     /// Build context from project root (directory containing mars.toml).

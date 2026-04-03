@@ -14,7 +14,7 @@ use crate::resolve::{ManifestReader, ResolveOptions, SourceFetcher, VersionListe
 use crate::source::{self, AvailableVersion, GlobalCache, ResolvedRef};
 use crate::sync::apply::ApplyResult;
 pub use crate::sync::apply::SyncOptions;
-use crate::types::{CommitHash, ItemName, SourceName};
+use crate::types::{CommitHash, ItemName, MarsContext, SourceName};
 use crate::validate::ValidationWarning;
 
 /// Report from a completed sync operation.
@@ -94,15 +94,12 @@ pub enum LinkMutation {
 
 /// Apply a link mutation under sync lock, without running the full sync pipeline.
 /// Only for settings.links changes — use sync::execute for source mutations.
-pub fn mutate_link_config(
-    project_root: &Path,
-    managed_root: &Path,
-    mutation: &LinkMutation,
-) -> Result<(), MarsError> {
-    let lock_path = managed_root.join(".mars").join("sync.lock");
+pub fn mutate_link_config(ctx: &MarsContext, mutation: &LinkMutation) -> Result<(), MarsError> {
+    std::fs::create_dir_all(ctx.managed_root.join(".mars"))?;
+    let lock_path = ctx.managed_root.join(".mars").join("sync.lock");
     let _sync_lock = crate::fs::FileLock::acquire(&lock_path)?;
 
-    let mut config = crate::config::load(project_root)?;
+    let mut config = crate::config::load(&ctx.project_root)?;
     match mutation {
         LinkMutation::Set { target } => {
             if !config.settings.links.contains(target) {
@@ -113,17 +110,16 @@ pub fn mutate_link_config(
             config.settings.links.retain(|l| l != target);
         }
     }
-    crate::config::save(project_root, &config)?;
+    crate::config::save(&ctx.project_root, &config)?;
 
     Ok(())
 }
 
 /// Execute the unified sync pipeline.
-pub fn execute(
-    project_root: &Path,
-    managed_root: &Path,
-    request: &SyncRequest,
-) -> Result<SyncReport, MarsError> {
+pub fn execute(ctx: &MarsContext, request: &SyncRequest) -> Result<SyncReport, MarsError> {
+    let project_root = &ctx.project_root;
+    let managed_root = &ctx.managed_root;
+
     validate_request(request)?;
 
     std::fs::create_dir_all(managed_root.join(".mars").join("cache"))?;
@@ -691,7 +687,8 @@ mod tests {
             options: SyncOptions::default(),
         };
 
-        let report = execute(project_root.path(), &managed_root, &request).unwrap();
+        let ctx = MarsContext::for_test(project_root.path().to_path_buf(), managed_root.clone());
+        let report = execute(&ctx, &request).unwrap();
         assert!(!report.applied.outcomes.is_empty());
         assert!(project_root.path().join("mars.toml").exists());
 
@@ -731,7 +728,8 @@ mod tests {
             },
         };
 
-        let report = execute(project_root.path(), &managed_root, &request).unwrap();
+        let ctx = MarsContext::for_test(project_root.path().to_path_buf(), managed_root.clone());
+        let report = execute(&ctx, &request).unwrap();
         assert!(!report.applied.outcomes.is_empty());
 
         let saved = crate::config::load(project_root.path()).unwrap();

@@ -22,7 +22,7 @@ pub fn run(args: &RemoveArgs, ctx: &super::MarsContext, json: bool) -> Result<i3
         }),
         options: SyncOptions::default(),
     };
-    let report = crate::sync::execute(&ctx.project_root, &ctx.managed_root, &request)?;
+    let report = crate::sync::execute(ctx, &request)?;
 
     if !json {
         output::print_info(&format!("removed dependency `{}`", args.source));

@@ -201,6 +201,28 @@ impl<'de> Deserialize<'de> for DestPath {
     }
 }
 
+/// Resolved context for a mars command — project root + managed output root.
+///
+/// Named fields prevent argument-order bugs that plague `(project_root, managed_root)` pairs.
+#[derive(Debug, Clone)]
+pub struct MarsContext {
+    /// Project root containing mars.toml and mars.lock.
+    pub project_root: PathBuf,
+    /// Managed output directory (e.g. /project/.agents).
+    pub managed_root: PathBuf,
+}
+
+#[cfg(test)]
+impl MarsContext {
+    /// Create a MarsContext for tests without any validation.
+    pub fn for_test(project_root: PathBuf, managed_root: PathBuf) -> Self {
+        MarsContext {
+            project_root,
+            managed_root,
+        }
+    }
+}
+
 /// Stable source identity used for resolver deduplication.
 #[derive(Hash, Eq, PartialEq, Clone, Debug, Ord, PartialOrd)]
 pub enum SourceId {
