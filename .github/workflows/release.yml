@@ -179,15 +179,17 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     permissions:
-      contents: read
       id-token: write
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "lts/*"
           registry-url: "https://registry.npmjs.org"
+
+      - name: Ensure npm supports trusted publishing
+        run: npm install -g npm@latest
 
       - uses: actions/download-artifact@v4
         with:
@@ -208,8 +210,6 @@ jobs:
           fi
 
       - name: Prepare and publish platform packages
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           VERSION=${{ steps.version.outputs.version }}
 
@@ -239,8 +239,6 @@ jobs:
           publish_platform npm/@haowjy/mars-agents-darwin-x64 mars-darwin-x64
 
       - name: Publish CLI stub package
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           VERSION=${{ steps.version.outputs.version }}
 
