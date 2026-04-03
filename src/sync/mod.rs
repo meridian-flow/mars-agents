@@ -195,7 +195,73 @@ pub fn execute(ctx: &MarsContext, request: &SyncRequest) -> Result<SyncReport, M
 
     // Step 13: Create plan.
     let cache_bases_dir = managed_root.join(".mars").join("cache").join("bases");
-    let sync_plan = plan::create(&sync_diff, &request.options, &cache_bases_dir);
+    let mut sync_plan = plan::create(&sync_diff, &request.options, &cache_bases_dir);
+
+    // Step 13b: Inject local package symlinks into plan.
+    if config.package.is_some() {
+        let self_items = discover_local_items(project_root)?;
+
+        // Collision check: local items shadow external items
+        for item in &self_items {
+            if target_state.items.contains_key(&item.dest_rel) {
+                let existing = &target_state.items[&item.dest_rel];
+                eprintln!(
+                    "warning: local {} `{}` shadows dependency `{}` {} `{}`",
+                    item.kind, item.name, existing.source_name, existing.id.kind, existing.id.name
+                );
+                // Remove external item from plan (it will be replaced by symlink)
+                let dest_rel = item.dest_rel.clone();
+                sync_plan
+                    .actions
+                    .retain(|a| !action_matches_dest(a, &dest_rel));
+                target_state.items.shift_remove(&item.dest_rel);
+            }
+        }
+
+        // Inject symlink actions for items that need updating
+        for item in &self_items {
+            let dest = managed_root.join(item.dest_rel.as_path());
+            let needs_update = match dest.symlink_metadata() {
+                Ok(meta) if meta.file_type().is_symlink() => {
+                    let current_target = std::fs::read_link(&dest).ok();
+                    let from_dir = dest.parent().unwrap();
+                    let expected = pathdiff::diff_paths(&item.source_path, from_dir)
+                        .unwrap_or_else(|| item.source_path.clone());
+                    current_target.as_deref() != Some(expected.as_path())
+                }
+                Ok(_) => true,  // exists but not a symlink — replace
+                Err(_) => true, // doesn't exist — create
+            };
+            if needs_update {
+                sync_plan.actions.push(plan::PlannedAction::Symlink {
+                    source_abs: item.source_path.clone(),
+                    dest_rel: item.dest_rel.clone(),
+                    kind: item.kind,
+                    name: item.name.clone(),
+                });
+            }
+        }
+
+        // Prune old _self entries from lock that are no longer present
+        let self_dest_set: std::collections::HashSet<_> =
+            self_items.iter().map(|i| &i.dest_rel).collect();
+        for (dest_path, locked_item) in &old_lock.items {
+            if locked_item.source.as_ref() == "_self" && !self_dest_set.contains(dest_path) {
+                sync_plan.actions.push(plan::PlannedAction::Remove {
+                    locked: locked_item.clone(),
+                });
+            }
+        }
+    } else {
+        // No [package] — prune any stale _self entries from lock
+        for (_, locked_item) in &old_lock.items {
+            if locked_item.source.as_ref() == "_self" {
+                sync_plan.actions.push(plan::PlannedAction::Remove {
+                    locked: locked_item.clone(),
+                });
+            }
+        }
+    }
 
     // Step 14: Frozen gate.
     if request.options.frozen {
@@ -495,6 +561,86 @@ fn validate_skill_refs(
         .collect();
 
     crate::validate::check_deps(&agents, &available_skills).unwrap_or_default()
+}
+
+/// A local package item discovered under the project root.
+struct LocalItem {
+    kind: crate::lock::ItemKind,
+    name: ItemName,
+    /// Absolute path to source — for agents, the .md file; for skills, the directory.
+    source_path: PathBuf,
+    /// Relative destination under managed root.
+    dest_rel: crate::types::DestPath,
+}
+
+/// Discover local package items (agents and skills) at the project root.
+///
+/// Called when `[package]` is present in `mars.toml`. Scans:
+/// - `project_root/agents/*.md` → agent items
+/// - `project_root/skills/*/` (directories containing SKILL.md) → skill items
+fn discover_local_items(project_root: &Path) -> Result<Vec<LocalItem>, MarsError> {
+    use crate::lock::ItemKind;
+    let mut items = Vec::new();
+
+    // Discover agents
+    let agents_dir = project_root.join("agents");
+    if agents_dir.is_dir() {
+        for entry in std::fs::read_dir(&agents_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("md") && path.is_file() {
+                let name = path
+                    .file_stem()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
+                items.push(LocalItem {
+                    kind: ItemKind::Agent,
+                    name: ItemName::from(name.as_str()),
+                    source_path: path.canonicalize().unwrap_or(path.clone()),
+                    dest_rel: format!("agents/{}.md", name).into(),
+                });
+            }
+        }
+    }
+
+    // Discover skills
+    let skills_dir = project_root.join("skills");
+    if skills_dir.is_dir() {
+        for entry in std::fs::read_dir(&skills_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() && path.join("SKILL.md").exists() {
+                let name = path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
+                items.push(LocalItem {
+                    kind: ItemKind::Skill,
+                    name: ItemName::from(name.as_str()),
+                    source_path: path.canonicalize().unwrap_or(path.clone()),
+                    dest_rel: format!("skills/{}", name).into(),
+                });
+            }
+        }
+    }
+
+    Ok(items)
+}
+
+/// Check if a planned action targets a specific destination path.
+fn action_matches_dest(action: &plan::PlannedAction, dest: &crate::types::DestPath) -> bool {
+    match action {
+        plan::PlannedAction::Install { target } | plan::PlannedAction::Overwrite { target } => {
+            &target.dest_path == dest
+        }
+        plan::PlannedAction::Skip { dest_path, .. }
+        | plan::PlannedAction::KeepLocal { dest_path, .. } => dest_path == dest,
+        plan::PlannedAction::Merge { target, .. } => &target.dest_path == dest,
+        plan::PlannedAction::Remove { locked } => &locked.dest_path == dest,
+        plan::PlannedAction::Symlink { dest_rel, .. } => dest_rel == dest,
+    }
 }
 
 #[cfg(test)]

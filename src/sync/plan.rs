@@ -1,10 +1,10 @@
 use std::path::PathBuf;
 
-use crate::lock::{ItemId, LockedItem};
+use crate::lock::{ItemId, ItemKind, LockedItem};
 use crate::sync::apply::SyncOptions;
 use crate::sync::diff::{DiffEntry, SyncDiff};
 use crate::sync::target::TargetItem;
-use crate::types::{DestPath, SourceName};
+use crate::types::{DestPath, ItemName, SourceName};
 
 /// A planned set of actions to execute.
 #[derive(Debug, Clone)]
@@ -42,6 +42,15 @@ pub enum PlannedAction {
         item_id: ItemId,
         dest_path: DestPath,
         source_name: SourceName,
+    },
+    /// Create a symlink for a local package item (`_self` source).
+    Symlink {
+        /// Absolute path to the source file/directory.
+        source_abs: PathBuf,
+        /// Relative destination under managed root.
+        dest_rel: DestPath,
+        kind: ItemKind,
+        name: ItemName,
     },
 }
 
