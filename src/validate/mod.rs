@@ -153,8 +153,7 @@ mod tests {
                 assert_eq!(agent.kind, ItemKind::Agent);
                 assert_eq!(skill_name, "missing-skill");
                 assert!(suggestion.is_none());
-            }
-            // only variant is MissingSkill; exhaustive match above
+            } // only variant is MissingSkill; exhaustive match above
         }
     }
 
@@ -213,8 +212,7 @@ mod tests {
         match &warnings[0] {
             ValidationWarning::MissingSkill { suggestion, .. } => {
                 assert_eq!(suggestion.as_deref(), Some("planning"));
-            }
-            // only variant is MissingSkill; exhaustive match above
+            } // only variant is MissingSkill; exhaustive match above
         }
     }
 
