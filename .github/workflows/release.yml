@@ -26,6 +26,9 @@ jobs:
           - target: x86_64-apple-darwin
             runner: macos-15-intel
             artifact: mars-darwin-x64
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            artifact: mars-windows-x64.exe
     steps:
       - uses: actions/checkout@v4
 
@@ -53,16 +56,21 @@ jobs:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
         run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Strip binary
-        if: matrix.target != 'aarch64-unknown-linux-gnu'
+      - name: Strip binary (Unix)
+        if: matrix.target != 'aarch64-unknown-linux-gnu' && !contains(matrix.target, 'windows')
         run: strip target/${{ matrix.target }}/release/mars
 
       - name: Strip binary (Linux ARM64)
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         run: aarch64-linux-gnu-strip target/${{ matrix.target }}/release/mars
 
-      - name: Rename binary
+      - name: Rename binary (Unix)
+        if: "!contains(matrix.target, 'windows')"
         run: cp target/${{ matrix.target }}/release/mars ${{ matrix.artifact }}
+
+      - name: Rename binary (Windows)
+        if: contains(matrix.target, 'windows')
+        run: cp target/${{ matrix.target }}/release/mars.exe ${{ matrix.artifact }}
 
       - uses: actions/upload-artifact@v4
         with:
@@ -87,6 +95,9 @@ jobs:
           - target: x86_64-apple-darwin
             runner: macos-15-intel
             artifact: wheels-darwin-x64
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            artifact: wheels-windows-x64
     steps:
       - uses: actions/checkout@v4
 
@@ -123,8 +134,9 @@ jobs:
     name: Publish PyPI
     needs: [pypi-wheels, pypi-sdist]
     runs-on: ubuntu-latest
+    environment: pypi
     permissions:
-      contents: read
+      id-token: write
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -140,7 +152,6 @@ jobs:
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
-          password: ${{ secrets.PYPI_API_TOKEN }}
           packages-dir: dist
 
   github-release:
