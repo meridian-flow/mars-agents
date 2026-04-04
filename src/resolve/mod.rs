@@ -884,6 +884,7 @@ mod tests {
                 description: None,
             },
             dependencies,
+            models: indexmap::IndexMap::new(),
         }
     }
 

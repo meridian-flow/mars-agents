@@ -746,7 +746,6 @@ fn conflict_flow_with_resolve() {
         &[],
     );
 
-    let agents_dir = dir.child("project").child(".agents");
     mars()
         .args([
             "init",
@@ -766,9 +765,17 @@ fn conflict_flow_with_resolve() {
         .assert()
         .success();
 
-    // Modify local
-    let installed = agents_dir.child("agents").child("coder.md");
-    fs::write(installed.path(), "# Local change\nline 2\nline 3\n").unwrap();
+    // Modify local in .mars/ canonical store (not .agents/ target)
+    let mars_installed = dir
+        .child("project")
+        .child(".mars")
+        .child("agents")
+        .child("coder.md");
+    fs::write(
+        mars_installed.path(),
+        "# Local change\nline 2\nline 3\n",
+    )
+    .unwrap();
 
     // Modify source
     fs::write(
@@ -787,15 +794,19 @@ fn conflict_flow_with_resolve() {
         .assert()
         .code(1);
 
-    // File should have conflict markers
-    let content = fs::read_to_string(installed.path()).unwrap();
+    // File in .mars/ should have conflict markers
+    let content = fs::read_to_string(mars_installed.path()).unwrap();
     assert!(
         content.contains("<<<<<<<") || content.contains(">>>>>>>"),
         "Expected conflict markers in: {content}"
     );
 
     // Manually "resolve" by removing markers
-    fs::write(installed.path(), "# Manually resolved\nline 2\nline 3\n").unwrap();
+    fs::write(
+        mars_installed.path(),
+        "# Manually resolved\nline 2\nline 3\n",
+    )
+    .unwrap();
 
     // Run resolve
     mars()
@@ -841,7 +852,6 @@ fn add_skips_unmanaged_file_collision() {
     let dir = TempDir::new().unwrap();
     let source = create_source(&dir, "base", &[("coder", "# Managed coder")], &[]);
 
-    let agents_dir = dir.child("project").child(".agents");
     mars()
         .args([
             "init",
@@ -851,7 +861,9 @@ fn add_skips_unmanaged_file_collision() {
         .assert()
         .success();
 
-    let user_file = agents_dir.child("agents").child("coder.md");
+    // Place unmanaged file in .mars/ (canonical store) to trigger collision detection
+    let mars_dir = dir.child("project").child(".mars");
+    let user_file = mars_dir.child("agents").child("coder.md");
     fs::create_dir_all(user_file.path().parent().unwrap()).unwrap();
     fs::write(user_file.path(), "# User-authored").unwrap();
 
@@ -887,7 +899,6 @@ fn sync_force_clears_previous_conflict_markers() {
         &[],
     );
 
-    let agents_dir = dir.child("project").child(".agents");
     mars()
         .args([
             "init",
@@ -907,8 +918,17 @@ fn sync_force_clears_previous_conflict_markers() {
         .assert()
         .success();
 
-    let installed = agents_dir.child("agents").child("coder.md");
-    fs::write(installed.path(), "# Local change\nline 2\nline 3\n").unwrap();
+    // Modify local in .mars/ canonical store
+    let mars_installed = dir
+        .child("project")
+        .child(".mars")
+        .child("agents")
+        .child("coder.md");
+    fs::write(
+        mars_installed.path(),
+        "# Local change\nline 2\nline 3\n",
+    )
+    .unwrap();
     fs::write(
         source.join("agents").join("coder.md"),
         "# Upstream change\nline 2\nline 3\n",
@@ -935,8 +955,18 @@ fn sync_force_clears_previous_conflict_markers() {
         .assert()
         .success();
 
-    let content = fs::read_to_string(installed.path()).unwrap();
+    // Check .mars/ canonical store has the upstream content
+    let content = fs::read_to_string(mars_installed.path()).unwrap();
     assert_eq!(content, "# Upstream change\nline 2\nline 3\n");
+
+    // Target (.agents/) should also have the upstream content
+    let target_installed = dir
+        .child("project")
+        .child(".agents")
+        .child("agents")
+        .child("coder.md");
+    let target_content = fs::read_to_string(target_installed.path()).unwrap();
+    assert_eq!(target_content, "# Upstream change\nline 2\nline 3\n");
 }
 
 #[test]
@@ -1269,40 +1299,42 @@ fn full_pipeline_with_local_package_and_custom_target() {
         .assert()
         .success();
 
-    // 7-10. Verify symlinks and regular files
+    // 7-10. Verify items exist in target and .mars/ canonical store
     let managed = project.child(".claude");
-    let local_agent_link = managed.child("agents").child("local-agent.md");
-    let local_skill_link = managed.child("skills").child("local-skill");
+    let local_agent_target = managed.child("agents").child("local-agent.md");
+    let local_skill_target = managed.child("skills").child("local-skill");
     let external_agent = managed.child("agents").child("external-agent.md");
 
-    assert!(local_agent_link.path().exists(), "local agent should exist");
-    assert!(local_skill_link.path().exists(), "local skill should exist");
+    assert!(local_agent_target.path().exists(), "local agent should exist");
+    assert!(local_skill_target.path().exists(), "local skill should exist");
     assert!(
         external_agent.path().exists(),
         "external agent should exist"
     );
 
-    // Verify symlinks
+    // In .mars/ canonical store, local items should be symlinks
+    let mars_dir = project.child(".mars");
+    let mars_local_agent = mars_dir.child("agents").child("local-agent.md");
     assert!(
-        local_agent_link
+        mars_local_agent
             .path()
             .symlink_metadata()
             .unwrap()
             .file_type()
             .is_symlink(),
-        "local agent should be a symlink"
-    );
-    assert!(
-        local_skill_link
-            .path()
-            .symlink_metadata()
-            .unwrap()
-            .file_type()
-            .is_symlink(),
-        "local skill should be a symlink"
+        "local agent in .mars/ should be a symlink"
     );
 
-    // External should NOT be a symlink
+    // In target directories, ALL items are regular file copies (D26)
+    assert!(
+        !local_agent_target
+            .path()
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "local agent in target should be a regular file copy, not a symlink"
+    );
     assert!(
         !external_agent
             .path()

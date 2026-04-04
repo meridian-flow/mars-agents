@@ -69,8 +69,9 @@ pub fn run(args: &WhyArgs, ctx: &super::MarsContext, json: bool) -> Result<i32, 
     };
 
     // Find which agents reference this item (if it's a skill)
+    let mars_dir = ctx.project_root.join(".mars");
     let required_by = if item.kind == ItemKind::Skill {
-        find_referencing_agents(&ctx.managed_root, &lock, &args.name)
+        find_referencing_agents(&mars_dir, &lock, &args.name)
     } else {
         Vec::new()
     };

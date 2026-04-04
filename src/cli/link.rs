@@ -179,8 +179,23 @@ pub fn run(args: &LinkArgs, ctx: &super::MarsContext, json: bool) -> Result<i32,
 
     // Persist link in config (already under sync lock from above).
     let mut config = crate::config::load(&ctx.project_root)?;
+    let mut changed = false;
+
+    // Add to targets if targets is explicitly set
+    if let Some(ref mut targets) = config.settings.targets
+        && !targets.contains(&target_name)
+    {
+        targets.push(target_name.clone());
+        changed = true;
+    }
+
+    // Also maintain legacy links for backward compat
     if !config.settings.links.contains(&target_name) {
         config.settings.links.push(target_name.clone());
+        changed = true;
+    }
+
+    if changed {
         crate::config::save(&ctx.project_root, &config)?;
     }
 

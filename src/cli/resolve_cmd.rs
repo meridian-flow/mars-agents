@@ -37,8 +37,9 @@ pub fn run(args: &ResolveArgs, ctx: &super::MarsContext, json: bool) -> Result<i
         lock.items.keys().cloned().collect()
     };
 
+    let mars_dir = ctx.project_root.join(".mars");
     for dest_path_str in &items_to_check {
-        let disk_path = ctx.managed_root.join(dest_path_str);
+        let disk_path = mars_dir.join(dest_path_str);
         if !disk_path.exists() {
             continue;
         }

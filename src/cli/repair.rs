@@ -73,7 +73,8 @@ fn execute_repair_with_collision_cleanup(
                         });
                     }
 
-                    let full_path = ctx.managed_root.join(path);
+                    let mars_dir = ctx.project_root.join(".mars");
+                    let full_path = mars_dir.join(path);
                     if full_path.is_dir() {
                         std::fs::remove_dir_all(&full_path)?;
                     } else if full_path.exists() {

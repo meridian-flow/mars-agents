@@ -29,8 +29,9 @@ pub struct ListArgs {
 pub fn run(args: &ListArgs, ctx: &super::MarsContext, json: bool) -> Result<i32, MarsError> {
     let lock = crate::lock::load(&ctx.project_root)?;
 
+    let mars_dir = ctx.project_root.join(".mars");
     if args.status {
-        return run_status(args, &ctx.managed_root, &lock, json);
+        return run_status(args, &mars_dir, &lock, json);
     }
 
     // Default: catalog view (name + description from frontmatter)
@@ -56,8 +57,8 @@ pub fn run(args: &ListArgs, ctx: &super::MarsContext, json: bool) -> Result<i32,
             }
         }
 
-        // Read frontmatter for name + description
-        let disk_path = ctx.managed_root.join(dest_path);
+        // Read frontmatter for name + description from .mars/ canonical store
+        let disk_path = mars_dir.join(dest_path);
         let content_path = match item.kind {
             ItemKind::Agent => disk_path.clone(),
             ItemKind::Skill => disk_path.join("SKILL.md"),

@@ -32,9 +32,10 @@ pub fn run(_args: &DoctorArgs, ctx: &super::MarsContext, json: bool) -> Result<i
         }
     };
 
-    // Check each locked item
+    // Check each locked item against .mars/ canonical store
+    let mars_dir = ctx.project_root.join(".mars");
     for (dest_path_str, item) in &lock.items {
-        let disk_path = ctx.managed_root.join(dest_path_str);
+        let disk_path = mars_dir.join(dest_path_str);
 
         // Check file exists
         if !disk_path.exists() {
@@ -90,7 +91,7 @@ pub fn run(_args: &DoctorArgs, ctx: &super::MarsContext, json: bool) -> Result<i
     {
         use std::collections::HashSet;
 
-        let installed = crate::discover::discover_installed(&ctx.managed_root)?;
+        let installed = crate::discover::discover_installed(&mars_dir)?;
 
         // Report symlinked items
         for item in installed.agents.iter().chain(installed.skills.iter()) {
@@ -150,6 +151,9 @@ pub fn run(_args: &DoctorArgs, ctx: &super::MarsContext, json: bool) -> Result<i
         }
     }
 
+    // Check .mars/ gitignore (D29)
+    check_mars_gitignore(&ctx.project_root, &mut issues);
+
     // Check link health
     if let Ok(config) = crate::config::load(&ctx.project_root) {
         for link_target in &config.settings.links {
@@ -162,12 +166,39 @@ pub fn run(_args: &DoctorArgs, ctx: &super::MarsContext, json: bool) -> Result<i
     if issues.is_empty() { Ok(0) } else { Ok(2) }
 }
 
+/// Check if .mars/ is properly gitignored (D29).
+///
+/// Mars does NOT auto-edit .gitignore — it only warns via `mars doctor`.
+fn check_mars_gitignore(project_root: &std::path::Path, issues: &mut Vec<String>) {
+    let mars_dir = project_root.join(".mars");
+    if !mars_dir.exists() {
+        return;
+    }
+
+    let gitignore_path = project_root.join(".gitignore");
+    let is_ignored = match std::fs::read_to_string(&gitignore_path) {
+        Ok(content) => content.lines().any(|line| {
+            let trimmed = line.trim();
+            trimmed == ".mars" || trimmed == ".mars/" || trimmed == "/.mars" || trimmed == "/.mars/"
+        }),
+        Err(_) => false,
+    };
+
+    if !is_ignored {
+        issues.push(
+            ".mars/ is not in .gitignore — add `.mars/` to your .gitignore to avoid committing cached data"
+                .to_string(),
+        );
+    }
+}
+
 fn is_self_symlink(
     item: &crate::discover::InstalledItem,
     ctx: &super::MarsContext,
     lock: &crate::lock::LockFile,
 ) -> bool {
-    let Ok(rel_path) = item.path.strip_prefix(&ctx.managed_root) else {
+    let mars_dir = ctx.project_root.join(".mars");
+    let Ok(rel_path) = item.path.strip_prefix(&mars_dir) else {
         return false;
     };
     let dest_path = crate::types::DestPath::from(rel_path);

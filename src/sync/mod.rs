@@ -42,6 +42,8 @@ pub struct SyncReport {
     pub pruned: Vec<apply::ActionOutcome>,
     pub diagnostics: Vec<Diagnostic>,
     pub dependency_changes: Vec<DependencyUpsertChange>,
+    /// Per-target sync outcomes from the target sync phase.
+    pub target_outcomes: Vec<crate::target_sync::TargetSyncOutcome>,
     /// Whether this was a dry run (`--diff`). Affects output wording only.
     pub dry_run: bool,
 }
@@ -95,6 +97,7 @@ pub struct LoadedConfig {
 pub struct ResolvedState {
     pub loaded: LoadedConfig,
     pub graph: ResolvedGraph,
+    pub model_aliases: indexmap::IndexMap<String, crate::models::ModelAlias>,
 }
 
 /// Phase 3: Desired target state after discovery + filtering.
@@ -117,6 +120,12 @@ pub struct AppliedState {
     pub applied: ApplyResult,
 }
 
+/// Phase 6: Target sync results.
+pub struct SyncedState {
+    pub applied: AppliedState,
+    pub target_outcomes: Vec<crate::target_sync::TargetSyncOutcome>,
+}
+
 /// Execute the unified sync pipeline.
 ///
 /// Orchestrates phase functions, each consuming the prior phase's output struct.
@@ -131,7 +140,8 @@ pub fn execute(ctx: &MarsContext, request: &SyncRequest) -> Result<SyncReport, M
         check_frozen_gate(&planned)?;
     }
     let applied = apply_plan(ctx, planned, request)?;
-    let report = finalize(ctx, applied, request, &mut diag)?;
+    let synced = sync_targets(ctx, applied, request, &mut diag);
+    let report = finalize(ctx, synced, request, &mut diag)?;
     Ok(report)
 }
 
@@ -219,7 +229,30 @@ fn resolve_graph(
         diag,
     )?;
 
-    Ok(ResolvedState { loaded, graph })
+    // Merge model config from dependency tree
+    let dep_models: Vec<crate::models::ResolvedDepModels> = graph
+        .order
+        .iter()
+        .filter_map(|name| {
+            let node = graph.nodes.get(name)?;
+            let manifest = node.manifest.as_ref()?;
+            if manifest.models.is_empty() {
+                return None;
+            }
+            Some(crate::models::ResolvedDepModels {
+                source_name: name.to_string(),
+                models: manifest.models.clone(),
+            })
+        })
+        .collect();
+    let model_aliases =
+        crate::models::merge_model_config(&loaded.config.models, &dep_models, diag);
+
+    Ok(ResolvedState {
+        loaded,
+        graph,
+        model_aliases,
+    })
 }
 
 /// Phase 3: Build target state, handle collisions, rewrite frontmatter refs, validate.
@@ -229,7 +262,9 @@ fn build_target(
     _request: &SyncRequest,
     diag: &mut DiagnosticCollector,
 ) -> Result<TargetedState, MarsError> {
-    let managed_root = &ctx.managed_root;
+    // Use .mars/ as the canonical content root for diff/collision checks.
+    let mars_dir = ctx.project_root.join(".mars");
+    let managed_root = &mars_dir;
 
     // Build target state from resolved graph.
     let (mut target_state, renames) =
@@ -352,8 +387,9 @@ fn create_plan(
     request: &SyncRequest,
     _diag: &mut DiagnosticCollector,
 ) -> Result<PlannedState, MarsError> {
-    let managed_root = &ctx.managed_root;
+    // Diff against .mars/ canonical store.
     let mars_dir = ctx.project_root.join(".mars");
+    let managed_root = &mars_dir;
     let cache_bases_dir = mars_dir.join("cache").join("bases");
 
     // Compute diff.
@@ -389,14 +425,13 @@ fn check_frozen_gate(planned: &PlannedState) -> Result<(), MarsError> {
     Ok(())
 }
 
-/// Phase 5: Persist config if mutated, apply plan to disk.
+/// Phase 5: Persist config if mutated, apply plan to .mars/ canonical store.
 fn apply_plan(
     ctx: &MarsContext,
     planned: PlannedState,
     request: &SyncRequest,
 ) -> Result<AppliedState, MarsError> {
     let project_root = &ctx.project_root;
-    let managed_root = &ctx.managed_root;
     let mars_dir = project_root.join(".mars");
     let cache_bases_dir = mars_dir.join("cache").join("bases");
 
@@ -420,9 +455,11 @@ fn apply_plan(
         }
     }
 
-    // Apply plan.
+    // Apply plan to .mars/ canonical store (D25).
+    // Content is written to .mars/agents/ and .mars/skills/, then
+    // sync_targets() copies to all managed target directories.
     let applied = apply::execute(
-        managed_root,
+        &mars_dir,
         &planned.plan,
         &request.options,
         &cache_bases_dir,
@@ -431,24 +468,68 @@ fn apply_plan(
     Ok(AppliedState { planned, applied })
 }
 
-/// Phase 6: Write lock file, construct SyncReport.
+/// Phase 6: Sync managed targets from .mars/ canonical store.
+///
+/// Copies content from .mars/ to all configured target directories.
+/// Non-fatal — target sync errors are recorded as diagnostics.
+/// Lock is written regardless of target sync outcome (D21).
+fn sync_targets(
+    ctx: &MarsContext,
+    applied: AppliedState,
+    request: &SyncRequest,
+    diag: &mut DiagnosticCollector,
+) -> SyncedState {
+    if request.options.dry_run {
+        return SyncedState {
+            applied,
+            target_outcomes: Vec::new(),
+        };
+    }
+
+    let mars_dir = ctx.project_root.join(".mars");
+    let targets = applied
+        .planned
+        .targeted
+        .resolved
+        .loaded
+        .effective
+        .settings
+        .managed_targets();
+
+    let target_outcomes = crate::target_sync::sync_managed_targets(
+        &ctx.project_root,
+        &mars_dir,
+        &targets,
+        &applied.applied.outcomes,
+        diag,
+    );
+
+    SyncedState {
+        applied,
+        target_outcomes,
+    }
+}
+
+/// Phase 7: Write lock file, construct SyncReport.
+///
+/// Lock is written regardless of target sync outcome (D21).
 fn finalize(
     ctx: &MarsContext,
-    state: AppliedState,
+    state: SyncedState,
     request: &SyncRequest,
     diag: &mut DiagnosticCollector,
 ) -> Result<SyncReport, MarsError> {
     let project_root = &ctx.project_root;
-    let old_lock = &state.planned.targeted.resolved.loaded.old_lock;
-    let graph = &state.planned.targeted.resolved.graph;
+    let old_lock = &state.applied.planned.targeted.resolved.loaded.old_lock;
+    let graph = &state.applied.planned.targeted.resolved.graph;
 
-    // Write lock file.
+    // Write lock file (D21 — regardless of target sync outcome).
     if !request.options.dry_run {
-        let new_lock = crate::lock::build(graph, &state.applied, old_lock)?;
+        let new_lock = crate::lock::build(graph, &state.applied.applied, old_lock)?;
         crate::lock::write(project_root, &new_lock)?;
     }
 
-    for w in &state.planned.targeted.warnings {
+    for w in &state.applied.planned.targeted.warnings {
         match w {
             ValidationWarning::MissingSkill {
                 agent,
@@ -471,13 +552,20 @@ fn finalize(
             }
         }
     }
-    let dependency_changes = state.planned.targeted.resolved.loaded.dependency_changes;
+    let dependency_changes = state
+        .applied
+        .planned
+        .targeted
+        .resolved
+        .loaded
+        .dependency_changes;
 
     Ok(SyncReport {
-        applied: state.applied,
+        applied: state.applied.applied,
         pruned: Vec::new(),
         diagnostics: diag.drain(),
         dependency_changes,
+        target_outcomes: state.target_outcomes,
         dry_run: request.options.dry_run,
     })
 }
