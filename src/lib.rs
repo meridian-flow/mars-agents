@@ -5,6 +5,7 @@ pub mod error;
 pub mod frontmatter;
 pub mod fs;
 pub mod hash;
+pub mod link;
 pub mod lock;
 pub mod merge;
 pub mod resolve;
