@@ -425,7 +425,56 @@ pub fn save(root: &Path, config: &Config) -> Result<(), MarsError> {
     let content = toml::to_string_pretty(config).map_err(|e| ConfigError::Invalid {
         message: format!("failed to serialize config: {e}"),
     })?;
+    let reparsed: Config = toml::from_str(&content).map_err(|e| ConfigError::Invalid {
+        message: format!("refusing to save config: serialized output failed to parse: {e}"),
+    })?;
+    validate_save_roundtrip(config, &reparsed)?;
     crate::fs::atomic_write(&path, content.as_bytes())
+}
+
+fn validate_save_roundtrip(original: &Config, reparsed: &Config) -> Result<(), MarsError> {
+    if reparsed.dependencies.len() != original.dependencies.len() {
+        return Err(ConfigError::Invalid {
+            message: format!(
+                "refusing to save config: dependency count changed during roundtrip ({} -> {})",
+                original.dependencies.len(),
+                reparsed.dependencies.len()
+            ),
+        }
+        .into());
+    }
+
+    if reparsed.settings.managed_root != original.settings.managed_root {
+        return Err(ConfigError::Invalid {
+            message: format!(
+                "refusing to save config: settings.managed_root changed during roundtrip ({:?} -> {:?})",
+                original.settings.managed_root, reparsed.settings.managed_root
+            ),
+        }
+        .into());
+    }
+
+    for (name, dep) in &original.dependencies {
+        let Some(reparsed_dep) = reparsed.dependencies.get(name) else {
+            return Err(ConfigError::Invalid {
+                message: format!(
+                    "refusing to save config: dependency `{name}` missing after roundtrip"
+                ),
+            }
+            .into());
+        };
+
+        if reparsed_dep != dep {
+            return Err(ConfigError::Invalid {
+                message: format!(
+                    "refusing to save config: dependency `{name}` changed during roundtrip"
+                ),
+            }
+            .into());
+        }
+    }
+
+    Ok(())
 }
 
 /// Write mars.local.toml atomically.
@@ -602,43 +651,51 @@ path = "/local/path"
     }
 
     #[test]
-    fn roundtrip_config() {
-        let config = Config {
-            dependencies: {
-                let mut m = IndexMap::new();
-                m.insert(
-                    "base".into(),
-                    DependencyEntry {
-                        url: Some("https://github.com/org/base.git".into()),
-                        path: None,
-                        version: Some("v1.0".into()),
-                        filter: FilterConfig {
-                            agents: Some(vec!["coder".into()]),
-                            skills: None,
-                            exclude: None,
-                            rename: None,
-                            only_skills: false,
-                            only_agents: false,
-                        },
-                    },
-                );
-                m.insert(
-                    "local".into(),
-                    DependencyEntry {
-                        url: None,
-                        path: Some(PathBuf::from("../my-agents")),
-                        version: None,
-                        filter: FilterConfig::default(),
-                    },
-                );
-                m
-            },
-            settings: Settings::default(),
-            ..Config::default()
-        };
-        let serialized = toml::to_string_pretty(&config).unwrap();
-        let deserialized: Config = toml::from_str(&serialized).unwrap();
-        assert_eq!(config, deserialized);
+    fn roundtrip_full_config_shape_survives_save() {
+        let dir = TempDir::new().unwrap();
+        let original = r#"
+[package]
+name = "sample"
+version = "0.1.0"
+description = "sample package"
+
+[dependencies.base]
+url = "https://github.com/org/base.git"
+version = "v1.0"
+agents = ["coder", "reviewer"]
+
+[dependencies.local]
+path = "../local-agents"
+exclude = ["experimental"]
+
+[settings]
+managed_root = ".custom-agents"
+links = [".claude", ".cursor"]
+"#;
+        std::fs::write(dir.path().join("mars.toml"), original).unwrap();
+
+        let config = load(dir.path()).unwrap();
+        save(dir.path(), &config).unwrap();
+        let reloaded = load(dir.path()).unwrap();
+
+        assert_eq!(
+            reloaded.package.as_ref().map(|p| p.name.as_str()),
+            Some("sample")
+        );
+        assert_eq!(reloaded.dependencies.len(), 2);
+        assert_eq!(
+            reloaded.dependencies["base"].url.as_deref(),
+            Some("https://github.com/org/base.git")
+        );
+        assert_eq!(
+            reloaded.dependencies["local"].path.as_deref(),
+            Some(Path::new("../local-agents"))
+        );
+        assert_eq!(
+            reloaded.settings.managed_root.as_deref(),
+            Some(".custom-agents")
+        );
+        assert_eq!(reloaded.settings.links, vec![".claude", ".cursor"]);
     }
 
     #[test]
@@ -950,6 +1007,7 @@ version = "v1.0"
 agents = ["coder"]
 
 [settings]
+managed_root = ".agents"
 links = [".claude"]
 "#;
         std::fs::write(dir.path().join("mars.toml"), original).unwrap();
@@ -972,7 +1030,150 @@ links = [".claude"]
             reloaded.dependencies["base"].filter.agents.as_deref(),
             Some(&["coder".into()][..])
         );
+        assert_eq!(reloaded.settings.managed_root.as_deref(), Some(".agents"));
         assert!(reloaded.settings.links.is_empty());
+    }
+
+    #[test]
+    fn roundtrip_preserves_all_filter_fields() {
+        let dir = TempDir::new().unwrap();
+        let original = r#"
+[dependencies.include]
+url = "https://github.com/org/include.git"
+agents = ["coder", "reviewer"]
+skills = ["review", "plan"]
+
+[dependencies.include.rename]
+coder = "core-coder"
+
+[dependencies.exclude]
+url = "https://github.com/org/exclude.git"
+exclude = ["experimental", "deprecated"]
+
+[dependencies.only_skills]
+url = "https://github.com/org/skills.git"
+only_skills = true
+
+[dependencies.only_agents]
+url = "https://github.com/org/agents.git"
+only_agents = true
+"#;
+        std::fs::write(dir.path().join("mars.toml"), original).unwrap();
+
+        let config = load(dir.path()).unwrap();
+        save(dir.path(), &config).unwrap();
+        let reloaded = load(dir.path()).unwrap();
+
+        let include = &reloaded.dependencies["include"].filter;
+        assert_eq!(
+            include.agents.as_deref(),
+            Some(&["coder".into(), "reviewer".into()][..])
+        );
+        assert_eq!(
+            include.skills.as_deref(),
+            Some(&["review".into(), "plan".into()][..])
+        );
+        assert_eq!(
+            include.rename.as_ref().and_then(|r| r.get("coder")),
+            Some(&"core-coder".into())
+        );
+
+        let exclude = &reloaded.dependencies["exclude"].filter;
+        assert_eq!(
+            exclude.exclude.as_deref(),
+            Some(&["experimental".into(), "deprecated".into()][..])
+        );
+
+        let only_skills = &reloaded.dependencies["only_skills"].filter;
+        assert!(only_skills.only_skills);
+        assert!(!only_skills.only_agents);
+
+        let only_agents = &reloaded.dependencies["only_agents"].filter;
+        assert!(only_agents.only_agents);
+        assert!(!only_agents.only_skills);
+    }
+
+    #[test]
+    fn roundtrip_multiple_dependencies_with_distinct_filter_combos() {
+        let dir = TempDir::new().unwrap();
+        let original = r#"
+[dependencies.git-include]
+url = "https://github.com/org/git-include.git"
+agents = ["coder"]
+
+[dependencies.path-exclude]
+path = "../local-source"
+exclude = ["draft"]
+
+[dependencies.git-only-skills]
+url = "https://github.com/org/git-skills.git"
+only_skills = true
+
+[dependencies.git-only-agents]
+url = "https://github.com/org/git-agents.git"
+only_agents = true
+"#;
+        std::fs::write(dir.path().join("mars.toml"), original).unwrap();
+
+        let config = load(dir.path()).unwrap();
+        save(dir.path(), &config).unwrap();
+        let reloaded = load(dir.path()).unwrap();
+
+        assert_eq!(reloaded.dependencies.len(), 4);
+        assert_eq!(
+            reloaded.dependencies["git-include"].filter.agents.as_deref(),
+            Some(&["coder".into()][..])
+        );
+        assert_eq!(
+            reloaded.dependencies["path-exclude"].path.as_deref(),
+            Some(Path::new("../local-source"))
+        );
+        assert_eq!(
+            reloaded.dependencies["path-exclude"].filter.exclude.as_deref(),
+            Some(&["draft".into()][..])
+        );
+        assert!(reloaded.dependencies["git-only-skills"].filter.only_skills);
+        assert!(reloaded.dependencies["git-only-agents"].filter.only_agents);
+    }
+
+    #[test]
+    fn save_roundtrip_guard_rejects_dependency_count_loss() {
+        let mut original = Config::default();
+        original.dependencies.insert(
+            "base".into(),
+            DependencyEntry {
+                url: Some("https://github.com/org/base.git".into()),
+                path: None,
+                version: Some("v1.0".into()),
+                filter: FilterConfig::default(),
+            },
+        );
+
+        let reparsed = Config::default();
+        let err = validate_save_roundtrip(&original, &reparsed).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("dependency count changed"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn save_roundtrip_guard_rejects_managed_root_loss() {
+        let original = Config {
+            settings: Settings {
+                managed_root: Some(".agents".into()),
+                links: vec![],
+            },
+            ..Config::default()
+        };
+        let reparsed = Config::default();
+        let err = validate_save_roundtrip(&original, &reparsed).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("settings.managed_root changed"),
+            "unexpected error: {msg}"
+        );
     }
 
     #[test]
