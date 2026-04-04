@@ -1,2 +1,8 @@
 # Rust build artifacts
 /target/
+
+# Meridian workspace state
+.meridian/
+.agents/
+.codex
+uv.lock
