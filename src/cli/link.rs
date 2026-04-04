@@ -72,10 +72,6 @@ fn link_target(ctx: &super::MarsContext, target_name: &str, json: bool) -> Resul
     }
 
     let settings_changed = config.settings.targets.as_ref() != Some(&targets);
-    if settings_changed {
-        config.settings.targets = Some(targets);
-        crate::config::save(&ctx.project_root, &config)?;
-    }
 
     let lock = crate::lock::load(&ctx.project_root)?;
     let outcomes = lock_items_as_sync_outcomes(&lock);
@@ -103,6 +99,11 @@ fn link_target(ctx: &super::MarsContext, target_name: &str, json: bool) -> Resul
             target: target_name.to_string(),
             message: outcome.errors.join("; "),
         });
+    }
+
+    if settings_changed {
+        config.settings.targets = Some(targets);
+        crate::config::save(&ctx.project_root, &config)?;
     }
 
     if json {
@@ -139,12 +140,14 @@ fn unlink_target(
 
     let mut config = crate::config::load(&ctx.project_root)?;
     let mut settings_updated = false;
+    let mut target_was_managed = false;
 
     if let Some(targets) = config.settings.targets.as_mut() {
         let old_len = targets.len();
         targets.retain(|target| target != target_name);
         if targets.len() != old_len {
             settings_updated = true;
+            target_was_managed = true;
         }
         if targets.is_empty() {
             config.settings.targets = None;
@@ -156,7 +159,7 @@ fn unlink_target(
     }
 
     let target_dir = ctx.project_root.join(target_name);
-    let removed_dir = if target_dir.exists() {
+    let removed_dir = if target_was_managed && target_dir.exists() {
         std::fs::remove_dir_all(&target_dir)?;
         true
     } else {

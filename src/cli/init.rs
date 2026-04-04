@@ -86,9 +86,6 @@ pub fn run(args: &InitArgs, explicit_root: Option<&Path>, json: bool) -> Result<
     // 4. Persist settings.managed_root.
     persist_managed_root(&project_root, &target)?;
 
-    ensure_local_gitignored(&project_root)?;
-    ensure_mars_dir_gitignored(&project_root)?;
-
     if !json {
         if already_initialized {
             output::print_info(&format!("{} already initialized", project_root.display()));
@@ -141,38 +138,6 @@ fn persist_managed_root(project_root: &Path, target: &str) -> Result<(), MarsErr
         }
         Err(e) => return Err(e),
     }
-    Ok(())
-}
-
-/// Ensure mars.local.toml is in the project root .gitignore.
-fn ensure_local_gitignored(project_root: &Path) -> Result<(), MarsError> {
-    ensure_gitignore_entry(project_root, "mars.local.toml")
-}
-
-/// Ensure `.mars/` is in the project root .gitignore.
-fn ensure_mars_dir_gitignored(project_root: &Path) -> Result<(), MarsError> {
-    ensure_gitignore_entry(project_root, ".mars/")
-}
-
-fn ensure_gitignore_entry(project_root: &Path, entry: &str) -> Result<(), MarsError> {
-    let gitignore_path = project_root.join(".gitignore");
-
-    if gitignore_path.exists() {
-        let content = std::fs::read_to_string(&gitignore_path)?;
-        if content.lines().any(|line| line.trim() == entry) {
-            return Ok(());
-        }
-        let mut new_content = content;
-        if !new_content.ends_with('\n') && !new_content.is_empty() {
-            new_content.push('\n');
-        }
-        new_content.push_str(entry);
-        new_content.push('\n');
-        crate::fs::atomic_write(&gitignore_path, new_content.as_bytes())?;
-    } else {
-        crate::fs::atomic_write(&gitignore_path, format!("{entry}\n").as_bytes())?;
-    }
-
     Ok(())
 }
 
@@ -230,41 +195,4 @@ mod tests {
         assert!(already);
     }
 
-    #[test]
-    fn ensure_local_gitignored_creates_gitignore() {
-        let dir = TempDir::new().unwrap();
-        ensure_local_gitignored(dir.path()).unwrap();
-
-        let content = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
-        assert!(content.contains("mars.local.toml"));
-    }
-
-    #[test]
-    fn ensure_local_gitignored_idempotent() {
-        let dir = TempDir::new().unwrap();
-        ensure_local_gitignored(dir.path()).unwrap();
-        ensure_local_gitignored(dir.path()).unwrap();
-
-        let content = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
-        assert_eq!(content.matches("mars.local.toml").count(), 1);
-    }
-
-    #[test]
-    fn ensure_mars_dir_gitignored_creates_file() {
-        let dir = TempDir::new().unwrap();
-        ensure_mars_dir_gitignored(dir.path()).unwrap();
-
-        let content = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
-        assert!(content.contains(".mars/"));
-    }
-
-    #[test]
-    fn ensure_mars_dir_gitignored_idempotent() {
-        let dir = TempDir::new().unwrap();
-        ensure_mars_dir_gitignored(dir.path()).unwrap();
-        ensure_mars_dir_gitignored(dir.path()).unwrap();
-
-        let content = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
-        assert_eq!(content.matches(".mars/").count(), 1);
-    }
 }

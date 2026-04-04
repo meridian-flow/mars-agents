@@ -66,9 +66,7 @@ fn init_creates_agents_toml() {
     let agents_dir = dir.child(".agents");
     assert!(dir.child("mars.toml").exists());
     assert!(dir.child(".mars").exists());
-    let gitignore = fs::read_to_string(dir.child(".gitignore").path()).unwrap();
-    assert!(gitignore.contains(".mars/"));
-    assert!(gitignore.contains("mars.local.toml"));
+    assert!(!dir.child(".gitignore").exists());
     assert!(agents_dir.exists());
 }
 
@@ -665,6 +663,8 @@ fn doctor_reports_healthy_state() {
         .assert()
         .success();
 
+    fs::write(dir.child("project").child(".gitignore").path(), ".mars/\n").unwrap();
+
     mars()
         .args([
             "doctor",
@@ -688,17 +688,6 @@ fn doctor_warns_when_mars_not_gitignored() {
         ])
         .assert()
         .success();
-
-    // Remove .mars/ line to trigger warning.
-    let gitignore = dir.child("project").child(".gitignore");
-    let gitignore_path = gitignore.path();
-    let content = fs::read_to_string(gitignore_path).unwrap();
-    let rewritten = content
-        .lines()
-        .filter(|line| line.trim() != ".mars/")
-        .collect::<Vec<_>>()
-        .join("\n");
-    fs::write(gitignore_path, format!("{rewritten}\n")).unwrap();
 
     mars()
         .args([
@@ -1317,12 +1306,8 @@ fn full_pipeline_with_local_package_and_custom_target() {
         "should not have init marker"
     );
 
-    // 3. Verify mars.local.toml is gitignored
-    let gitignore = fs::read_to_string(project.child(".gitignore").path()).unwrap();
-    assert!(
-        gitignore.contains("mars.local.toml"),
-        "mars.local.toml should be in .gitignore"
-    );
+    // 3. Verify init does not modify .gitignore.
+    assert!(!project.child(".gitignore").exists());
 
     // 4. Verify settings.managed_root persisted
     let config: Value = toml::from_str(&config_content).unwrap();
