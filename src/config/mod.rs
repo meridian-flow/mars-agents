@@ -1017,7 +1017,10 @@ links = [".claude"]
         save(dir.path(), &config).unwrap();
 
         let reloaded = load(dir.path()).unwrap();
-        assert_eq!(reloaded.package.as_ref().map(|p| p.name.as_str()), Some("sample"));
+        assert_eq!(
+            reloaded.package.as_ref().map(|p| p.name.as_str()),
+            Some("sample")
+        );
         assert_eq!(
             reloaded.dependencies["base"].url.as_deref(),
             Some("https://github.com/org/base.git")
@@ -1121,7 +1124,10 @@ only_agents = true
 
         assert_eq!(reloaded.dependencies.len(), 4);
         assert_eq!(
-            reloaded.dependencies["git-include"].filter.agents.as_deref(),
+            reloaded.dependencies["git-include"]
+                .filter
+                .agents
+                .as_deref(),
             Some(&["coder".into()][..])
         );
         assert_eq!(
@@ -1129,7 +1135,10 @@ only_agents = true
             Some(Path::new("../local-source"))
         );
         assert_eq!(
-            reloaded.dependencies["path-exclude"].filter.exclude.as_deref(),
+            reloaded.dependencies["path-exclude"]
+                .filter
+                .exclude
+                .as_deref(),
             Some(&["draft".into()][..])
         );
         assert!(reloaded.dependencies["git-only-skills"].filter.only_skills);

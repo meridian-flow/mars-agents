@@ -1406,7 +1406,8 @@ links = [".claude"]
         .success()
         .stdout(predicate::str::contains("no symlinks to remove"));
 
-    let config: Value = toml::from_str(&fs::read_to_string(project.child("mars.toml").path()).unwrap()).unwrap();
+    let config: Value =
+        toml::from_str(&fs::read_to_string(project.child("mars.toml").path()).unwrap()).unwrap();
     assert_eq!(config["package"]["name"].as_str(), Some("sample"));
     assert_eq!(
         config["dependencies"]["base"]["url"].as_str(),

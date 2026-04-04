@@ -23,6 +23,7 @@ pub mod repair;
 pub mod resolve_cmd;
 pub mod sync;
 pub mod upgrade;
+pub mod version;
 pub mod why;
 
 use std::path::{Path, PathBuf};
@@ -121,6 +122,9 @@ pub enum Command {
     /// Show available updates without applying.
     Outdated(outdated::OutdatedArgs),
 
+    /// Bump package version in mars.toml, commit, and tag.
+    Version(version::VersionArgs),
+
     /// List managed items with status.
     List(list::ListArgs),
 
@@ -188,6 +192,7 @@ fn dispatch_with_root(cmd: &Command, ctx: &MarsContext, json: bool) -> Result<i3
         Command::Sync(args) => sync::run(args, ctx, json),
         Command::Upgrade(args) => upgrade::run(args, ctx, json),
         Command::Outdated(args) => outdated::run(args, ctx, json),
+        Command::Version(args) => version::run(args, ctx, json),
         Command::List(args) => list::run(args, ctx, json),
         Command::Why(args) => why::run(args, ctx, json),
         Command::Rename(args) => rename::run(args, ctx, json),
