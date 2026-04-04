@@ -5,6 +5,7 @@ const { execFileSync } = require("child_process");
 const PLATFORMS = {
   "darwin arm64": "@haowjy/mars-agents-darwin-arm64",
   "darwin x64": "@haowjy/mars-agents-darwin-x64",
+  "linux arm64": "@haowjy/mars-agents-linux-arm64",
   "linux x64": "@haowjy/mars-agents-linux-x64",
 };
 
@@ -14,7 +15,7 @@ const pkg = PLATFORMS[key];
 if (!pkg) {
   console.error(
     `mars: unsupported platform ${process.platform} ${process.arch}\n` +
-    `Supported: linux-x64, darwin-arm64, darwin-x64\n` +
+    `Supported: linux-arm64, linux-x64, darwin-arm64, darwin-x64\n` +
     `Try: cargo install mars-agents`
   );
   process.exit(1);

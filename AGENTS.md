@@ -16,6 +16,16 @@ Mars is an agent package manager for `.agents/` directories. It installs agent p
 4. **No heuristics.** User intent is expressed through explicit flags and arguments, not inferred from string patterns.
    - *Why*: The dot-prefix heuristic (`starts_with('.')`) classified `./my-project` as a target dir — a real bug caught by reviewers. Explicit arguments are boring but predictable, and predictable tools earn trust.
 
+## Dev Docs
+
+Contributor-facing architecture documentation lives in `.meridian/fs/`:
+
+- **architecture.md** — Module map, key types, sync pipeline stage contracts, code pointers
+- **edge-cases.md** — Edge case catalog per pipeline stage (resolver, target, diff, apply)
+- **extending-mars.md** — How to add new item kinds, source types, and CLI commands
+
+These docs describe internals for contributors and agents working on mars. User-facing docs are in `docs/`.
+
 ## Managed Layout
 
 ```text
