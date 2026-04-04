@@ -14,6 +14,7 @@ pub mod doctor;
 pub mod init;
 pub mod link;
 pub mod list;
+pub mod models;
 pub mod outdated;
 pub mod output;
 pub mod override_cmd;
@@ -154,6 +155,9 @@ pub enum Command {
 
     /// Manage the global source cache.
     Cache(cache::CacheArgs),
+
+    /// Model metadata: refresh, list, and resolve aliases.
+    Models(models::ModelsArgs),
 }
 
 /// Dispatch a parsed CLI command to the appropriate handler and map errors to
@@ -201,6 +205,7 @@ fn dispatch_with_root(cmd: &Command, ctx: &MarsContext, json: bool) -> Result<i3
         Command::Link(args) => link::run(args, ctx, json),
         Command::Doctor(args) => doctor::run(args, ctx, json),
         Command::Repair(args) => repair::run(args, ctx, json),
+        Command::Models(args) => models::run(args, ctx, json),
         // Root-free commands handled in dispatch_result — unreachable here
         Command::Init(_) | Command::Check(_) | Command::Cache(_) => unreachable!(),
     }

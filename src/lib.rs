@@ -8,6 +8,7 @@ pub mod hash;
 pub mod link;
 pub mod lock;
 pub mod merge;
+pub mod models;
 pub mod resolve;
 pub mod source;
 pub mod sync;

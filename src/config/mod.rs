@@ -4,6 +4,7 @@ use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{ConfigError, MarsError};
+use crate::models::ModelAlias;
 use crate::types::{ItemName, RenameMap, SourceId, SourceName, SourceUrl};
 
 /// Top-level mars.toml configuration.
@@ -15,6 +16,9 @@ pub struct Config {
     pub dependencies: IndexMap<SourceName, DependencyEntry>,
     #[serde(default)]
     pub settings: Settings,
+    /// Model alias routing table: alias → {harness, model}.
+    #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
+    pub models: IndexMap<String, ModelAlias>,
 }
 
 /// Package metadata.
