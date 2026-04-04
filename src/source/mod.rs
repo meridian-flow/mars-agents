@@ -1,4 +1,6 @@
+pub(crate) mod archive;
 pub mod git;
+pub(crate) mod git_cli;
 pub mod parse;
 pub mod path;
 

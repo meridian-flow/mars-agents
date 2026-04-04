@@ -1,17 +1,18 @@
-//! Git source adapter primitives.
-
-use std::fs;
-use std::io::{self, Cursor};
-use std::path::{Component, Path, PathBuf};
-use std::process::Command;
-use std::time::Duration;
+//! Git source adapter — strategy and public API.
+//!
+//! Delegates to `git_cli` for git CLI operations and `archive` for
+//! GitHub archive download/extraction.
 
 use crate::error::MarsError;
 use crate::source::parse::extract_hostname;
 use crate::source::{AvailableVersion, GlobalCache, ResolvedRef};
 use crate::types::CommitHash;
-use flate2::read::GzDecoder;
-use tar::Archive;
+
+use super::archive;
+use super::git_cli;
+
+// Re-export for backward compatibility
+pub use git_cli::{ls_remote_head, ls_remote_tags};
 
 /// Options controlling git fetch behavior.
 #[derive(Debug, Clone, Default)]
@@ -71,111 +72,22 @@ pub fn url_to_dirname(url: &str) -> String {
 ///
 /// Accepts: `v1.0.0`, `v0.5.2`, `1.0.0`
 /// Rejects: `latest`, `nightly-2024`, or any non-semver tag.
-fn parse_semver_tag(tag: &str) -> Option<semver::Version> {
+pub(crate) fn parse_semver_tag(tag: &str) -> Option<semver::Version> {
     let version_str = tag.strip_prefix('v').unwrap_or(tag);
     semver::Version::parse(version_str).ok()
 }
 
 #[derive(Debug, Clone)]
-struct ResolvedVersion {
-    tag: Option<String>,
-    version: Option<semver::Version>,
-    sha: String,
-}
-
-fn run_command(command: &mut Command, display: String) -> Result<String, MarsError> {
-    let output = command.output().map_err(|err| MarsError::GitCli {
-        command: display.clone(),
-        message: err.to_string(),
-    })?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let message = if !stderr.trim().is_empty() {
-            stderr.trim().to_string()
-        } else if !stdout.trim().is_empty() {
-            stdout.trim().to_string()
-        } else {
-            format!("command exited with status {}", output.status)
-        };
-
-        return Err(MarsError::GitCli {
-            command: display,
-            message,
-        });
-    }
-
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
-}
-
-fn ls_remote_ref(url: &str, reference: &str) -> Result<String, MarsError> {
-    let mut command = Command::new("git");
-    command.arg("ls-remote").arg(url).arg(reference);
-
-    let command_display = format!("git ls-remote {url} {reference}");
-    let output = run_command(&mut command, command_display.clone())?;
-
-    for line in output.lines() {
-        if let Some((sha, _)) = line.split_once('\t')
-            && !sha.trim().is_empty()
-        {
-            return Ok(sha.trim().to_string());
-        }
-    }
-
-    Err(MarsError::GitCli {
-        command: command_display,
-        message: format!("reference `{reference}` not found"),
-    })
-}
-
-/// Run `git ls-remote --tags <url>` and parse semver tags.
-pub fn ls_remote_tags(url: &str) -> Result<Vec<AvailableVersion>, MarsError> {
-    let mut command = Command::new("git");
-    command.arg("ls-remote").arg("--tags").arg(url);
-
-    let output = run_command(&mut command, format!("git ls-remote --tags {url}"))?;
-    let mut versions = Vec::new();
-
-    for line in output.lines() {
-        let Some((sha, reference)) = line.split_once('\t') else {
-            continue;
-        };
-        let Some(tag) = reference.strip_prefix("refs/tags/") else {
-            continue;
-        };
-
-        // Annotated tags show up twice (`tag` and peeled `tag^{}`).
-        // Keep only the non-peeled entry to avoid duplicates.
-        if tag.ends_with("^{}") {
-            continue;
-        }
-
-        let Some(version) = parse_semver_tag(tag) else {
-            continue;
-        };
-
-        versions.push(AvailableVersion {
-            tag: tag.to_string(),
-            version,
-            commit_id: sha.trim().to_string(),
-        });
-    }
-
-    versions.sort_by(|a, b| a.version.cmp(&b.version));
-    Ok(versions)
-}
-
-/// Run `git ls-remote <url> HEAD` and return the default-branch SHA.
-pub fn ls_remote_head(url: &str) -> Result<String, MarsError> {
-    ls_remote_ref(url, "HEAD")
+pub(crate) struct ResolvedVersion {
+    pub tag: Option<String>,
+    pub version: Option<semver::Version>,
+    pub sha: String,
 }
 
 fn resolve_version(url: &str, version_req: Option<&str>) -> Result<ResolvedVersion, MarsError> {
     if let Some(version_req) = version_req {
         if let Some(requested_version) = parse_semver_tag(version_req) {
-            let tags = ls_remote_tags(url)?;
+            let tags = git_cli::ls_remote_tags(url)?;
             let selected = tags
                 .into_iter()
                 .find(|tag| tag.tag == version_req || tag.version == requested_version)
@@ -191,7 +103,7 @@ fn resolve_version(url: &str, version_req: Option<&str>) -> Result<ResolvedVersi
             });
         }
 
-        let sha = ls_remote_ref(url, version_req)?;
+        let sha = git_cli::ls_remote_ref(url, version_req)?;
         return Ok(ResolvedVersion {
             tag: None,
             version: None,
@@ -199,7 +111,7 @@ fn resolve_version(url: &str, version_req: Option<&str>) -> Result<ResolvedVersi
         });
     }
 
-    let tags = ls_remote_tags(url)?;
+    let tags = git_cli::ls_remote_tags(url)?;
     if let Some(selected) = tags.last() {
         return Ok(ResolvedVersion {
             tag: Some(selected.tag.clone()),
@@ -209,292 +121,12 @@ fn resolve_version(url: &str, version_req: Option<&str>) -> Result<ResolvedVersi
     }
 
     eprintln!("warning: no releases found for {url}, using latest commit from default branch");
-    let sha = ls_remote_head(url)?;
+    let sha = git_cli::ls_remote_head(url)?;
     Ok(ResolvedVersion {
         tag: None,
         version: None,
         sha,
     })
-}
-
-fn github_owner_repo(url: &str) -> Option<(String, String)> {
-    let (_, tail) = url.split_once("github.com/")?;
-    let mut segments = tail.split('/');
-    let owner = segments.next()?.trim();
-    let repo = segments.next()?.trim();
-    if owner.is_empty() || repo.is_empty() {
-        return None;
-    }
-    let repo = repo.strip_suffix(".git").unwrap_or(repo);
-    Some((owner.to_string(), repo.to_string()))
-}
-
-fn download_archive_bytes(archive_url: &str) -> Result<Vec<u8>, MarsError> {
-    const MAX_ATTEMPTS: usize = 3;
-
-    for attempt in 1..=MAX_ATTEMPTS {
-        match ureq::get(archive_url).call() {
-            Ok(mut response) => {
-                return response
-                    .body_mut()
-                    .with_config()
-                    .limit(200 * 1024 * 1024)
-                    .read_to_vec()
-                    .map_err(|err| MarsError::Http {
-                        url: archive_url.to_string(),
-                        status: 0,
-                        message: err.to_string(),
-                    });
-            }
-            Err(ureq::Error::StatusCode(status)) => {
-                if status == 429 && attempt < MAX_ATTEMPTS {
-                    std::thread::sleep(Duration::from_millis(150 * attempt as u64));
-                    continue;
-                }
-                return Err(MarsError::Http {
-                    url: archive_url.to_string(),
-                    status,
-                    message: format!("request failed with HTTP status {status}"),
-                });
-            }
-            Err(err) => {
-                return Err(MarsError::Http {
-                    url: archive_url.to_string(),
-                    status: 0,
-                    message: err.to_string(),
-                });
-            }
-        }
-    }
-
-    Err(MarsError::Http {
-        url: archive_url.to_string(),
-        status: 429,
-        message: "request failed after retrying HTTP 429".to_string(),
-    })
-}
-
-fn extract_and_strip_archive(archive_bytes: &[u8], dest: &Path) -> Result<(), MarsError> {
-    let decoder = GzDecoder::new(Cursor::new(archive_bytes));
-    let mut archive = Archive::new(decoder);
-
-    for entry in archive.entries()? {
-        let mut entry = entry?;
-        let entry_type = entry.header().entry_type();
-
-        if entry_type.is_symlink() || entry_type.is_hard_link() {
-            continue;
-        }
-
-        let entry_path = entry.path()?;
-        if entry_path.is_absolute() {
-            return Err(MarsError::InvalidRequest {
-                message: format!(
-                    "archive entry contains absolute path: {}",
-                    entry_path.display()
-                ),
-            });
-        }
-
-        let mut components = entry_path.components();
-        // Strip the top-level `{repo}-{sha}/` directory.
-        components.next();
-
-        let mut relative_path = PathBuf::new();
-        for component in components {
-            match component {
-                Component::Normal(seg) => relative_path.push(seg),
-                Component::CurDir => {}
-                Component::ParentDir => {
-                    return Err(MarsError::InvalidRequest {
-                        message: format!(
-                            "archive entry attempts parent traversal: {}",
-                            entry_path.display()
-                        ),
-                    });
-                }
-                Component::RootDir | Component::Prefix(_) => {
-                    return Err(MarsError::InvalidRequest {
-                        message: format!(
-                            "archive entry has invalid path: {}",
-                            entry_path.display()
-                        ),
-                    });
-                }
-            }
-        }
-
-        if relative_path.as_os_str().is_empty() {
-            continue;
-        }
-
-        let target_path = dest.join(&relative_path);
-
-        if entry_type.is_dir() {
-            fs::create_dir_all(&target_path)?;
-            continue;
-        }
-
-        if !entry_type.is_file() {
-            continue;
-        }
-
-        if let Some(parent) = target_path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-
-        let mut output = fs::File::create(&target_path)?;
-        io::copy(&mut entry, &mut output)?;
-    }
-
-    Ok(())
-}
-
-fn fetch_archive(url: &str, sha: &str, cache: &GlobalCache) -> Result<PathBuf, MarsError> {
-    let (owner, repo) = github_owner_repo(url).ok_or_else(|| MarsError::Source {
-        source_name: url.to_string(),
-        message: "expected GitHub URL in the form https://github.com/owner/repo".to_string(),
-    })?;
-
-    let archive_url = format!("https://github.com/{owner}/{repo}/archive/{sha}.tar.gz");
-    let cache_path = cache
-        .archives_dir()
-        .join(format!("{}_{}", url_to_dirname(url), sha));
-
-    if cache_path.exists() {
-        return Ok(cache_path);
-    }
-
-    let archive_bytes = download_archive_bytes(&archive_url)?;
-    let temp_path = PathBuf::from(format!(
-        "{}.tmp.{}",
-        cache_path.to_string_lossy(),
-        std::process::id()
-    ));
-
-    if temp_path.exists() {
-        let _ = fs::remove_dir_all(&temp_path);
-    }
-    fs::create_dir_all(&temp_path)?;
-
-    let extract_result = extract_and_strip_archive(&archive_bytes, &temp_path);
-    if let Err(err) = extract_result {
-        let _ = fs::remove_dir_all(&temp_path);
-        return Err(err);
-    }
-
-    match fs::rename(&temp_path, &cache_path) {
-        Ok(()) => Ok(cache_path),
-        Err(err) => {
-            // Another process may have won the race and already created the cache path.
-            if cache_path.exists() {
-                let _ = fs::remove_dir_all(&temp_path);
-                Ok(cache_path)
-            } else {
-                let _ = fs::remove_dir_all(&temp_path);
-                Err(err.into())
-            }
-        }
-    }
-}
-
-fn fetch_git_clone(
-    url: &str,
-    tag: Option<&str>,
-    sha: Option<&str>,
-    cache: &GlobalCache,
-) -> Result<PathBuf, MarsError> {
-    let cache_path = cache.git_dir().join(url_to_dirname(url));
-
-    // Acquire per-entry lock to prevent cross-repo races on the same cache entry.
-    // Held through fetch + checkout, released when _lock drops at function return.
-    let lock_path = cache_path.with_extension("lock");
-    let _lock = crate::fs::FileLock::acquire(&lock_path)?;
-
-    let cache_path_display = cache_path.to_string_lossy().to_string();
-    let was_cached = cache_path.exists();
-
-    if !was_cached {
-        let mut command = Command::new("git");
-        command.arg("clone").arg("--depth").arg("1");
-        if let Some(tag) = tag {
-            command.arg("--branch").arg(tag);
-        }
-        command.arg(url).arg(&cache_path);
-
-        let mut display = String::from("git clone --depth 1");
-        if let Some(tag) = tag {
-            display.push_str(&format!(" --branch {tag}"));
-        }
-        display.push_str(&format!(" {url} {cache_path_display}"));
-
-        run_command(&mut command, display)?;
-    } else {
-        let mut fetch_cmd = Command::new("git");
-        fetch_cmd
-            .arg("-C")
-            .arg(&cache_path)
-            .arg("fetch")
-            .arg("--depth")
-            .arg("1")
-            .arg("origin");
-        run_command(
-            &mut fetch_cmd,
-            format!("git -C {cache_path_display} fetch --depth 1 origin"),
-        )?;
-    }
-
-    if was_cached {
-        if let Some(tag) = tag {
-            let mut checkout_tag = Command::new("git");
-            checkout_tag
-                .arg("-C")
-                .arg(&cache_path)
-                .arg("checkout")
-                .arg(tag);
-            run_command(
-                &mut checkout_tag,
-                format!("git -C {cache_path_display} checkout {tag}"),
-            )?;
-        }
-
-        if let Some(sha) = sha {
-            let mut checkout_sha = Command::new("git");
-            checkout_sha
-                .arg("-C")
-                .arg(&cache_path)
-                .arg("checkout")
-                .arg(sha);
-            run_command(
-                &mut checkout_sha,
-                format!("git -C {cache_path_display} checkout {sha}"),
-            )?;
-        } else if tag.is_none() {
-            let mut checkout_head = Command::new("git");
-            checkout_head
-                .arg("-C")
-                .arg(&cache_path)
-                .arg("checkout")
-                .arg("origin/HEAD");
-            run_command(
-                &mut checkout_head,
-                format!("git -C {cache_path_display} checkout origin/HEAD"),
-            )?;
-        }
-    } else if let Some(sha) = sha {
-        let mut checkout_sha = Command::new("git");
-        checkout_sha
-            .arg("-C")
-            .arg(&cache_path)
-            .arg("checkout")
-            .arg(sha);
-        run_command(
-            &mut checkout_sha,
-            format!("git -C {cache_path_display} checkout {sha}"),
-        )?;
-    }
-
-    Ok(cache_path)
 }
 
 /// Return true when the URL host resolves to github.com.
@@ -514,7 +146,7 @@ fn should_use_github_archive(url: &str) -> bool {
 }
 
 pub fn list_versions(url: &str, _cache: &GlobalCache) -> Result<Vec<AvailableVersion>, MarsError> {
-    ls_remote_tags(url)
+    git_cli::ls_remote_tags(url)
 }
 
 pub fn fetch(
@@ -530,7 +162,7 @@ pub fn fetch(
     }
 
     let tree_path = if should_use_github_archive(url) {
-        match fetch_archive(url, &resolved.sha, cache) {
+        match archive::fetch_archive(url, &resolved.sha, cache) {
             Ok(path) => path,
             Err(MarsError::Http { status: 404, .. }) if options.preferred_commit.is_some() => {
                 return Err(MarsError::LockedCommitUnreachable {
@@ -549,7 +181,7 @@ pub fn fetch(
             None
         };
 
-        match fetch_git_clone(url, resolved.tag.as_deref(), checkout_sha, cache) {
+        match git_cli::fetch_git_clone(url, resolved.tag.as_deref(), checkout_sha, cache) {
             Ok(path) => path,
             Err(MarsError::GitCli { .. }) if options.preferred_commit.is_some() => {
                 return Err(MarsError::LockedCommitUnreachable {
@@ -573,14 +205,11 @@ pub fn fetch(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use flate2::Compression;
-    use flate2::write::GzEncoder;
     use semver::Version;
     use std::ffi::OsStr;
-    use std::io::Cursor;
-    use std::io::Write;
+    use std::fs;
     use std::path::Path;
-    use tar::Builder;
+    use std::process::Command;
     use tempfile::TempDir;
 
     fn run_git<I, S>(cwd: &Path, args: I) -> String
@@ -622,99 +251,6 @@ mod tests {
         run_git(repo, ["add", filename]);
         run_git(repo, ["commit", "-m", message]);
         run_git(repo, ["rev-parse", "HEAD"])
-    }
-
-    fn build_tar_gz(files: &[(&str, &[u8])]) -> Vec<u8> {
-        let encoder = GzEncoder::new(Vec::new(), Compression::default());
-        let mut builder = Builder::new(encoder);
-
-        for (path, contents) in files {
-            let mut header = tar::Header::new_gnu();
-            header.set_mode(0o644);
-            header.set_size(contents.len() as u64);
-            header.set_cksum();
-            builder
-                .append_data(&mut header, *path, Cursor::new(*contents))
-                .unwrap();
-        }
-
-        let encoder = builder.into_inner().unwrap();
-        encoder.finish().unwrap()
-    }
-
-    fn build_tar_gz_with_symlink() -> Vec<u8> {
-        let encoder = GzEncoder::new(Vec::new(), Compression::default());
-        let mut builder = Builder::new(encoder);
-
-        let file_contents = b"safe\n";
-        let mut file_header = tar::Header::new_gnu();
-        file_header.set_mode(0o644);
-        file_header.set_size(file_contents.len() as u64);
-        file_header.set_cksum();
-        builder
-            .append_data(
-                &mut file_header,
-                "repo-abc/agents/coder.md",
-                Cursor::new(file_contents),
-            )
-            .unwrap();
-
-        let mut symlink_header = tar::Header::new_gnu();
-        symlink_header.set_entry_type(tar::EntryType::Symlink);
-        symlink_header.set_mode(0o777);
-        symlink_header.set_size(0);
-        symlink_header.set_cksum();
-        builder
-            .append_link(&mut symlink_header, "repo-abc/agents/link.md", "coder.md")
-            .unwrap();
-
-        let encoder = builder.into_inner().unwrap();
-        encoder.finish().unwrap()
-    }
-
-    fn write_tar_field(dst: &mut [u8], value: &[u8]) {
-        let len = value.len().min(dst.len());
-        dst[..len].copy_from_slice(&value[..len]);
-    }
-
-    fn write_tar_octal(dst: &mut [u8], value: u64) {
-        let width = dst.len().saturating_sub(1);
-        let octal = format!("{value:0width$o}");
-        let bytes = octal.as_bytes();
-        let copy_len = bytes.len().min(width);
-        dst[..copy_len].copy_from_slice(&bytes[..copy_len]);
-        dst[dst.len() - 1] = 0;
-    }
-
-    fn build_raw_tar_gz_single_file(path: &str, contents: &[u8]) -> Vec<u8> {
-        let mut header = [0_u8; 512];
-        write_tar_field(&mut header[0..100], path.as_bytes());
-        write_tar_octal(&mut header[100..108], 0o644);
-        write_tar_octal(&mut header[108..116], 0);
-        write_tar_octal(&mut header[116..124], 0);
-        write_tar_octal(&mut header[124..136], contents.len() as u64);
-        write_tar_octal(&mut header[136..148], 0);
-        header[156] = b'0';
-        write_tar_field(&mut header[257..263], b"ustar\0");
-        write_tar_field(&mut header[263..265], b"00");
-
-        for b in &mut header[148..156] {
-            *b = b' ';
-        }
-        let checksum: u32 = header.iter().map(|b| *b as u32).sum();
-        let checksum_field = format!("{checksum:06o}\0 ");
-        write_tar_field(&mut header[148..156], checksum_field.as_bytes());
-
-        let mut tar = Vec::new();
-        tar.extend_from_slice(&header);
-        tar.extend_from_slice(contents);
-        let padding = (512 - (contents.len() % 512)) % 512;
-        tar.extend(vec![0_u8; padding]);
-        tar.extend(vec![0_u8; 1024]);
-
-        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
-        encoder.write_all(&tar).unwrap();
-        encoder.finish().unwrap()
     }
 
     // ==================== url_to_dirname tests ====================
@@ -809,47 +345,6 @@ mod tests {
             assert_eq!(version.commit_id.len(), 40);
             assert!(version.commit_id.chars().all(|c| c.is_ascii_hexdigit()));
         }
-    }
-
-    #[test]
-    fn extract_and_strip_archive_flattens_top_level_directory() {
-        let tarball = build_tar_gz(&[
-            ("repo-abc/agents/coder.md", b"agent"),
-            ("repo-abc/skills/review/SKILL.md", b"skill"),
-        ]);
-        let out = TempDir::new().unwrap();
-
-        extract_and_strip_archive(&tarball, out.path()).unwrap();
-
-        assert_eq!(
-            fs::read_to_string(out.path().join("agents/coder.md")).unwrap(),
-            "agent"
-        );
-        assert_eq!(
-            fs::read_to_string(out.path().join("skills/review/SKILL.md")).unwrap(),
-            "skill"
-        );
-    }
-
-    #[test]
-    fn extract_and_strip_archive_rejects_parent_traversal() {
-        let tarball = build_raw_tar_gz_single_file("repo-abc/../escape.txt", b"bad");
-        let out = TempDir::new().unwrap();
-
-        let err = extract_and_strip_archive(&tarball, out.path()).unwrap_err();
-        assert!(matches!(err, MarsError::InvalidRequest { .. }));
-        assert!(!out.path().join("escape.txt").exists());
-    }
-
-    #[test]
-    fn extract_and_strip_archive_skips_symlinks() {
-        let tarball = build_tar_gz_with_symlink();
-        let out = TempDir::new().unwrap();
-
-        extract_and_strip_archive(&tarball, out.path()).unwrap();
-
-        assert!(out.path().join("agents/coder.md").exists());
-        assert!(!out.path().join("agents/link.md").exists());
     }
 
     #[test]
