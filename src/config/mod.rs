@@ -937,6 +937,45 @@ url = "https://github.com/org/base.git"
     }
 
     #[test]
+    fn save_preserves_dependencies_when_clearing_last_link() {
+        let dir = TempDir::new().unwrap();
+        let original = r#"
+[package]
+name = "sample"
+version = "0.1.0"
+
+[dependencies.base]
+url = "https://github.com/org/base.git"
+version = "v1.0"
+agents = ["coder"]
+
+[settings]
+links = [".claude"]
+"#;
+        std::fs::write(dir.path().join("mars.toml"), original).unwrap();
+
+        let mut config = load(dir.path()).unwrap();
+        config.settings.links.retain(|link| link != ".claude");
+        save(dir.path(), &config).unwrap();
+
+        let reloaded = load(dir.path()).unwrap();
+        assert_eq!(reloaded.package.as_ref().map(|p| p.name.as_str()), Some("sample"));
+        assert_eq!(
+            reloaded.dependencies["base"].url.as_deref(),
+            Some("https://github.com/org/base.git")
+        );
+        assert_eq!(
+            reloaded.dependencies["base"].version.as_deref(),
+            Some("v1.0")
+        );
+        assert_eq!(
+            reloaded.dependencies["base"].filter.agents.as_deref(),
+            Some(&["coder".into()][..])
+        );
+        assert!(reloaded.settings.links.is_empty());
+    }
+
+    #[test]
     fn parse_only_skills_filter() {
         let toml_str = r#"
 [dependencies.base]

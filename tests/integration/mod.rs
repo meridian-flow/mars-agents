@@ -1369,3 +1369,60 @@ fn full_pipeline_with_local_package_and_custom_target() {
         .assert()
         .success();
 }
+
+#[test]
+fn unlink_preserves_unrelated_config_sections() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.child("project");
+    project.create_dir_all().unwrap();
+    project
+        .child("mars.toml")
+        .write_str(
+            r#"
+[package]
+name = "sample"
+version = "0.1.0"
+
+[dependencies.base]
+url = "https://github.com/org/base.git"
+version = "v1.0"
+agents = ["coder"]
+
+[settings]
+links = [".claude"]
+"#,
+        )
+        .unwrap();
+
+    mars()
+        .args([
+            "link",
+            ".claude",
+            "--unlink",
+            "--root",
+            project.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("no symlinks to remove"));
+
+    let config: Value = toml::from_str(&fs::read_to_string(project.child("mars.toml").path()).unwrap()).unwrap();
+    assert_eq!(config["package"]["name"].as_str(), Some("sample"));
+    assert_eq!(
+        config["dependencies"]["base"]["url"].as_str(),
+        Some("https://github.com/org/base.git")
+    );
+    assert_eq!(
+        config["dependencies"]["base"]["version"].as_str(),
+        Some("v1.0")
+    );
+    assert_eq!(
+        config["dependencies"]["base"]["agents"][0].as_str(),
+        Some("coder")
+    );
+    assert!(
+        config["settings"]
+            .as_table()
+            .is_some_and(|settings| !settings.contains_key("links"))
+    );
+}
