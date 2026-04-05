@@ -104,9 +104,10 @@ fn run_list(ctx: &MarsContext, json: bool) -> Result<i32, MarsError> {
                     ModelSpec::Pinned { .. } => "pinned",
                     ModelSpec::AutoResolve { .. } => "auto-resolve",
                 };
+                let harness = alias.harness.as_deref().unwrap_or("");
                 serde_json::json!({
                     "name": name,
-                    "harness": alias.harness,
+                    "harness": harness,
                     "mode": mode,
                     "resolved_model": resolved_id,
                     "description": alias.description,
@@ -143,9 +144,10 @@ fn run_list(ctx: &MarsContext, json: bool) -> Result<i32, MarsError> {
                 ModelSpec::AutoResolve { .. } => "auto-resolve",
             };
             let desc = alias.description.as_deref().unwrap_or("");
+            let harness = alias.harness.as_deref().unwrap_or("");
             println!(
                 "{:<12} {:<10} {:<14} {:<30} {}",
-                name, alias.harness, mode, resolved_id, desc
+                name, harness, mode, resolved_id, desc
             );
         }
     }
@@ -181,21 +183,23 @@ fn run_resolve(args: &ResolveAliasArgs, ctx: &MarsContext, json: bool) -> Result
         .unwrap_or_default();
 
     if json {
+        let harness = alias.harness.as_deref().unwrap_or("");
         let out = serde_json::json!({
             "name": args.name,
             "source": source,
-            "harness": alias.harness,
+            "harness": harness,
             "spec": format_spec(&alias.spec),
             "resolved_model": resolved_id,
             "description": alias.description,
         });
         println!("{}", serde_json::to_string_pretty(&out).unwrap());
     } else {
+        let harness = alias.harness.as_deref().unwrap_or("");
         println!("Alias:    {}", args.name);
         println!("Source:   {}", source);
-        println!("Harness:  {}", alias.harness);
+        println!("Harness:  {}", harness);
         match &alias.spec {
-            ModelSpec::Pinned { model } => {
+            ModelSpec::Pinned { model, provider: _ } => {
                 println!("Mode:     pinned");
                 println!("Model:    {}", model);
             }
@@ -320,7 +324,9 @@ fn determine_source(name: &str, ctx: &MarsContext) -> Result<String, MarsError> 
 
 fn format_spec(spec: &ModelSpec) -> serde_json::Value {
     match spec {
-        ModelSpec::Pinned { model } => serde_json::json!({ "mode": "pinned", "model": model }),
+        ModelSpec::Pinned { model, provider: _ } => {
+            serde_json::json!({ "mode": "pinned", "model": model })
+        }
         ModelSpec::AutoResolve {
             provider,
             match_patterns,

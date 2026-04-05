@@ -24,7 +24,8 @@ use crate::error::MarsError;
 /// against the models cache at resolution time.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ModelAlias {
-    pub harness: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub harness: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     #[serde(flatten)]
@@ -35,7 +36,10 @@ pub struct ModelAlias {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ModelSpec {
     /// Explicit model ID — no resolution needed.
-    Pinned { model: String },
+    Pinned {
+        model: String,
+        provider: Option<String>,
+    },
     /// Pattern-based resolution against models cache.
     AutoResolve {
         provider: String,
@@ -49,9 +53,16 @@ impl Serialize for ModelSpec {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeMap;
         match self {
-            ModelSpec::Pinned { model } => {
-                let mut map = serializer.serialize_map(Some(1))?;
+            ModelSpec::Pinned { model, provider } => {
+                let mut count = 1;
+                if provider.is_some() {
+                    count += 1;
+                }
+                let mut map = serializer.serialize_map(Some(count))?;
                 map.serialize_entry("model", model)?;
+                if let Some(provider) = provider {
+                    map.serialize_entry("provider", provider)?;
+                }
                 map.end()
             }
             ModelSpec::AutoResolve {
@@ -78,7 +89,7 @@ impl Serialize for ModelSpec {
 /// Raw deserialization helper — distinguished by field presence.
 #[derive(Debug, Deserialize)]
 struct RawModelAlias {
-    harness: String,
+    harness: Option<String>,
     #[serde(default)]
     description: Option<String>,
     // Pinned mode
@@ -107,7 +118,10 @@ impl<'de> Deserialize<'de> for ModelAlias {
         }
 
         let spec = if let Some(model) = raw.model {
-            ModelSpec::Pinned { model }
+            ModelSpec::Pinned {
+                model,
+                provider: raw.provider,
+            }
         } else if let Some(match_patterns) = raw.match_patterns {
             let provider = raw.provider.ok_or_else(|| {
                 serde::de::Error::custom(
@@ -424,14 +438,13 @@ pub fn builtin_aliases() -> IndexMap<String, ModelAlias> {
     let mut m = IndexMap::new();
     let add = |m: &mut IndexMap<String, ModelAlias>,
                name: &str,
-               harness: &str,
                provider: &str,
                match_patterns: &[&str],
                exclude: &[&str]| {
         m.insert(
             name.to_string(),
             ModelAlias {
-                harness: harness.to_string(),
+                harness: None,
                 description: None,
                 spec: ModelSpec::AutoResolve {
                     provider: provider.to_string(),
@@ -441,12 +454,11 @@ pub fn builtin_aliases() -> IndexMap<String, ModelAlias> {
             },
         );
     };
-    add(&mut m, "opus", "claude", "anthropic", &["*opus*"], &[]);
-    add(&mut m, "sonnet", "claude", "anthropic", &["*sonnet*"], &[]);
-    add(&mut m, "haiku", "claude", "anthropic", &["*haiku*"], &[]);
+    add(&mut m, "opus", "anthropic", &["*opus*"], &[]);
+    add(&mut m, "sonnet", "anthropic", &["*sonnet*"], &[]);
+    add(&mut m, "haiku", "anthropic", &["*haiku*"], &[]);
     add(
         &mut m,
-        "codex",
         "codex",
         "openai",
         &["*codex*"],
@@ -455,7 +467,6 @@ pub fn builtin_aliases() -> IndexMap<String, ModelAlias> {
     add(
         &mut m,
         "gpt",
-        "codex",
         "openai",
         &["gpt-5*"],
         &["*codex*", "*-mini", "*-nano", "*-chat", "*-turbo"],
@@ -463,7 +474,6 @@ pub fn builtin_aliases() -> IndexMap<String, ModelAlias> {
     add(
         &mut m,
         "gemini",
-        "opencode",
         "google",
         &["gemini*", "*pro*"],
         &["*-customtools"],
@@ -546,7 +556,7 @@ pub fn resolve_all(
 
     for (name, alias) in aliases {
         let model_id = match &alias.spec {
-            ModelSpec::Pinned { model } => Some(model.clone()),
+            ModelSpec::Pinned { model, provider: _ } => Some(model.clone()),
             ModelSpec::AutoResolve {
                 provider,
                 match_patterns,
@@ -559,6 +569,40 @@ pub fn resolve_all(
     }
 
     resolved
+}
+
+/// Best-effort provider inference from model ID prefixes.
+/// Returns None for unrecognized patterns.
+#[allow(dead_code)]
+fn infer_provider_from_model_id(model_id: &str) -> Option<&'static str> {
+    let id = model_id.to_lowercase();
+    if id.starts_with("claude-") {
+        return Some("anthropic");
+    }
+    if id.starts_with("gpt-")
+        || id.starts_with("o1")
+        || id.starts_with("o3")
+        || id.starts_with("o4")
+        || id.starts_with("codex-")
+    {
+        return Some("openai");
+    }
+    if id.starts_with("gemini") {
+        return Some("google");
+    }
+    if id.starts_with("llama") {
+        return Some("meta");
+    }
+    if id.starts_with("mistral") || id.starts_with("codestral") {
+        return Some("mistral");
+    }
+    if id.starts_with("deepseek") {
+        return Some("deepseek");
+    }
+    if id.starts_with("command") {
+        return Some("cohere");
+    }
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -782,12 +826,13 @@ mod tests {
 
     // -- merge_model_config tests --
 
-    fn pinned_alias(harness: &str, model: &str) -> ModelAlias {
+    fn pinned_alias(harness: Option<&str>, model: &str) -> ModelAlias {
         ModelAlias {
-            harness: harness.to_string(),
+            harness: harness.map(|h| h.to_string()),
             description: None,
             spec: ModelSpec::Pinned {
                 model: model.to_string(),
+                provider: None,
             },
         }
     }
@@ -805,14 +850,18 @@ mod tests {
     #[test]
     fn merge_consumer_overrides_dependency_alias() {
         let mut consumer = IndexMap::new();
-        consumer.insert("opus".to_string(), pinned_alias("custom", "my-opus-model"));
+        consumer.insert(
+            "opus".to_string(),
+            pinned_alias(Some("custom"), "my-opus-model"),
+        );
 
         let mut diag = DiagnosticCollector::new();
         let merged = merge_model_config(&consumer, &[], &mut diag);
         assert_eq!(
             merged.get("opus").unwrap().spec,
             ModelSpec::Pinned {
-                model: "my-opus-model".to_string()
+                model: "my-opus-model".to_string(),
+                provider: None
             }
         );
     }
@@ -823,7 +872,7 @@ mod tests {
             source_name: "my-pkg".to_string(),
             models: {
                 let mut m = IndexMap::new();
-                m.insert("opus".to_string(), pinned_alias("custom", "pkg-opus"));
+                m.insert("opus".to_string(), pinned_alias(Some("custom"), "pkg-opus"));
                 m
             },
         };
@@ -834,7 +883,8 @@ mod tests {
         assert_eq!(
             merged.get("opus").unwrap().spec,
             ModelSpec::Pinned {
-                model: "pkg-opus".to_string()
+                model: "pkg-opus".to_string(),
+                provider: None
             }
         );
     }
@@ -842,13 +892,13 @@ mod tests {
     #[test]
     fn merge_consumer_beats_dep() {
         let mut consumer = IndexMap::new();
-        consumer.insert("opus".to_string(), pinned_alias("c", "consumer-opus"));
+        consumer.insert("opus".to_string(), pinned_alias(Some("c"), "consumer-opus"));
 
         let dep = ResolvedDepModels {
             source_name: "pkg".to_string(),
             models: {
                 let mut m = IndexMap::new();
-                m.insert("opus".to_string(), pinned_alias("d", "dep-opus"));
+                m.insert("opus".to_string(), pinned_alias(Some("d"), "dep-opus"));
                 m
             },
         };
@@ -858,7 +908,8 @@ mod tests {
         assert_eq!(
             merged.get("opus").unwrap().spec,
             ModelSpec::Pinned {
-                model: "consumer-opus".to_string()
+                model: "consumer-opus".to_string(),
+                provider: None
             }
         );
     }
@@ -869,7 +920,7 @@ mod tests {
             source_name: "pkg-a".to_string(),
             models: {
                 let mut m = IndexMap::new();
-                m.insert("custom".to_string(), pinned_alias("a", "model-a"));
+                m.insert("custom".to_string(), pinned_alias(Some("a"), "model-a"));
                 m
             },
         };
@@ -877,7 +928,7 @@ mod tests {
             source_name: "pkg-b".to_string(),
             models: {
                 let mut m = IndexMap::new();
-                m.insert("custom".to_string(), pinned_alias("b", "model-b"));
+                m.insert("custom".to_string(), pinned_alias(Some("b"), "model-b"));
                 m
             },
         };
@@ -888,7 +939,8 @@ mod tests {
         assert_eq!(
             merged.get("custom").unwrap().spec,
             ModelSpec::Pinned {
-                model: "model-a".to_string()
+                model: "model-a".to_string(),
+                provider: None
             }
         );
         // Should have warned
@@ -902,7 +954,10 @@ mod tests {
     #[test]
     fn resolve_all_pinned() {
         let mut aliases = IndexMap::new();
-        aliases.insert("fast".to_string(), pinned_alias("claude", "claude-haiku-4"));
+        aliases.insert(
+            "fast".to_string(),
+            pinned_alias(Some("claude"), "claude-haiku-4"),
+        );
 
         let cache = ModelsCache {
             models: Vec::new(),
@@ -919,7 +974,7 @@ mod tests {
         aliases.insert(
             "opus".to_string(),
             ModelAlias {
-                harness: "claude".to_string(),
+                harness: Some("claude".to_string()),
                 description: None,
                 spec: ModelSpec::AutoResolve {
                     provider: "Anthropic".to_string(),
@@ -941,7 +996,7 @@ mod tests {
     // -- serde roundtrip tests --
 
     #[test]
-    fn model_alias_pinned_toml_roundtrip() {
+    fn model_alias_pinned_toml_roundtrip_backwards_compat_harness() {
         let toml_str = r#"
 [models.fast]
 harness = "claude"
@@ -959,11 +1014,81 @@ description = "Fast and cheap"
         assert_eq!(
             alias.spec,
             ModelSpec::Pinned {
-                model: "claude-haiku-4-5".to_string()
+                model: "claude-haiku-4-5".to_string(),
+                provider: None
             }
         );
-        assert_eq!(alias.harness, "claude");
+        assert_eq!(alias.harness.as_deref(), Some("claude"));
         assert_eq!(alias.description.as_deref(), Some("Fast and cheap"));
+
+        let json = serde_json::to_string(alias).unwrap();
+        let roundtripped: ModelAlias = serde_json::from_str(&json).unwrap();
+        assert_eq!(roundtripped, *alias);
+    }
+
+    #[test]
+    fn model_alias_pinned_toml_roundtrip_without_harness() {
+        let toml_str = r#"
+[models.fast]
+model = "claude-haiku-4-5"
+"#;
+
+        #[derive(Debug, Deserialize)]
+        struct Wrapper {
+            models: IndexMap<String, ModelAlias>,
+        }
+
+        let parsed: Wrapper = toml::from_str(toml_str).unwrap();
+        let alias = parsed.models.get("fast").unwrap();
+        assert_eq!(alias.harness, None);
+        assert_eq!(
+            alias.spec,
+            ModelSpec::Pinned {
+                model: "claude-haiku-4-5".to_string(),
+                provider: None
+            }
+        );
+
+        let json = serde_json::to_string(alias).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(value.get("harness").is_none());
+        assert!(value.get("provider").is_none());
+        let roundtripped: ModelAlias = serde_json::from_str(&json).unwrap();
+        assert_eq!(roundtripped, *alias);
+    }
+
+    #[test]
+    fn model_alias_pinned_toml_roundtrip_with_provider() {
+        let toml_str = r#"
+[models.fast]
+model = "claude-haiku-4-5"
+provider = "anthropic"
+"#;
+
+        #[derive(Debug, Deserialize)]
+        struct Wrapper {
+            models: IndexMap<String, ModelAlias>,
+        }
+
+        let parsed: Wrapper = toml::from_str(toml_str).unwrap();
+        let alias = parsed.models.get("fast").unwrap();
+        assert_eq!(alias.harness, None);
+        assert_eq!(
+            alias.spec,
+            ModelSpec::Pinned {
+                model: "claude-haiku-4-5".to_string(),
+                provider: Some("anthropic".to_string())
+            }
+        );
+
+        let json = serde_json::to_string(alias).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            value.get("provider").and_then(serde_json::Value::as_str),
+            Some("anthropic")
+        );
+        let roundtripped: ModelAlias = serde_json::from_str(&json).unwrap();
+        assert_eq!(roundtripped, *alias);
     }
 
     #[test]
@@ -984,6 +1109,7 @@ description = "Best reasoning"
 
         let parsed: Wrapper = toml::from_str(toml_str).unwrap();
         let alias = parsed.models.get("opus").unwrap();
+        assert_eq!(alias.harness.as_deref(), Some("claude"));
         match &alias.spec {
             ModelSpec::AutoResolve {
                 provider,
@@ -1034,5 +1160,30 @@ harness = "claude"
 
         let result = toml::from_str::<Wrapper>(toml_str);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn infer_provider_from_model_id_detects_known_prefixes() {
+        assert_eq!(
+            infer_provider_from_model_id("claude-opus-4-6"),
+            Some("anthropic")
+        );
+        assert_eq!(
+            infer_provider_from_model_id("gpt-5.3-codex"),
+            Some("openai")
+        );
+        assert_eq!(
+            infer_provider_from_model_id("gemini-2.5-pro"),
+            Some("google")
+        );
+        assert_eq!(
+            infer_provider_from_model_id("llama-4-maverick"),
+            Some("meta")
+        );
+    }
+
+    #[test]
+    fn infer_provider_from_model_id_returns_none_for_unknown_model() {
+        assert_eq!(infer_provider_from_model_id("unknown-model"), None);
     }
 }
