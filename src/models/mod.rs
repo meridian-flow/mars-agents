@@ -414,6 +414,64 @@ pub fn glob_match(pattern: &str, text: &str) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// Builtin aliases — bare convenience mappings, no descriptions
+// ---------------------------------------------------------------------------
+
+/// Minimal builtin aliases so common model names work out of the box.
+/// No descriptions — packages layer those on top.
+/// Precedence: consumer > deps > builtins.
+pub fn builtin_aliases() -> IndexMap<String, ModelAlias> {
+    let mut m = IndexMap::new();
+    let add = |m: &mut IndexMap<String, ModelAlias>,
+               name: &str,
+               harness: &str,
+               provider: &str,
+               match_patterns: &[&str],
+               exclude: &[&str]| {
+        m.insert(
+            name.to_string(),
+            ModelAlias {
+                harness: harness.to_string(),
+                description: None,
+                spec: ModelSpec::AutoResolve {
+                    provider: provider.to_string(),
+                    match_patterns: match_patterns.iter().map(|s| s.to_string()).collect(),
+                    exclude_patterns: exclude.iter().map(|s| s.to_string()).collect(),
+                },
+            },
+        );
+    };
+    add(&mut m, "opus", "claude", "anthropic", &["*opus*"], &[]);
+    add(&mut m, "sonnet", "claude", "anthropic", &["*sonnet*"], &[]);
+    add(&mut m, "haiku", "claude", "anthropic", &["*haiku*"], &[]);
+    add(
+        &mut m,
+        "codex",
+        "codex",
+        "openai",
+        &["*codex*"],
+        &["*-mini", "*-spark", "*-max"],
+    );
+    add(
+        &mut m,
+        "gpt",
+        "codex",
+        "openai",
+        &["gpt-5*"],
+        &["*codex*", "*-mini", "*-nano", "*-chat", "*-turbo"],
+    );
+    add(
+        &mut m,
+        "gemini",
+        "opencode",
+        "google",
+        &["gemini*", "*pro*"],
+        &["*-customtools"],
+    );
+    m
+}
+
+// ---------------------------------------------------------------------------
 // Dependency-tree merge
 // ---------------------------------------------------------------------------
 
@@ -425,7 +483,7 @@ pub struct ResolvedDepModels {
 
 /// Merge model aliases from dependency tree.
 ///
-/// Precedence: consumer > deps (declaration order).
+/// Precedence: consumer > deps (declaration order) > builtins.
 /// When two deps define the same alias, first in declaration order wins
 /// with a diagnostic warning.
 pub fn merge_model_config(
@@ -434,16 +492,25 @@ pub fn merge_model_config(
     diag: &mut DiagnosticCollector,
 ) -> IndexMap<String, ModelAlias> {
     let mut merged = IndexMap::new();
+    let builtins = builtin_aliases();
 
-    // Layer 1 (lowest): dependencies (declaration order — first wins)
+    // Layer 0 (lowest): builtins
+    for (name, alias) in &builtins {
+        merged.insert(name.clone(), alias.clone());
+    }
+
+    // Track which aliases were set by a dep (vs builtin)
+    let mut dep_provided: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    // Layer 1: dependencies (override builtins silently, first dep wins on conflicts)
     for dep in deps {
         for (name, alias) in &dep.models {
             if consumer.contains_key(name) {
                 // Consumer will override — skip dep's version silently
                 continue;
             }
-            if let Some(_existing) = merged.get(name) {
-                // Two deps define same alias — first wins, warn
+            if dep_provided.contains(name) {
+                // Two deps define same alias — first dep wins, warn
                 diag.warn_with_context(
                     "model-alias-conflict",
                     format!(
@@ -453,7 +520,9 @@ pub fn merge_model_config(
                     dep.source_name.clone(),
                 );
             } else {
+                // Override builtin or insert new
                 merged.insert(name.clone(), alias.clone());
+                dep_provided.insert(name.clone());
             }
         }
     }
@@ -724,10 +793,13 @@ mod tests {
     }
 
     #[test]
-    fn merge_empty_returns_empty() {
+    fn merge_empty_returns_builtins() {
         let mut diag = DiagnosticCollector::new();
         let merged = merge_model_config(&IndexMap::new(), &[], &mut diag);
-        assert!(merged.is_empty());
+        // Empty consumer + no deps = builtins only
+        assert!(merged.contains_key("opus"));
+        assert!(merged.contains_key("sonnet"));
+        assert!(merged.contains_key("codex"));
     }
 
     #[test]
@@ -746,7 +818,7 @@ mod tests {
     }
 
     #[test]
-    fn merge_dep_provides_alias() {
+    fn merge_dep_overrides_builtin() {
         let dep = ResolvedDepModels {
             source_name: "my-pkg".to_string(),
             models: {
@@ -758,6 +830,7 @@ mod tests {
 
         let mut diag = DiagnosticCollector::new();
         let merged = merge_model_config(&IndexMap::new(), &[dep], &mut diag);
+        // Dep overrides builtin
         assert_eq!(
             merged.get("opus").unwrap().spec,
             ModelSpec::Pinned {

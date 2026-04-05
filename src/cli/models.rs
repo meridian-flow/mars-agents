@@ -280,31 +280,25 @@ fn run_alias(args: &AddAliasArgs, ctx: &MarsContext, json: bool) -> Result<i32, 
 fn load_merged_aliases(
     ctx: &MarsContext,
 ) -> Result<indexmap::IndexMap<String, ModelAlias>, MarsError> {
-    // Try to load config — if no mars.toml, return empty
-    let config = match crate::config::load(&ctx.project_root) {
-        Ok(c) => c,
-        Err(MarsError::Config(crate::error::ConfigError::NotFound { .. })) => {
-            return Ok(IndexMap::new());
-        }
-        Err(e) => return Err(e),
-    };
+    // Start with builtins (lowest precedence)
+    let mut merged = models::builtin_aliases();
 
-    // Read dependency-only aliases from .mars/models-merged.json
-    // (written by mars sync). Consumer config is always overlaid on top
-    // so edits to mars.toml [models] take effect immediately without re-syncing.
+    // Layer dep aliases from cached merge file (overrides builtins)
     let mars_dir = ctx.project_root.join(".mars");
     let merged_path = mars_dir.join("models-merged.json");
-    let mut merged = if let Ok(content) = std::fs::read_to_string(&merged_path)
+    if let Ok(content) = std::fs::read_to_string(&merged_path)
         && let Ok(cached) = serde_json::from_str::<IndexMap<String, ModelAlias>>(&content)
     {
-        cached
-    } else {
-        IndexMap::new()
-    };
+        for (name, alias) in cached {
+            merged.insert(name, alias);
+        }
+    }
 
-    // Overlay consumer config on top — consumer models always win
-    for (name, alias) in &config.models {
-        merged.insert(name.clone(), alias.clone());
+    // Layer consumer config on top (highest precedence)
+    if let Ok(config) = crate::config::load(&ctx.project_root) {
+        for (name, alias) in &config.models {
+            merged.insert(name.clone(), alias.clone());
+        }
     }
 
     Ok(merged)
