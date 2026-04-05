@@ -194,5 +194,4 @@ mod tests {
         let already = ensure_consumer_config(dir.path()).unwrap();
         assert!(already);
     }
-
 }
