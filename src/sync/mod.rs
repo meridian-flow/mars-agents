@@ -532,10 +532,31 @@ fn finalize(
         let new_lock = crate::lock::build(graph, &state.applied.applied, old_lock)?;
         crate::lock::write(project_root, &new_lock)?;
 
-        // Persist merged model aliases so `mars models list` can read them
-        // without running full resolution.
-        let model_aliases = &state.applied.planned.targeted.resolved.model_aliases;
-        match serde_json::to_string_pretty(model_aliases) {
+        // Persist dependency-only model aliases so `mars models list` can load
+        // deps from cache, then overlay current consumer config without keeping
+        // stale consumer aliases from prior syncs.
+        let dep_models: Vec<crate::models::ResolvedDepModels> = graph
+            .order
+            .iter()
+            .filter_map(|name| {
+                let node = graph.nodes.get(name)?;
+                let manifest = node.manifest.as_ref()?;
+                if manifest.models.is_empty() {
+                    return None;
+                }
+                Some(crate::models::ResolvedDepModels {
+                    source_name: name.to_string(),
+                    models: manifest.models.clone(),
+                })
+            })
+            .collect();
+        let empty_consumer: indexmap::IndexMap<String, crate::models::ModelAlias> =
+            indexmap::IndexMap::new();
+        let mut ignored_diag = DiagnosticCollector::new();
+        let dep_model_aliases =
+            crate::models::merge_model_config(&empty_consumer, &dep_models, &mut ignored_diag);
+
+        match serde_json::to_string_pretty(&dep_model_aliases) {
             Ok(json) => {
                 let merged_path = ctx.project_root.join(".mars").join("models-merged.json");
                 if let Err(err) = crate::fs::atomic_write(&merged_path, json.as_bytes()) {

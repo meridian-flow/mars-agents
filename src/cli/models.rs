@@ -19,7 +19,7 @@ pub struct ModelsArgs {
 pub enum ModelsCommand {
     /// Fetch models from API and update the local cache.
     Refresh,
-    /// List all model aliases (consumer + deps + builtins) with resolved IDs.
+    /// List all model aliases (consumer + deps) with resolved IDs.
     List,
     /// Show resolution chain for a specific alias.
     Resolve(ResolveAliasArgs),
@@ -276,7 +276,7 @@ fn run_alias(args: &AddAliasArgs, ctx: &MarsContext, json: bool) -> Result<i32, 
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Load merged model aliases (consumer + deps + builtins).
+/// Load model aliases by combining cached dependency aliases with consumer config.
 fn load_merged_aliases(
     ctx: &MarsContext,
 ) -> Result<indexmap::IndexMap<String, ModelAlias>, MarsError> {
@@ -289,8 +289,8 @@ fn load_merged_aliases(
         Err(e) => return Err(e),
     };
 
-    // Read merged aliases from .mars/models-merged.json (written by mars sync).
-    // Contains dep models from last sync. Consumer config is always overlaid on top
+    // Read dependency-only aliases from .mars/models-merged.json
+    // (written by mars sync). Consumer config is always overlaid on top
     // so edits to mars.toml [models] take effect immediately without re-syncing.
     let mars_dir = ctx.project_root.join(".mars");
     let merged_path = mars_dir.join("models-merged.json");
