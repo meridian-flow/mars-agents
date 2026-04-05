@@ -195,12 +195,12 @@ pub fn write_cache(mars_dir: &Path, cache: &ModelsCache) -> Result<(), MarsError
     Ok(())
 }
 
-/// Fetch models from the OpenRouter API.
+/// Fetch models from the models.dev API.
 ///
 /// Returns a list of cached model entries. On network failure, returns an error
 /// (callers should fall back to existing cache or explicit pinned IDs).
 pub fn fetch_models() -> Result<Vec<CachedModel>, MarsError> {
-    let url = "https://openrouter.ai/api/v1/models";
+    let url = "https://models.dev/api.json";
     let response = ureq::get(url).call().map_err(|e| MarsError::Http {
         url: url.to_string(),
         status: 0,
@@ -219,52 +219,78 @@ pub fn fetch_models() -> Result<Vec<CachedModel>, MarsError> {
             message: format!("failed to parse models API response: {e}"),
         })?;
 
-    let data = raw.get("data").and_then(|d| d.as_array()).ok_or_else(|| {
-        crate::error::ConfigError::Invalid {
-            message: "models API response missing 'data' array".to_string(),
-        }
-    })?;
+    parse_models_dev_catalog(&raw)
+}
 
-    let models = data
-        .iter()
-        .filter_map(|v| {
-            let full_id = v.get("id")?.as_str()?;
-            // OpenRouter IDs are "provider/model-name" — extract both parts
-            let (provider_slug, model_id) = full_id.split_once('/')?;
-            let provider = normalize_provider(provider_slug);
-            let description = v
-                .get("description")
-                .and_then(|d| d.as_str())
-                .map(String::from);
-            let context_window = v.get("context_length").and_then(|c| c.as_u64());
-            let max_output = v
-                .get("top_provider")
-                .and_then(|tp| tp.get("max_completion_tokens"))
-                .and_then(|c| c.as_u64());
-            // Use created timestamp to approximate release date
-            let release_date = v.get("created").and_then(|c| c.as_u64()).map(|ts| {
-                // Convert unix timestamp to YYYY-MM-DD
-                let secs = ts as i64;
-                let days = secs / 86400;
-                // Approximate date from unix epoch (1970-01-01)
-                let (y, m, d) = days_to_ymd(days);
-                format!("{y:04}-{m:02}-{d:02}")
-            });
-            Some(CachedModel {
+fn parse_models_dev_catalog(raw: &serde_json::Value) -> Result<Vec<CachedModel>, MarsError> {
+    let providers = raw
+        .as_object()
+        .ok_or_else(|| crate::error::ConfigError::Invalid {
+            message: "models API response must be an object keyed by provider".to_string(),
+        })?;
+
+    let mut models = Vec::new();
+
+    for (provider_key, provider_obj) in providers {
+        if !is_major_provider(provider_key) {
+            continue;
+        }
+
+        let Some(provider_models) = provider_obj.get("models").and_then(|m| m.as_object()) else {
+            continue;
+        };
+
+        for model_obj in provider_models.values() {
+            let Some(model_id) = model_obj.get("id").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let release_date = model_obj
+                .get("release_date")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            let description = model_obj
+                .get("name")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            let context_window = model_obj
+                .get("limit")
+                .and_then(|v| v.get("context"))
+                .and_then(|v| v.as_u64());
+            let max_output = model_obj
+                .get("limit")
+                .and_then(|v| v.get("output"))
+                .and_then(|v| v.as_u64());
+
+            models.push(CachedModel {
                 id: model_id.to_string(),
-                provider,
+                provider: normalize_provider(provider_key),
                 release_date,
                 description,
                 context_window,
                 max_output,
-            })
-        })
-        .collect();
+            });
+        }
+    }
 
     Ok(models)
 }
 
-/// Normalize OpenRouter provider slugs to canonical names.
+fn is_major_provider(provider_key: &str) -> bool {
+    matches!(
+        provider_key,
+        "anthropic"
+            | "openai"
+            | "google"
+            | "meta-llama"
+            | "meta"
+            | "mistralai"
+            | "mistral"
+            | "deepseek"
+            | "cohere"
+    )
+}
+
+/// Normalize models.dev provider keys to canonical names.
 fn normalize_provider(slug: &str) -> String {
     match slug {
         "anthropic" => "Anthropic".to_string(),
@@ -276,22 +302,6 @@ fn normalize_provider(slug: &str) -> String {
         "cohere" => "Cohere".to_string(),
         _ => slug.to_string(),
     }
-}
-
-/// Convert days since Unix epoch to (year, month, day).
-fn days_to_ymd(mut days: i64) -> (i64, u32, u32) {
-    // Civil calendar algorithm
-    days += 719468;
-    let era = if days >= 0 { days } else { days - 146096 } / 146097;
-    let doe = (days - era * 146097) as u32;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let y = yoe as i64 + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = if m <= 2 { y + 1 } else { y };
-    (y, m, d)
 }
 
 // ---------------------------------------------------------------------------
@@ -489,6 +499,70 @@ pub fn resolve_all(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_models_dev_catalog_maps_fields_and_filters_providers() {
+        let raw = serde_json::json!({
+            "anthropic": {
+                "models": {
+                    "claude-opus-4-6": {
+                        "id": "claude-opus-4-6",
+                        "name": "Claude Opus 4.6",
+                        "release_date": "2026-02-05",
+                        "limit": {
+                            "context": 1000000,
+                            "output": 128000
+                        }
+                    }
+                }
+            },
+            "openai": {
+                "models": {
+                    "gpt-5": {
+                        "id": "gpt-5",
+                        "name": "GPT-5"
+                    }
+                }
+            },
+            "random-host": {
+                "models": {
+                    "foo": {
+                        "id": "foo"
+                    }
+                }
+            }
+        });
+
+        let models = parse_models_dev_catalog(&raw).unwrap();
+        assert_eq!(models.len(), 2);
+
+        let opus = models
+            .iter()
+            .find(|m| m.id == "claude-opus-4-6")
+            .expect("missing claude-opus-4-6");
+        assert_eq!(opus.provider, "Anthropic");
+        assert_eq!(opus.release_date.as_deref(), Some("2026-02-05"));
+        assert_eq!(opus.description.as_deref(), Some("Claude Opus 4.6"));
+        assert_eq!(opus.context_window, Some(1_000_000));
+        assert_eq!(opus.max_output, Some(128_000));
+
+        let gpt = models
+            .iter()
+            .find(|m| m.id == "gpt-5")
+            .expect("missing gpt-5");
+        assert_eq!(gpt.provider, "OpenAI");
+        assert_eq!(gpt.release_date, None);
+        assert_eq!(gpt.description.as_deref(), Some("GPT-5"));
+        assert_eq!(gpt.context_window, None);
+        assert_eq!(gpt.max_output, None);
+    }
+
+    #[test]
+    fn parse_models_dev_catalog_requires_object_root() {
+        let raw = serde_json::json!(["not", "an", "object"]);
+        let err = parse_models_dev_catalog(&raw).unwrap_err();
+        assert!(err.to_string().contains("keyed by provider"));
+    }
 
     // -- glob_match tests --
 
