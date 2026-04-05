@@ -862,6 +862,7 @@ match = ["pattern-*"]
 
         #[derive(Debug, Deserialize)]
         struct Wrapper {
+            #[expect(dead_code)]
             models: IndexMap<String, ModelAlias>,
         }
 
@@ -880,6 +881,7 @@ harness = "claude"
 
         #[derive(Debug, Deserialize)]
         struct Wrapper {
+            #[expect(dead_code)]
             models: IndexMap<String, ModelAlias>,
         }
 
