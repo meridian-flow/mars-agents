@@ -172,7 +172,12 @@ fn copy_dir_following_symlinks(source: &Path, dest: &Path) -> Result<(), MarsErr
             copy_dir_following_symlinks(&source_path, &dest_path)?;
         } else if metadata.is_file() {
             let content = fs::read(&source_path)?;
-            fs::write(&dest_path, content)?;
+            fs::write(&dest_path, &content)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&dest_path, fs::Permissions::from_mode(0o644))?;
+            }
         } else {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,

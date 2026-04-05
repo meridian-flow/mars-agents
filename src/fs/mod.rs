@@ -30,6 +30,12 @@ pub fn atomic_write(dest: &Path, content: &[u8]) -> Result<(), MarsError> {
     let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
     tmp.write_all(content)?;
     tmp.as_file().sync_all()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        tmp.as_file()
+            .set_permissions(fs::Permissions::from_mode(0o644))?;
+    }
     tmp.persist(dest).map_err(|e| e.error)?;
     Ok(())
 }
