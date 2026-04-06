@@ -32,6 +32,12 @@ pub struct ListArgs {
     /// Show all aliases including those without an available harness.
     #[arg(long)]
     all: bool,
+    /// Only show aliases matching these patterns (overrides config).
+    #[arg(long, value_delimiter = ',', conflicts_with = "exclude")]
+    include: Option<Vec<String>>,
+    /// Hide aliases matching these patterns (overrides config).
+    #[arg(long, value_delimiter = ',', conflicts_with = "include")]
+    exclude: Option<Vec<String>>,
 }
 
 #[derive(Debug, Parser)]
@@ -101,6 +107,22 @@ fn run_list(args: &ListArgs, ctx: &MarsContext, json: bool) -> Result<i32, MarsE
     // Load config to get consumer models + trigger merge
     let merged = load_merged_aliases(ctx)?;
     let resolved = models::resolve_all(&merged, &cache);
+
+    // Build effective visibility: CLI overrides config entirely.
+    let config_visibility = crate::config::load(&ctx.project_root)
+        .map(|c| c.settings.model_visibility)
+        .unwrap_or_default();
+
+    let visibility = if args.include.is_some() || args.exclude.is_some() {
+        crate::config::ModelVisibility {
+            include: args.include.clone(),
+            exclude: args.exclude.clone(),
+        }
+    } else {
+        config_visibility
+    };
+
+    let resolved = models::filter_by_visibility(resolved, &visibility);
 
     if json {
         let entries: Vec<serde_json::Value> = resolved
