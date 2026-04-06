@@ -116,12 +116,31 @@ When `agents` and/or `skills` lists are provided:
 [settings]
 managed_root = ".claude"   # default: ".agents"
 links = [".claude", ".cursor"]
+
+[settings.model_visibility]
+include = ["opus*", "sonnet*"]  # or use exclude = [...]
 ```
 
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `managed_root` | string | `".agents"` | Directory name for managed output under the project root |
 | `links` | string[] | `[]` | Directories where `agents/` and `skills/` symlinks are maintained |
+| `model_visibility` | table | `{}` | Consumer-only display filter for `mars models list` output |
+
+#### `[settings.model_visibility]`
+
+Controls alias visibility in `mars models list`.
+
+| Field | Type | Description |
+|---|---|---|
+| `include` | string[] | Glob patterns; only matching aliases are shown |
+| `exclude` | string[] | Glob patterns; matching aliases are hidden |
+
+Rules:
+- `include` and `exclude` are mutually exclusive (`[settings.model_visibility]` with both is a validation error)
+- Consumer-only setting; it does not flow through dependencies
+- Display filter only; it does not affect `mars models resolve`
+- CLI `mars models list --include/--exclude` overrides this config for that invocation
 
 ## Version Constraints
 

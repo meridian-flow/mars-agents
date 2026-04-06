@@ -267,6 +267,84 @@ mars link .claude --force    # Replace whatever exists
 
 ---
 
+## `mars models`
+
+Manage model aliases and the local models cache.
+
+```bash
+mars models <refresh|list|resolve|alias> ...
+```
+
+### `mars models refresh`
+
+Fetch model metadata from the API and update `.mars/models-cache.json`.
+
+```bash
+mars models refresh
+```
+
+Use this before `models list`/`models resolve` when you want fresh auto-resolve results.
+
+### `mars models list`
+
+List aliases from dependencies + consumer config with resolved model IDs.
+
+```bash
+mars models list [--all] [--include PATTERN,... | --exclude PATTERN,...]
+```
+
+| Flag | Description |
+|---|---|
+| `--all` | Include aliases whose harness is unavailable locally |
+| `--include` | Show only aliases matching glob patterns |
+| `--exclude` | Hide aliases matching glob patterns |
+
+**Rules:**
+- `--include` and `--exclude` are mutually exclusive
+- `--include`/`--exclude` override `[settings.model_visibility]` for that command invocation
+- Filtering is display-only; it does not affect `mars models resolve`
+
+```bash
+mars models list
+mars models list --all
+mars models list --include "opus*,sonnet*"
+mars models list --exclude "experimental-*"
+```
+
+### `mars models resolve`
+
+Show the resolution chain for one alias.
+
+```bash
+mars models resolve <alias>
+```
+
+```bash
+mars models resolve opus
+```
+
+### `mars models alias`
+
+Quick-add a pinned alias to `mars.toml [models]`.
+
+```bash
+mars models alias <name> <model-id> [--harness HARNESS] [--description TEXT]
+```
+
+| Argument/Flag | Description |
+|---|---|
+| `name` | Alias name to create |
+| `model-id` | Concrete model ID to pin |
+| `--harness` | Harness name (default: `claude`) |
+| `--description` | Optional human-readable description |
+
+```bash
+mars models alias opus claude-opus-4-6
+mars models alias fast gpt-5.3-codex --harness codex --description "Fast coding model"
+```
+
+---
+
 ## `mars check`
 
 Validate a source package before publishing.

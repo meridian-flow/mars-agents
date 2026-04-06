@@ -145,8 +145,12 @@ Merge precedence: consumer config > dependencies (declaration order, first wins)
 ```bash
 mars models refresh          # Fetch model catalog from API
 mars models list             # Show all aliases (deps + consumer config)
+mars models list --include "opus*,sonnet*"   # Show only matching aliases
+mars models list --exclude "experimental-*"   # Hide matching aliases
 mars models resolve opus     # Resolve an alias to a concrete model ID
 ```
+
+`--include` and `--exclude` are mutually exclusive. Both override `[settings.model_visibility]` for that command run.
 
 ## `mars.toml` Example
 

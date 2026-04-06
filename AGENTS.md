@@ -95,7 +95,7 @@ All model aliases come from packages or consumer config. The binary ships zero h
 ### Catalog lifecycle
 
 - `mars models refresh` — fetches from models.dev API, caches to `.mars/models-cache.json`
-- `mars models list` — loads dependency aliases from `.mars/models-merged.json`, overlays consumer config from `mars.toml [models]`
+- `mars models list` — loads dependency aliases from `.mars/models-merged.json`, overlays consumer config from `mars.toml [models]`, then applies visibility filtering from `[settings.model_visibility]` (unless overridden by `--include`/`--exclude`)
 - `mars models resolve <alias>` — resolves against cache
 
 ### Dependency model merge
