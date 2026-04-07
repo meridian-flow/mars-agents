@@ -120,6 +120,11 @@ pub enum MarsError {
     #[error("link error: {target}: {message}")]
     Link { target: String, message: String },
 
+    #[error(
+        "models cache is empty and cannot be refreshed: {reason}. Run `mars models refresh` to populate it."
+    )]
+    ModelCacheUnavailable { reason: String },
+
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
@@ -154,6 +159,7 @@ impl MarsError {
             | MarsError::LockedCommitUnreachable { .. } => 2,
             MarsError::Source { .. }
             | MarsError::UnmanagedCollision { .. }
+            | MarsError::ModelCacheUnavailable { .. }
             | MarsError::Io(_)
             | MarsError::Http { .. }
             | MarsError::GitCli { .. } => 3,
@@ -240,6 +246,12 @@ mod tests {
                 MarsError::UnmanagedCollision {
                     source_name: "origin".to_string(),
                     path: PathBuf::from("agents/coder.md"),
+                },
+                3,
+            ),
+            (
+                MarsError::ModelCacheUnavailable {
+                    reason: "MARS_OFFLINE is set and no cached catalog is available".to_string(),
                 },
                 3,
             ),

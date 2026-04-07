@@ -5,7 +5,7 @@ use clap::{Parser, Subcommand};
 use indexmap::IndexMap;
 
 use crate::error::MarsError;
-use crate::models::{self, HarnessSource, ModelAlias, ModelSpec, ModelsCache};
+use crate::models::{self, HarnessSource, ModelAlias, ModelSpec};
 use crate::types::MarsContext;
 
 /// Manage model aliases and the models cache.
@@ -75,15 +75,11 @@ fn mars_dir(ctx: &MarsContext) -> std::path::PathBuf {
 
 fn run_refresh(ctx: &MarsContext, json: bool) -> Result<i32, MarsError> {
     let mars = mars_dir(ctx);
+    let ttl = models::load_models_cache_ttl(ctx);
     eprint!("Fetching models catalog... ");
 
-    let fetched = models::fetch_models()?;
-    let count = fetched.len();
-    let cache = ModelsCache {
-        models: fetched,
-        fetched_at: Some(now_iso()),
-    };
-    models::write_cache(&mars, &cache)?;
+    let (cache, _outcome) = models::ensure_fresh(&mars, ttl, models::RefreshMode::Force)?;
+    let count = cache.models.len();
 
     if json {
         let out = serde_json::json!({
@@ -428,15 +424,4 @@ fn unavailable_harness_error(resolved: &models::ResolvedAlias) -> Option<String>
             resolved.harness_candidates.join(", ")
         ))
     }
-}
-
-fn now_iso() -> String {
-    // Simple ISO timestamp without external chrono dep
-    use std::time::SystemTime;
-    let dur = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default();
-    let secs = dur.as_secs();
-    // Format as a simple timestamp string
-    format!("{secs}")
 }
