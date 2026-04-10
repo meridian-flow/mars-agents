@@ -195,7 +195,9 @@ fn apply_filter_union(
 
     Ok(discovered
         .iter()
-        .filter(|item| union.contains(&(item.id.kind, item.id.name.clone(), item.source_path.clone())))
+        .filter(|item| {
+            union.contains(&(item.id.kind, item.id.name.clone(), item.source_path.clone()))
+        })
         .cloned()
         .collect())
 }
