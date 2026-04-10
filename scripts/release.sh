@@ -222,7 +222,9 @@ main() {
 
   local version_files=("Cargo.toml" "pyproject.toml" "Cargo.lock")
   for pkg in "$ROOT_DIR/npm/@meridian-flow"/mars-agents*/package.json; do
-    version_files+=("$(basename "$(dirname "$pkg")")/package.json")
+    if [[ -f "$pkg" ]]; then
+      version_files+=("${pkg#$ROOT_DIR/}")
+    fi
   done
   
   git -C "$ROOT_DIR" add "${version_files[@]}"
