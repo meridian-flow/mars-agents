@@ -1,27 +1,24 @@
 #!/usr/bin/env bash
 
-set -euo pipefail
-
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 usage() {
   cat <<'EOF'
 Usage:
-  scripts/release.sh patch [--push] [--remote origin]
-  scripts/release.sh minor [--push] [--remote origin]
-  scripts/release.sh major [--push] [--remote origin]
-  scripts/release.sh X.Y.Z [--push] [--remote origin]
+  scripts/release.sh [patch|minor|major|X.Y.Z] [--push] [--remote origin]
 
 Behavior:
   - Runs pre-release checks (fmt, clippy, tests, release build)
-  - Updates version in Cargo.toml, pyproject.toml, and Cargo.lock
+  - Validates version consistency across all version files
+  - Updates version in Cargo.toml, pyproject.toml, and npm packages
   - Creates a release commit
   - Creates an annotated git tag named v<version>
   - Optionally pushes the branch and tag
 
 Examples:
-  scripts/release.sh patch
-  scripts/release.sh 0.1.0 --push
+  scripts/release.sh patch           # dry run (no push)
+  scripts/release.sh patch --push    # release and push
+  scripts/release.sh 1.2.3 --push    # explicit version
 EOF
 }
 
@@ -30,32 +27,71 @@ die() {
   exit 1
 }
 
+warn() {
+  printf 'WARNING: %s\n' "$*" >&2
+}
+
+FAILURES=()
+
+check() {
+  local name="$1"
+  local cmd="$2"
+  printf '%s... ' "$name"
+  if eval "$cmd" >/dev/null 2>&1; then
+    printf 'pass\n'
+    return 0
+  else
+    printf 'FAIL\n'
+    FAILURES+=("check failed: $name")
+    return 1
+  fi
+}
+
 require_clean_tree() {
   if [[ -n "$(git -C "$ROOT_DIR" status --short)" ]]; then
-    die "working tree is not clean; commit or stash changes first"
+    FAILURES+=("working tree is not clean; commit or stash changes first")
+    return 1
   fi
+  return 0
 }
 
 require_branch() {
   local branch
   branch="$(git -C "$ROOT_DIR" branch --show-current)"
   if [[ -z "$branch" ]]; then
-    die "release helper must run from a branch, not detached HEAD"
+    FAILURES+=("release script must run from a branch, not detached HEAD")
+    return 1
   fi
   printf '%s\n' "$branch"
+  return 0
 }
 
-read_current_version() {
-  local version
-  version="$(grep '^version' "$ROOT_DIR/Cargo.toml" | head -1 | sed 's/.*"\(.*\)".*/\1/')"
-  [[ -n "$version" ]] || die "could not read version from Cargo.toml"
-  printf '%s\n' "$version"
+read_cargo_version() {
+  grep '^version' "$ROOT_DIR/Cargo.toml" | head -1 | sed 's/.*"\(.*\)".*/\1/'
+}
+
+read_pypi_version() {
+  grep '^version' "$ROOT_DIR/pyproject.toml" | head -1 | sed 's/.*"\(.*\)".*/\1/'
+}
+
+read_npm_versions() {
+  local pkg_dir="$ROOT_DIR/npm/@meridian-flow"
+  local versions=()
+  
+  for pkg in "$pkg_dir"/mars-agents*/package.json; do
+    if [[ -f "$pkg" ]]; then
+      local v
+      v="$(node -e "console.log(require('$pkg').version)")"
+      versions+=("$v")
+    fi
+  done
+  
+  printf '%s\n' "${versions[@]}"
 }
 
 validate_version() {
   local version="$1"
-  [[ "$version" =~ ^[0-9]+(\.[0-9]+){2}$ ]] || \
-    die "version must look like X.Y.Z; got: $version"
+  [[ "$version" =~ ^[0-9]+(\.[0-9]+){2}$ ]]
 }
 
 next_version() {
@@ -74,11 +110,28 @@ next_version() {
 }
 
 write_version() {
-  local current="$1"
-  local version="$2"
-  sed -i "s/^version = \"${current}\"/version = \"${version}\"/" "$ROOT_DIR/Cargo.toml"
-  sed -i "s/^version = \"${current}\"/version = \"${version}\"/" "$ROOT_DIR/pyproject.toml"
-  (cd "$ROOT_DIR" && cargo check --quiet 2>/dev/null)  # update Cargo.lock
+  local version="$1"
+  
+  sed -i "s/^version = \".*\"/version = \"$version\"/" "$ROOT_DIR/Cargo.toml"
+  sed -i "s/^version = \".*\"/version = \"$version\"/" "$ROOT_DIR/pyproject.toml"
+  
+  local pkg_dir="$ROOT_DIR/npm/@meridian-flow"
+  for pkg in "$pkg_dir"/mars-agents*/package.json; do
+    if [[ -f "$pkg" ]]; then
+      node -e "
+        const pkg = require('$pkg');
+        pkg.version = '$version';
+        if (pkg.optionalDependencies) {
+          for (const dep of Object.keys(pkg.optionalDependencies)) {
+            pkg.optionalDependencies[dep] = '$version';
+          }
+        }
+        require('fs').writeFileSync('$pkg', JSON.stringify(pkg, null, 2) + '\n');
+      "
+    fi
+  done
+  
+  (cd "$ROOT_DIR" && cargo check --quiet 2>/dev/null)
 }
 
 main() {
@@ -117,60 +170,82 @@ main() {
     esac
   done
 
-  require_clean_tree
+  printf 'Running pre-release checks...\n\n'
+
   local branch
-  branch="$(require_branch)"
+  require_branch && branch=$(require_branch)
+  require_clean_tree
 
-  # Pre-release checks
-  printf 'Running pre-release checks...\n'
-  printf '  fmt... '
-  (cd "$ROOT_DIR" && cargo fmt --check >/dev/null 2>&1) || die "cargo fmt --check failed — run 'cargo fmt'"
-  printf 'pass\n'
-  printf '  clippy... '
-  (cd "$ROOT_DIR" && cargo clippy --all-targets -- -D warnings >/dev/null 2>&1) || die "clippy has warnings"
-  printf 'pass\n'
-  printf '  tests... '
-  (cd "$ROOT_DIR" && cargo test >/dev/null 2>&1) || die "tests failed"
-  printf 'pass\n'
-  printf '  release build... '
-  (cd "$ROOT_DIR" && cargo build --release >/dev/null 2>&1) || die "release build failed"
-  printf 'pass\n'
+  check "cargo fmt" "cd $ROOT_DIR && cargo fmt --check"
+  check "cargo clippy" "cd $ROOT_DIR && cargo clippy --all-targets -- -D warnings"
+  check "cargo test" "cd $ROOT_DIR && cargo test"
+  check "cargo build --release" "cd $ROOT_DIR && cargo build --release"
 
-  local current_version
-  current_version="$(read_current_version)"
-
-  # Version consistency check
+  local cargo_version
+  cargo_version="$(read_cargo_version)"
   local pypi_version
-  pypi_version="$(grep '^version' "$ROOT_DIR/pyproject.toml" | head -1 | sed 's/.*"\(.*\)".*/\1/')"
-  [[ "$current_version" = "$pypi_version" ]] || \
-    die "Cargo.toml ($current_version) != pyproject.toml ($pypi_version)"
+  pypi_version="$(read_pypi_version)"
+  
+  check "version: cargo == pypi" "[[ '$cargo_version' = '$pypi_version' ]]"
+
+  local npm_versions
+  npm_versions="$(read_npm_versions)"
+  local first_npm_version
+  first_npm_version=$(echo "$npm_versions" | head -1)
+  
+  local npm_mismatch=0
+  for v in $npm_versions; do
+    if [[ "$v" != "$first_npm_version" ]]; then
+      npm_mismatch=1
+      break
+    fi
+  done
+  
+  check "version: npm packages consistent" "[[ $npm_mismatch -eq 0 ]]"
+  check "version: cargo == npm" "[[ '$cargo_version' = '$first_npm_version' ]]"
+
+  if [[ ${#FAILURES[@]} -gt 0 ]]; then
+    printf '\n=== PRE-RELEASE CHECKS FAILED ===\n\n'
+    for f in "${FAILURES[@]}"; do
+      printf '  - %s\n' "$f"
+    done
+    printf '\nFix the issues above and try again.\n'
+    exit 1
+  fi
+
+  printf '\nAll pre-release checks passed.\n\n'
 
   local next_version_value
   case "$target" in
     patch|minor|major)
-      next_version_value="$(next_version "$target" "$current_version")"
+      next_version_value="$(next_version "$target" "$cargo_version")"
       ;;
     *)
       next_version_value="$target"
       ;;
   esac
 
-  validate_version "$next_version_value"
-  [[ "$next_version_value" != "$current_version" ]] || \
-    die "next version matches current version ($current_version)"
+  validate_version "$next_version_value" || die "invalid version: $next_version_value"
+  [[ "$next_version_value" != "$cargo_version" ]] || die "next version matches current: $cargo_version"
 
   local tag="v$next_version_value"
   if git -C "$ROOT_DIR" rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
     die "tag already exists: $tag"
   fi
 
-  write_version "$current_version" "$next_version_value"
+  printf 'Bumping version: %s -> %s\n' "$cargo_version" "$next_version_value"
+  write_version "$next_version_value"
 
-  git -C "$ROOT_DIR" add Cargo.toml pyproject.toml Cargo.lock
+  local version_files=("Cargo.toml" "pyproject.toml" "Cargo.lock")
+  for pkg in "$ROOT_DIR/npm/@meridian-flow"/mars-agents*/package.json; do
+    version_files+=("$(basename "$(dirname "$pkg")")/package.json")
+  done
+  
+  git -C "$ROOT_DIR" add "${version_files[@]}"
   git -C "$ROOT_DIR" commit -m "release: v$next_version_value"
   git -C "$ROOT_DIR" tag -a "$tag" -m "Release $next_version_value"
 
-  printf 'Released %s on branch %s\n' "$next_version_value" "$branch"
+  printf '\nReleased %s on branch %s\n' "$next_version_value" "$branch"
   printf 'Created commit and tag %s\n' "$tag"
 
   if [[ -n "$push_remote" ]]; then
@@ -178,7 +253,7 @@ main() {
     git -C "$ROOT_DIR" push "$remote" "$tag"
     printf 'Pushed branch %s and tag %s to %s\n' "$branch" "$tag" "$remote"
   else
-    printf 'Nothing pushed. Run:\n'
+    printf '\nNothing pushed. Run:\n'
     printf '  git push %s %s\n' "$remote" "$branch"
     printf '  git push %s %s\n' "$remote" "$tag"
   fi
