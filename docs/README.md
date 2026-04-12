@@ -77,7 +77,7 @@ Mars accepts several source forms:
 
 | Document | Contents |
 |---|---|
-| [configuration.md](configuration.md) | `mars.toml` reference: all fields, filter modes, settings |
+| [configuration.md](configuration.md) | `mars.toml` reference: all fields, filter modes, model alias merge precedence, settings |
 | [commands.md](commands.md) | Full CLI reference: every subcommand with flags and examples |
 | [sync-pipeline.md](sync-pipeline.md) | How sync works: resolve → target → diff → apply → sync targets → finalize |
 | [conflicts.md](conflicts.md) | Collision handling: naming, unmanaged files, merge, resolution |

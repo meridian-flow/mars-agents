@@ -169,6 +169,86 @@ url = "https://github.com/meridian-flow/meridian-base"
 rename = { "agents/coder__meridian-flow_meridian-base.md" = "agents/coder.md" }
 ```
 
+## `[models]`
+
+Model aliases map short names (e.g. `opus`, `sonnet`) to concrete model IDs or resolution patterns. Packages distribute aliases in their `mars.toml` under `[models]`; consumers can define their own to override or supplement.
+
+```toml
+# Pinned — explicit model ID
+[models.opus]
+harness = "claude"
+model = "claude-opus-4-6"
+
+# Auto-resolve — pattern matching against cached model catalog
+[models.sonnet]
+harness = "claude"
+provider = "Anthropic"
+match = ["sonnet"]
+exclude = ["thinking"]
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `harness` | string | yes | Which harness runs this model (`claude`, `codex`, `opencode`, etc.) |
+| `model` | string | no | Explicit model ID. If set, skips auto-resolution. |
+| `provider` | string | no | API provider name for auto-resolution filtering |
+| `description` | string | no | Human-readable description shown in `mars models list` |
+| `match` | string[] | no | Glob patterns matched against the model catalog |
+| `exclude` | string[] | no | Glob patterns to exclude from matches |
+
+When `model` is omitted, Mars auto-resolves by querying the cached model catalog with `match`/`exclude` patterns and selecting the best match.
+
+### Merge Precedence
+
+During sync, model aliases from the full dependency tree are merged into a single alias map. Three layers participate, highest priority first:
+
+1. **Consumer `[models]`** — always wins. If you define `[models.opus]` in your `mars.toml`, no dependency can override it.
+2. **Dependencies** — declaration order in `mars.toml` breaks ties. The dep listed first wins when two siblings define the same alias.
+3. **Builtins** — lowest priority (mars ships zero builtins today, but the layer exists).
+
+Within the dependency tree, the ordering follows these rules:
+
+- **Siblings**: declaration order in the consumer's `[dependencies]` section. First-listed dep wins.
+- **Transitive deps within a subtree**: the parent dep's `mars.toml` declaration order determines its children's relative ordering.
+- **Dependent overrides its own deps**: if dep B depends on dep D and both define alias `x`, B wins (it appears later in topological order).
+- **Diamond deps**: when a transitive dep is reachable from multiple direct deps, it inherits the position of the earliest (first-declared) direct dep that reaches it.
+
+```mermaid
+flowchart TD
+    subgraph "Merge Layers (highest → lowest)"
+        C["Layer 2: Consumer [models]<br/>Always wins"]
+        D["Layer 1: Dependencies<br/>Declaration-order first-wins among siblings"]
+        B["Layer 0: Builtins<br/>Lowest priority"]
+    end
+
+    C --> D --> B
+
+    subgraph "Dependency Ordering Example"
+        direction TB
+        TOML["Consumer mars.toml<br/>[dependencies.alpha] ← first<br/>[dependencies.beta] ← second"]
+        TOML --> A1["alpha defines [models.default]<br/>harness = claude"]
+        TOML --> B1["beta defines [models.default]<br/>harness = codex"]
+        A1 -->|"alpha wins<br/>(declared first)"| Result["Merged: default → claude"]
+    end
+```
+
+### Conflict Warnings
+
+When a sibling tiebreak resolves a conflict, Mars emits a warning naming both deps:
+
+```
+warning: model alias `default` defined by both `alpha` and `beta` — using alpha (declared first)
+  → add [models.default] to your mars.toml to resolve explicitly
+```
+
+If three or more deps define the same alias, Mars emits one warning per losing dep. Adding a consumer `[models]` override for that alias suppresses the warning entirely (the override is intentional, not a tiebreak).
+
+Conflicts never block sync — they warn and continue.
+
+### Persistence
+
+Dependency-sourced aliases are persisted to `.mars/models-merged.json` during finalize. Consumer aliases are **not** baked into this file — `mars models list` overlays fresh consumer config at read time.
+
 ## `mars.local.toml`
 
 Developer-local overrides. Gitignored by `mars init`. Lets each developer swap a git source for a local checkout without modifying the shared config.

@@ -109,7 +109,7 @@ Fetches sources and resolves concrete versions.
 | Git with ref pin | Fetch the specific branch/commit ref |
 | Local path | Resolve to canonical path, no version logic |
 
-Additionally, this phase merges model aliases from the dependency tree. Each resolved dependency's `[models]` config is collected in declaration order. `merge_model_config()` applies two layers: dependencies first (first-dep wins on conflicts), consumer config on top (always wins).
+Additionally, this phase merges model aliases from the dependency tree. Each resolved dependency's `[models]` config is collected in **declaration order** (the order deps appear in the consumer's `mars.toml`, not alphabetical). `merge_model_config()` applies two layers: dependencies first (declaration-order first-wins on sibling conflicts), consumer config on top (always wins). Within transitive subtrees, each parent's manifest declaration order determines its children's ordering. Diamond deps inherit the position of the earliest direct dep that reaches them. See [configuration.md](configuration.md#merge-precedence) for the full precedence rules, conflict warnings, and examples.
 
 ### 3. Build Target (`build_target`)
 
