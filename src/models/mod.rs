@@ -806,8 +806,9 @@ pub fn merge_model_config(
         merged.insert(name.clone(), alias.clone());
     }
 
-    // Track which aliases were set by a dep (vs builtin)
-    let mut dep_provided: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // Track which dep won each alias (vs builtin)
+    let mut dep_provided: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
 
     // Layer 1: dependencies (override builtins silently, first dep wins on conflicts)
     for dep in deps {
@@ -816,12 +817,12 @@ pub fn merge_model_config(
                 // Consumer will override — skip dep's version silently
                 continue;
             }
-            if dep_provided.contains(name) {
+            if let Some(winner) = dep_provided.get(name) {
                 // Two deps define same alias — first dep wins, warn
                 diag.warn_with_context(
                     "model-alias-conflict",
                     format!(
-                        "model alias `{name}` defined by both `{}` and earlier dependency — using earlier definition",
+                        "model alias `{name}` defined by both `{winner}` and `{}` — using {winner} (declared first)\n  → add [models.{name}] to your mars.toml to resolve explicitly",
                         dep.source_name
                     ),
                     dep.source_name.clone(),
@@ -829,7 +830,7 @@ pub fn merge_model_config(
             } else {
                 // Override builtin or insert new
                 merged.insert(name.clone(), alias.clone());
-                dep_provided.insert(name.clone());
+                dep_provided.insert(name.clone(), dep.source_name.clone());
             }
         }
     }
@@ -1284,7 +1285,7 @@ mod tests {
     }
 
     #[test]
-    fn merge_dep_conflict_warns() {
+    fn merge_dep_conflict_warns_with_winner_and_resolution_hint() {
         let dep1 = ResolvedDepModels {
             source_name: "pkg-a".to_string(),
             models: {
@@ -1316,6 +1317,139 @@ mod tests {
         let warnings = diag.drain();
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].code, "model-alias-conflict");
+        assert_eq!(
+            warnings[0].message,
+            "model alias `custom` defined by both `pkg-a` and `pkg-b` — using pkg-a (declared first)\n  → add [models.custom] to your mars.toml to resolve explicitly"
+        );
+    }
+
+    #[test]
+    fn merge_dep_three_way_conflict_warns_each_loser_against_first_winner() {
+        let dep1 = ResolvedDepModels {
+            source_name: "pkg-a".to_string(),
+            models: {
+                let mut m = IndexMap::new();
+                m.insert("custom".to_string(), pinned_alias(Some("a"), "model-a"));
+                m
+            },
+        };
+        let dep2 = ResolvedDepModels {
+            source_name: "pkg-b".to_string(),
+            models: {
+                let mut m = IndexMap::new();
+                m.insert("custom".to_string(), pinned_alias(Some("b"), "model-b"));
+                m
+            },
+        };
+        let dep3 = ResolvedDepModels {
+            source_name: "pkg-c".to_string(),
+            models: {
+                let mut m = IndexMap::new();
+                m.insert("custom".to_string(), pinned_alias(Some("c"), "model-c"));
+                m
+            },
+        };
+
+        let mut diag = DiagnosticCollector::new();
+        let merged = merge_model_config(&IndexMap::new(), &[dep1, dep2, dep3], &mut diag);
+
+        assert_eq!(
+            merged.get("custom").unwrap().spec,
+            ModelSpec::Pinned {
+                model: "model-a".to_string(),
+                provider: None
+            }
+        );
+
+        let warnings = diag.drain();
+        assert_eq!(warnings.len(), 2);
+        assert_eq!(
+            warnings[0].message,
+            "model alias `custom` defined by both `pkg-a` and `pkg-b` — using pkg-a (declared first)\n  → add [models.custom] to your mars.toml to resolve explicitly"
+        );
+        assert_eq!(
+            warnings[1].message,
+            "model alias `custom` defined by both `pkg-a` and `pkg-c` — using pkg-a (declared first)\n  → add [models.custom] to your mars.toml to resolve explicitly"
+        );
+    }
+
+    #[test]
+    fn merge_consumer_override_suppresses_dep_conflict_warning() {
+        let mut consumer = IndexMap::new();
+        consumer.insert(
+            "custom".to_string(),
+            pinned_alias(Some("consumer"), "consumer-model"),
+        );
+
+        let dep1 = ResolvedDepModels {
+            source_name: "pkg-a".to_string(),
+            models: {
+                let mut m = IndexMap::new();
+                m.insert("custom".to_string(), pinned_alias(Some("a"), "model-a"));
+                m
+            },
+        };
+        let dep2 = ResolvedDepModels {
+            source_name: "pkg-b".to_string(),
+            models: {
+                let mut m = IndexMap::new();
+                m.insert("custom".to_string(), pinned_alias(Some("b"), "model-b"));
+                m
+            },
+        };
+
+        let mut diag = DiagnosticCollector::new();
+        let merged = merge_model_config(&consumer, &[dep1, dep2], &mut diag);
+
+        assert_eq!(
+            merged.get("custom").unwrap().spec,
+            ModelSpec::Pinned {
+                model: "consumer-model".to_string(),
+                provider: None
+            }
+        );
+        assert!(diag.drain().is_empty());
+    }
+
+    #[test]
+    fn merge_dep_conflicts_are_non_blocking() {
+        let dep1 = ResolvedDepModels {
+            source_name: "pkg-a".to_string(),
+            models: {
+                let mut m = IndexMap::new();
+                m.insert("custom".to_string(), pinned_alias(Some("a"), "model-a"));
+                m
+            },
+        };
+        let dep2 = ResolvedDepModels {
+            source_name: "pkg-b".to_string(),
+            models: {
+                let mut m = IndexMap::new();
+                m.insert("custom".to_string(), pinned_alias(Some("b"), "model-b"));
+                m.insert("extra".to_string(), pinned_alias(Some("b"), "model-extra"));
+                m
+            },
+        };
+
+        let mut diag = DiagnosticCollector::new();
+        let merged = merge_model_config(&IndexMap::new(), &[dep1, dep2], &mut diag);
+
+        assert!(merged.contains_key("opus"));
+        assert_eq!(
+            merged.get("custom").unwrap().spec,
+            ModelSpec::Pinned {
+                model: "model-a".to_string(),
+                provider: None
+            }
+        );
+        assert_eq!(
+            merged.get("extra").unwrap().spec,
+            ModelSpec::Pinned {
+                model: "model-extra".to_string(),
+                provider: None
+            }
+        );
+        assert_eq!(diag.drain().len(), 1);
     }
 
     // -- resolve_all tests --
