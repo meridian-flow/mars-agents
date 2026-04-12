@@ -171,7 +171,7 @@ In `--diff` (dry run) mode, actions are computed but not executed.
 
 Copies content from `.mars/` canonical store to each configured target directory (`.agents/`, `.claude/`, etc.). Implemented in `src/target_sync/mod.rs`.
 
-- Targets configured via `settings.targets` in `mars.toml` (default: `[".agents"]`)
+- Target is the managed root configured via `settings.managed_root` in `mars.toml` (default: `.agents`). Additional tool directories receive symlinks via `mars link` (`settings.links`), not file copies.
 - All targets get file copies, never symlinks — symlinks in `.mars/` (from local packages) are followed during copy
 - Uses `reconcile::fs_ops` for atomic operations (tmp+rename)
 - Orphan cleanup: uses the previous lock to identify mars-managed files in each target, removes only those that are no longer in the current apply outcomes

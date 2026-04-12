@@ -1,6 +1,8 @@
 # Mars Documentation
 
-Mars is a package manager for agent directories. It installs agent profiles and skills from git and local sources into a `.mars/` canonical store, tracks ownership in `mars.lock`, and copies managed content into configured target directories (`.agents/`, `.claude/`, `.cursor/`, etc.).
+Mars is a package manager for AI agent profiles. Install agents and skills from git and local sources into Claude Code, Cursor, Codex, OpenCode — any tool that reads from a config directory.
+
+Mars installs into a `.mars/` canonical store, tracks ownership in `mars.lock`, and copies managed content into the configured managed root (`.agents/` by default). Use `mars link` to make agents available in additional tool directories (`.claude/`, `.cursor/`, etc.) via symlinks.
 
 ## Core Concepts
 
@@ -10,7 +12,7 @@ Mars is a package manager for agent directories. It installs agent profiles and 
 
 **Canonical store** (`.mars/`) is where Mars installs resolved content. Gitignored. Rebuilt by `mars sync` from sources + lock.
 
-**Managed targets** are directories Mars copies content into from `.mars/` (default: `[".agents"]`, configurable via `settings.targets`). Targets may contain non-mars content — mars only manages files it created (tracked in the lock).
+**Managed root** is the directory Mars copies content into from `.mars/` (default: `.agents/`, configurable via `settings.managed_root`). The managed root may contain non-mars content — mars only manages files it created (tracked in the lock). Additional tool directories (`.claude/`, `.cursor/`) receive symlinks via `mars link`.
 
 **`--root`** points at the project root to override auto-detection. Mars resolves from the directory containing `mars.toml`.
 
@@ -54,10 +56,10 @@ project/
     skills/              # Resolved skills
     models-cache.json    # Cached model catalog
     models-merged.json   # Dependency-sourced model aliases
-  .agents/               # Target directory (committed)
+  .agents/               # Managed root — files copied here (committed)
     agents/
     skills/
-  .claude/               # Another target (committed)
+  .claude/               # Linked tool dir — agents/ and skills/ are symlinks into .agents/ (committed)
     agents/
     skills/
 ```
