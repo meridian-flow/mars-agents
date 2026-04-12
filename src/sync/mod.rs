@@ -73,8 +73,12 @@ pub struct SyncRequest {
 pub enum ResolutionMode {
     /// Normal sync behavior.
     Normal,
-    /// Upgrade behavior (maximize versions), optionally scoped to specific sources.
-    Maximize { targets: HashSet<SourceName> },
+    /// Upgrade behavior (maximize versions), optionally scoped to specific
+    /// sources and optionally bumping direct constraints.
+    Maximize {
+        targets: HashSet<SourceName>,
+        bump: bool,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -208,7 +212,7 @@ fn load_config(
 /// Phase 2: Validate upgrade targets, resolve the dependency graph.
 fn resolve_graph(
     ctx: &MarsContext,
-    loaded: LoadedConfig,
+    mut loaded: LoadedConfig,
     request: &SyncRequest,
     diag: &mut DiagnosticCollector,
 ) -> Result<ResolvedState, MarsError> {
@@ -227,6 +231,15 @@ fn resolve_graph(
         &resolve_options,
         diag,
     )?;
+
+    let bump_entries = planned_bump_entries(&loaded.config, &graph, &request.resolution);
+    if !bump_entries.is_empty() {
+        let bump_changes = mutation::apply_mutation(
+            &mut loaded.config,
+            &ConfigMutation::BatchUpsert(bump_entries),
+        )?;
+        loaded.dependency_changes.extend(bump_changes);
+    }
 
     // Merge model config from dependency tree
     let dep_models = declaration_ordered_dep_models(&graph, &loaded.effective);
@@ -419,7 +432,13 @@ fn apply_plan(
     let mars_dir = project_root.join(".mars");
     let cache_bases_dir = mars_dir.join("cache").join("bases");
 
-    let has_mutation = request.mutation.is_some();
+    let has_bump_version_changes =
+        has_version_changes(&planned.targeted.resolved.loaded.dependency_changes)
+            && matches!(
+                request.resolution,
+                ResolutionMode::Maximize { bump: true, .. }
+            );
+    let has_mutation = request.mutation.is_some() || has_bump_version_changes;
 
     // Persist config/local only after validation gate and before apply.
     if has_mutation && !request.options.dry_run {
@@ -435,7 +454,11 @@ fn apply_plan(
             ) => {
                 crate::config::save(project_root, &planned.targeted.resolved.loaded.config)?;
             }
-            None => {}
+            None => {
+                if has_bump_version_changes {
+                    crate::config::save(project_root, &planned.targeted.resolved.loaded.config)?;
+                }
+            }
         }
     }
 
@@ -752,7 +775,7 @@ fn validate_targets(
     resolution: &ResolutionMode,
     effective: &EffectiveConfig,
 ) -> Result<(), MarsError> {
-    if let ResolutionMode::Maximize { targets } = resolution {
+    if let ResolutionMode::Maximize { targets, .. } = resolution {
         for name in targets {
             if !effective.dependencies.contains_key(name) {
                 return Err(MarsError::Source {
@@ -772,12 +795,65 @@ fn to_resolve_options(mode: &ResolutionMode, frozen: bool) -> ResolveOptions {
             frozen,
             ..ResolveOptions::default()
         },
-        ResolutionMode::Maximize { targets } => ResolveOptions {
+        ResolutionMode::Maximize { targets, bump } => ResolveOptions {
             maximize: true,
             upgrade_targets: targets.clone(),
+            bump_direct_constraints: *bump,
             frozen,
         },
     }
+}
+
+fn planned_bump_entries(
+    config: &Config,
+    graph: &ResolvedGraph,
+    mode: &ResolutionMode,
+) -> Vec<(SourceName, crate::config::DependencyEntry)> {
+    let ResolutionMode::Maximize {
+        targets,
+        bump: true,
+    } = mode
+    else {
+        return Vec::new();
+    };
+
+    config
+        .dependencies
+        .iter()
+        .filter_map(|(name, entry)| {
+            if !targets.is_empty() && !targets.contains(name) {
+                return None;
+            }
+            // Only git dependencies with semver-tagged resolution can be bumped.
+            entry.url.as_ref()?;
+            let node = graph.nodes.get(name)?;
+            let resolved_version = node.resolved_ref.version.as_ref()?;
+            let resolved_tag = node.resolved_ref.version_tag.as_ref()?;
+            if !constraint_needs_bump(entry.version.as_deref(), resolved_version) {
+                return None;
+            }
+            if entry.version.as_deref() == Some(resolved_tag.as_str()) {
+                return None;
+            }
+            let mut bumped = entry.clone();
+            bumped.version = Some(resolved_tag.clone());
+            Some((name.clone(), bumped))
+        })
+        .collect()
+}
+
+fn constraint_needs_bump(current: Option<&str>, resolved: &semver::Version) -> bool {
+    match crate::resolve::parse_version_constraint(current) {
+        crate::resolve::VersionConstraint::Semver(req) => !req.matches(resolved),
+        crate::resolve::VersionConstraint::Latest
+        | crate::resolve::VersionConstraint::RefPin(_) => false,
+    }
+}
+
+fn has_version_changes(changes: &[DependencyUpsertChange]) -> bool {
+    changes
+        .iter()
+        .any(|change| change.old_version != change.new_version)
 }
 
 /// Validate skill references: check that agents' `skills:` frontmatter entries
@@ -951,6 +1027,47 @@ mod tests {
         }
     }
 
+    fn git_dependency_entry(url: &str, version: &str, filter: FilterConfig) -> DependencyEntry {
+        DependencyEntry {
+            url: Some(url.into()),
+            path: None,
+            version: Some(version.to_string()),
+            filter,
+        }
+    }
+
+    fn graph_with_versions(entries: &[(&str, &str, &str)]) -> ResolvedGraph {
+        let mut nodes = IndexMap::new();
+        let mut order = Vec::new();
+        for (name, url, tag) in entries {
+            let version = semver::Version::parse(tag.trim_start_matches('v')).unwrap();
+            nodes.insert(
+                (*name).into(),
+                ResolvedNode {
+                    source_name: (*name).into(),
+                    source_id: crate::types::SourceId::git(crate::types::SourceUrl::from(*url)),
+                    resolved_ref: crate::source::ResolvedRef {
+                        source_name: (*name).into(),
+                        version: Some(version),
+                        version_tag: Some((*tag).to_string()),
+                        commit: Some("abc123".into()),
+                        tree_path: PathBuf::from(format!("/tmp/{name}")),
+                    },
+                    manifest: None,
+                    deps: vec![],
+                },
+            );
+            order.push((*name).into());
+        }
+
+        ResolvedGraph {
+            nodes,
+            order,
+            id_index: std::collections::HashMap::new(),
+            filters: std::collections::HashMap::new(),
+        }
+    }
+
     fn model_alias(model: &str) -> crate::models::ModelAlias {
         crate::models::ModelAlias {
             harness: None,
@@ -964,7 +1081,10 @@ mod tests {
 
     fn manifest_with_models(name: &str) -> Manifest {
         let mut models = IndexMap::new();
-        models.insert(format!("{name}-alias"), model_alias(&format!("{name}-model")));
+        models.insert(
+            format!("{name}-alias"),
+            model_alias(&format!("{name}-model")),
+        );
         Manifest {
             package: PackageInfo {
                 name: name.to_string(),
@@ -1127,9 +1247,7 @@ mod tests {
     fn declaration_ordered_dep_models_is_used_by_resolve_graph_and_finalize() {
         let source = include_str!("mod.rs");
         assert!(source.contains("declaration_ordered_dep_models(&graph, &loaded.effective)"));
-        assert!(source.contains(
-            "&state.applied.planned.targeted.resolved.loaded.effective"
-        ));
+        assert!(source.contains("&state.applied.planned.targeted.resolved.loaded.effective"));
     }
 
     #[test]
@@ -1137,6 +1255,7 @@ mod tests {
         let request = SyncRequest {
             resolution: ResolutionMode::Maximize {
                 targets: HashSet::new(),
+                bump: false,
             },
             mutation: None,
             options: SyncOptions {
@@ -1170,6 +1289,147 @@ mod tests {
         let err = validate_request(&request).unwrap_err();
         assert!(matches!(err, MarsError::InvalidRequest { .. }));
         assert!(err.to_string().contains("cannot modify config"));
+    }
+
+    #[test]
+    fn planned_bump_entries_bump_all_outdated_pins() {
+        let mut config = Config::default();
+        config.dependencies.insert(
+            "base".into(),
+            git_dependency_entry(
+                "https://example.com/base.git",
+                "v1.0.0",
+                FilterConfig::default(),
+            ),
+        );
+        config.dependencies.insert(
+            "tools".into(),
+            git_dependency_entry(
+                "https://example.com/tools.git",
+                "v2.0.0",
+                FilterConfig::default(),
+            ),
+        );
+        config.dependencies.insert(
+            "floating".into(),
+            DependencyEntry {
+                url: Some("https://example.com/floating.git".into()),
+                path: None,
+                version: None,
+                filter: FilterConfig::default(),
+            },
+        );
+
+        let graph = graph_with_versions(&[
+            ("base", "https://example.com/base.git", "v1.2.0"),
+            ("tools", "https://example.com/tools.git", "v2.0.0"),
+            ("floating", "https://example.com/floating.git", "v3.0.0"),
+        ]);
+
+        let mode = ResolutionMode::Maximize {
+            targets: HashSet::new(),
+            bump: true,
+        };
+        let entries = planned_bump_entries(&config, &graph, &mode);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].0, SourceName::from("base"));
+        assert_eq!(entries[0].1.version.as_deref(), Some("v1.2.0"));
+    }
+
+    #[test]
+    fn planned_bump_entries_bump_specific_targets_only() {
+        let mut config = Config::default();
+        config.dependencies.insert(
+            "base".into(),
+            git_dependency_entry(
+                "https://example.com/base.git",
+                "v1.0.0",
+                FilterConfig::default(),
+            ),
+        );
+        config.dependencies.insert(
+            "tools".into(),
+            git_dependency_entry(
+                "https://example.com/tools.git",
+                "v1.0.0",
+                FilterConfig::default(),
+            ),
+        );
+
+        let graph = graph_with_versions(&[
+            ("base", "https://example.com/base.git", "v2.0.0"),
+            ("tools", "https://example.com/tools.git", "v2.0.0"),
+        ]);
+
+        let mode = ResolutionMode::Maximize {
+            targets: HashSet::from([SourceName::from("tools")]),
+            bump: true,
+        };
+        let entries = planned_bump_entries(&config, &graph, &mode);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].0, SourceName::from("tools"));
+        assert_eq!(entries[0].1.version.as_deref(), Some("v2.0.0"));
+    }
+
+    #[test]
+    fn planned_bump_entries_noop_when_already_latest() {
+        let mut config = Config::default();
+        config.dependencies.insert(
+            "base".into(),
+            git_dependency_entry(
+                "https://example.com/base.git",
+                "v1.2.0",
+                FilterConfig::default(),
+            ),
+        );
+
+        let graph = graph_with_versions(&[("base", "https://example.com/base.git", "v1.2.0")]);
+
+        let mode = ResolutionMode::Maximize {
+            targets: HashSet::new(),
+            bump: true,
+        };
+        let entries = planned_bump_entries(&config, &graph, &mode);
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn planned_bump_entries_preserve_filters_and_renames() {
+        let mut rename = crate::types::RenameMap::new();
+        rename.insert("coder".into(), "coder-v2".into());
+
+        let mut config = Config::default();
+        config.dependencies.insert(
+            "base".into(),
+            git_dependency_entry(
+                "https://example.com/base.git",
+                "v1.0.0",
+                FilterConfig {
+                    agents: Some(vec!["coder".into()]),
+                    rename: Some(rename.clone()),
+                    ..FilterConfig::default()
+                },
+            ),
+        );
+
+        let graph = graph_with_versions(&[("base", "https://example.com/base.git", "v2.0.0")]);
+        let mode = ResolutionMode::Maximize {
+            targets: HashSet::new(),
+            bump: true,
+        };
+        let entries = planned_bump_entries(&config, &graph, &mode);
+        let mut mutated = config.clone();
+        let changes =
+            mutation::apply_mutation(&mut mutated, &ConfigMutation::BatchUpsert(entries)).unwrap();
+
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].old_version.as_deref(), Some("v1.0.0"));
+        assert_eq!(changes[0].new_version.as_deref(), Some("v2.0.0"));
+
+        let dep = &mutated.dependencies["base"];
+        assert_eq!(dep.version.as_deref(), Some("v2.0.0"));
+        assert_eq!(dep.filter.agents.as_deref(), Some(&["coder".into()][..]));
+        assert_eq!(dep.filter.rename.as_ref(), Some(&rename));
     }
 
     #[test]

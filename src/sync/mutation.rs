@@ -40,6 +40,8 @@ pub enum ConfigMutation {
 pub struct DependencyUpsertChange {
     pub name: SourceName,
     pub already_exists: bool,
+    pub old_version: Option<String>,
+    pub new_version: Option<String>,
     pub old_filter: Option<FilterConfig>,
     pub new_filter: FilterConfig,
 }
@@ -138,6 +140,7 @@ fn apply_dependency_upsert(
     entry: &DependencyEntry,
 ) -> DependencyUpsertChange {
     if let Some(existing) = config.dependencies.get_mut(name) {
+        let old_version = existing.version.clone();
         let old_filter = existing.filter.clone();
 
         // Merge: update location fields, preserve user customizations
@@ -159,6 +162,8 @@ fn apply_dependency_upsert(
         DependencyUpsertChange {
             name: name.clone(),
             already_exists: true,
+            old_version,
+            new_version: existing.version.clone(),
             old_filter: Some(old_filter),
             new_filter: existing.filter.clone(),
         }
@@ -167,6 +172,8 @@ fn apply_dependency_upsert(
         DependencyUpsertChange {
             name: name.clone(),
             already_exists: false,
+            old_version: None,
+            new_version: entry.version.clone(),
             old_filter: None,
             new_filter: entry.filter.clone(),
         }

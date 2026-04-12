@@ -66,6 +66,9 @@ pub struct ResolveOptions {
     pub maximize: bool,
     /// Source names to upgrade (empty = all, when maximize=true).
     pub upgrade_targets: HashSet<SourceName>,
+    /// If true, treat direct dependency constraints for upgrade targets as
+    /// unconstrained during resolution (used by `mars upgrade --bump`).
+    pub bump_direct_constraints: bool,
     /// If true, locked commit replay failures become hard errors.
     pub frozen: bool,
 }
@@ -201,8 +204,16 @@ pub fn resolve(
 
     // Seed with direct dependencies from config
     for (name, source) in &config.dependencies {
+        let is_upgrade_target = options.maximize
+            && (options.upgrade_targets.is_empty() || options.upgrade_targets.contains(name));
         let constraint = match &source.spec {
-            SourceSpec::Git(git) => parse_version_constraint(git.version.as_deref()),
+            SourceSpec::Git(git) => {
+                if options.bump_direct_constraints && is_upgrade_target {
+                    VersionConstraint::Latest
+                } else {
+                    parse_version_constraint(git.version.as_deref())
+                }
+            }
             SourceSpec::Path(_) => VersionConstraint::Latest, // Path sources: no version
         };
         pending.push_back(PendingSource {
@@ -698,7 +709,7 @@ mod tests {
         EffectiveConfig, EffectiveDependency, FilterConfig, FilterMode, GitSpec, Manifest,
         ManifestDep, PackageInfo, Settings, SourceSpec,
     };
-    use crate::types::{RenameMap, SourceId, SourceUrl};
+    use crate::types::{RenameMap, SourceId, SourceName, SourceUrl};
     use indexmap::IndexMap;
     use std::cell::RefCell;
     use std::collections::{HashMap, HashSet};
@@ -1744,6 +1755,7 @@ mod tests {
         let options = ResolveOptions {
             maximize: true,
             upgrade_targets: HashSet::new(),
+            bump_direct_constraints: false,
             frozen: false,
         };
         let graph = resolve(&config, &provider, Some(&lock), &options).unwrap();
@@ -1884,6 +1896,7 @@ mod tests {
         let options = ResolveOptions {
             maximize: true,
             upgrade_targets: HashSet::new(),
+            bump_direct_constraints: false,
             frozen: false,
         };
 
@@ -1915,6 +1928,7 @@ mod tests {
         let options = ResolveOptions {
             maximize: true,
             upgrade_targets: HashSet::from(["a".into()]),
+            bump_direct_constraints: false,
             frozen: false,
         };
 
@@ -1927,6 +1941,35 @@ mod tests {
         // "b" should use MVS → 2.0.0
         assert_eq!(
             graph.nodes["b"].resolved_ref.version,
+            Some(Version::new(2, 0, 0))
+        );
+    }
+
+    #[test]
+    fn bump_direct_constraints_ignores_direct_pin_for_target() {
+        let dir = TempDir::new().unwrap();
+        let tree = dir.path().join("a");
+        std::fs::create_dir_all(&tree).unwrap();
+
+        let mut provider = MockProvider::new();
+        provider.add_versions("https://example.com/a.git", vec![(1, 0, 0), (2, 0, 0)]);
+        provider.add_source("a", tree, None);
+
+        let config = make_config(vec![(
+            "a",
+            git_spec("https://example.com/a.git", Some("v1.0.0")),
+        )]);
+
+        let options = ResolveOptions {
+            maximize: true,
+            upgrade_targets: HashSet::from([SourceName::from("a")]),
+            bump_direct_constraints: true,
+            frozen: false,
+        };
+
+        let graph = resolve(&config, &provider, None, &options).unwrap();
+        assert_eq!(
+            graph.nodes["a"].resolved_ref.version,
             Some(Version::new(2, 0, 0))
         );
     }

@@ -407,6 +407,8 @@ mod tests {
         let change = DependencyUpsertChange {
             name: "ops".into(),
             already_exists: true,
+            old_version: Some("v0.1.0".into()),
+            new_version: Some("v0.1.0".into()),
             old_filter: Some(old_filter.clone()),
             new_filter: FilterConfig {
                 only_skills: true,
