@@ -299,7 +299,8 @@ mod tests {
         assert!(
             warnings
                 .iter()
-                .any(|w| w == "divergent in target: .agents/agents/modified.md (local modifications)")
+                .any(|w| w
+                    == "divergent in target: .agents/agents/modified.md (local modifications)")
         );
     }
 

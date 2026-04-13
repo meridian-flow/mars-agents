@@ -985,7 +985,10 @@ fn sync_force_overwrites_divergent_target() {
         .assert()
         .success();
     let content = fs::read_to_string(target_installed.path()).unwrap();
-    assert_eq!(content, "# Hand-edited content\n", "Normal sync should preserve local edit");
+    assert_eq!(
+        content, "# Hand-edited content\n",
+        "Normal sync should preserve local edit"
+    );
 
     // --force should overwrite the divergent target
     mars()
@@ -998,7 +1001,10 @@ fn sync_force_overwrites_divergent_target() {
         .assert()
         .success();
     let content = fs::read_to_string(target_installed.path()).unwrap();
-    assert_eq!(content, "# Original\nline 2\nline 3\n", "--force should restore canonical content");
+    assert_eq!(
+        content, "# Original\nline 2\nline 3\n",
+        "--force should restore canonical content"
+    );
 }
 
 #[test]
