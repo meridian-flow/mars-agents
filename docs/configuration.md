@@ -124,7 +124,7 @@ include = ["opus*", "sonnet*"]  # or use exclude = [...]
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `managed_root` | string | `".agents"` | Directory name for managed output under the project root |
-| `links` | string[] | `[]` | Directories where `agents/` and `skills/` symlinks are maintained |
+| `targets` | string[] | `[managed_root]` | Directories where managed content is copied |
 | `model_visibility` | table | `{}` | Consumer-only display filter for `mars models list` output |
 
 #### `[settings.model_visibility]`

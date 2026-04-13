@@ -107,7 +107,7 @@ During `resolve_graph`, model configs from all resolved dependencies are collect
 `src/target_sync/mod.rs` — copies content from `.mars/` canonical store to configured target directories.
 
 - Targets configured via `settings.targets` in `mars.toml` (default: `[".agents"]`)
-- All targets get file copies, never symlinks — symlinks in `.mars/` (from local packages) are followed during copy
+- All targets get file copies — no symlinks anywhere in the pipeline
 - Orphan cleanup uses the previous lock to identify mars-managed files, only removes those
 - Non-fatal per-target: errors on one target don't stop other targets from syncing
 - Target sync runs after `apply_plan` and before `finalize` — lock is written regardless of target sync outcome
@@ -116,7 +116,7 @@ During `resolve_graph`, model configs from all resolved dependencies are collect
 
 `src/reconcile/` — shared atomic filesystem operations.
 
-- **Layer 1 (`fs_ops`)**: `atomic_write_file`, `atomic_copy_file`, `atomic_copy_dir`, `atomic_install_dir`, `atomic_symlink` — all use tmp+rename pattern, file permissions 0o644
+- **Layer 1 (`fs_ops`)**: `atomic_write_file`, `atomic_copy_file`, `atomic_copy_dir`, `atomic_install_dir` — all use tmp+rename pattern, file permissions 0o644
 - **Layer 2 (`reconcile_one`)**: state-based reconciliation — `scan_destination()` → compare with `DesiredState` → create/update/remove/skip/conflict
 
 ## Structured Diagnostics

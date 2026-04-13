@@ -249,16 +249,14 @@ mars link <target> [--unlink] [--force]
 
 | Flag | Description |
 |---|---|
-| `--unlink` | Remove symlinks instead of creating them |
+| `--unlink` | Remove managed target instead of adding one |
 | `--force` | Replace whatever exists (data may be lost) |
 
 **Behavior:**
-- Creates `<target>/agents -> <managed-root>/agents` and `<target>/skills -> <managed-root>/skills`
+- Adds `<target>` as a managed target directory and copies content from `.mars/` into it
 - Conflict-aware: scans target before mutating. If conflicts exist, reports all problems and aborts (zero mutations)
-- Mergeable directories: unique files in target are moved into managed root before linking
-- Foreign symlinks (pointing elsewhere) are reported as conflicts unless `--force`
-- Persists the link in `mars.toml [settings] links`
-- Only removes symlinks owned by this mars root on `--unlink`
+- Persists the target in `mars.toml [settings] targets`
+- `--unlink` removes the target directory and its entry from settings
 
 ```bash
 mars link .claude            # Link agents/ and skills/ into .claude/
@@ -388,8 +386,8 @@ Checks:
 - Each locked item: file exists on disk, no conflict markers, checksum computability
 - Config-lock consistency: dependencies in config match lock entries
 - Agent skill references: every declared skill dependency exists on disk
-- Link health: symlinks exist, point to correct managed root, not broken
-- Target divergence: each locked item's copy in the managed root matches the lock checksum (reports missing and locally modified files)
+- Target health: each managed target has the expected files with correct content
+- Target divergence: detects missing and locally modified files in targets, suggests `mars sync --force` or `mars repair`
 
 Exit code 0 = healthy, 2 = issues found. See [troubleshooting.md](troubleshooting.md).
 

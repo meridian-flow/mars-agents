@@ -37,9 +37,9 @@ mars doctor
   link `.claude` — .claude/agents points to ../other (expected .agents/agents)
 ```
 
-### Symlinked items
+### Target divergence
 
-Doctor skips validation for individually symlinked items (not directory-level links, but single-file symlinks inside `agents/` or `skills/`). It reports them as informational and moves on. `_self` symlinks (`_self` is Mars' reserved source name for this project's own package items) are silently skipped.
+Doctor checks each managed target directory against the lock's expected checksums. Missing files and files with unexpected content are reported as warnings with suggestions to run `mars sync --force` or `mars repair` to restore canonical state.
 
 ## `mars repair`
 

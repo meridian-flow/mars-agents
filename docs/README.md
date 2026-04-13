@@ -2,7 +2,7 @@
 
 Mars is a package manager for AI agent profiles. Install agents and skills from git and local sources into Claude Code, Cursor, Codex, OpenCode — any tool that reads from a config directory.
 
-Mars installs into a `.mars/` canonical store, tracks ownership in `mars.lock`, and copies managed content into the configured managed root (`.agents/` by default). Use `mars link` to make agents available in additional tool directories (`.claude/`, `.cursor/`, etc.) via symlinks.
+Mars installs into a `.mars/` canonical store, tracks ownership in `mars.lock`, and copies managed content into the configured managed root (`.agents/` by default). Use `mars link` to add additional tool directories (`.claude/`, `.cursor/`, etc.) as managed targets.
 
 ## Core Concepts
 
@@ -12,7 +12,7 @@ Mars installs into a `.mars/` canonical store, tracks ownership in `mars.lock`, 
 
 **Canonical store** (`.mars/`) is where Mars installs resolved content. Gitignored. Rebuilt by `mars sync` from sources + lock.
 
-**Managed root** is the directory Mars copies content into from `.mars/` (default: `.agents/`, configurable via `settings.managed_root`). The managed root may contain non-mars content — mars only manages files it created (tracked in the lock). Additional tool directories (`.claude/`, `.cursor/`) receive symlinks via `mars link`.
+**Managed root** is the directory Mars copies content into from `.mars/` (default: `.agents/`, configurable via `settings.managed_root`). The managed root may contain non-mars content — mars only manages files it created (tracked in the lock). Additional tool directories (`.claude/`, `.cursor/`) can be added as targets via `mars link`.
 
 **`--root`** points at the project root to override auto-detection. Mars resolves from the directory containing `mars.toml`.
 
@@ -59,7 +59,7 @@ project/
   .agents/               # Managed root — files copied here (committed)
     agents/
     skills/
-  .claude/               # Linked tool dir — agents/ and skills/ are symlinks into .agents/ (committed)
+  .claude/               # Additional managed target — content copied from .mars/ (committed)
     agents/
     skills/
 ```
