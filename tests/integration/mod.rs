@@ -849,7 +849,7 @@ fn conflict_flow_with_resolve() {
     )
     .unwrap();
 
-    // Sync — should produce conflict (exit code 1)
+    // Sync — conflicts now overwrite (source wins) with warning
     mars()
         .args([
             "sync",
@@ -857,31 +857,15 @@ fn conflict_flow_with_resolve() {
             dir.child("project").path().to_str().unwrap(),
         ])
         .assert()
-        .code(1);
+        .success()
+        .stderr(predicates::str::contains("local modifications"));
 
-    // File in .mars/ should have conflict markers
+    // File in .mars/ should have upstream content (overwritten, no merge markers)
     let content = fs::read_to_string(mars_installed.path()).unwrap();
-    assert!(
-        content.contains("<<<<<<<") || content.contains(">>>>>>>"),
-        "Expected conflict markers in: {content}"
+    assert_eq!(
+        content, "# Upstream change\nline 2\nline 3\n",
+        "Expected upstream content after overwrite, got: {content}"
     );
-
-    // Manually "resolve" by removing markers
-    fs::write(
-        mars_installed.path(),
-        "# Manually resolved\nline 2\nline 3\n",
-    )
-    .unwrap();
-
-    // Run resolve
-    mars()
-        .args([
-            "resolve",
-            "--root",
-            dir.child("project").path().to_str().unwrap(),
-        ])
-        .assert()
-        .success();
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -955,7 +939,7 @@ fn add_skips_unmanaged_file_collision() {
 }
 
 #[test]
-fn sync_force_clears_previous_conflict_markers() {
+fn sync_force_overwrites_divergent_target() {
     let dir = TempDir::new().unwrap();
     let source = create_source(
         &dir,
@@ -983,19 +967,15 @@ fn sync_force_clears_previous_conflict_markers() {
         .assert()
         .success();
 
-    // Modify local in .mars/ canonical store
-    let mars_installed = dir
+    // Manually edit the target (.agents/) to simulate divergence
+    let target_installed = dir
         .child("project")
-        .child(".mars")
+        .child(".agents")
         .child("agents")
         .child("coder.md");
-    fs::write(mars_installed.path(), "# Local change\nline 2\nline 3\n").unwrap();
-    fs::write(
-        source.join("agents").join("coder.md"),
-        "# Upstream change\nline 2\nline 3\n",
-    )
-    .unwrap();
+    fs::write(target_installed.path(), "# Hand-edited content\n").unwrap();
 
+    // Normal sync should warn about divergence but preserve the edit
     mars()
         .args([
             "sync",
@@ -1003,9 +983,11 @@ fn sync_force_clears_previous_conflict_markers() {
             dir.child("project").path().to_str().unwrap(),
         ])
         .assert()
-        .code(1);
+        .success();
+    let content = fs::read_to_string(target_installed.path()).unwrap();
+    assert_eq!(content, "# Hand-edited content\n", "Normal sync should preserve local edit");
 
-    // No further source changes. --force should still overwrite conflict markers.
+    // --force should overwrite the divergent target
     mars()
         .args([
             "sync",
@@ -1015,19 +997,8 @@ fn sync_force_clears_previous_conflict_markers() {
         ])
         .assert()
         .success();
-
-    // Check .mars/ canonical store has the upstream content
-    let content = fs::read_to_string(mars_installed.path()).unwrap();
-    assert_eq!(content, "# Upstream change\nline 2\nline 3\n");
-
-    // Target (.agents/) should also have the upstream content
-    let target_installed = dir
-        .child("project")
-        .child(".agents")
-        .child("agents")
-        .child("coder.md");
-    let target_content = fs::read_to_string(target_installed.path()).unwrap();
-    assert_eq!(target_content, "# Upstream change\nline 2\nline 3\n");
+    let content = fs::read_to_string(target_installed.path()).unwrap();
+    assert_eq!(content, "# Original\nline 2\nline 3\n", "--force should restore canonical content");
 }
 
 #[test]

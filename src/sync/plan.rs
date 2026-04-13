@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use crate::diagnostic::DiagnosticCollector;
-use crate::lock::{ItemId, ItemKind, LockedItem};
+use crate::lock::{ItemId, LockedItem};
 use crate::sync::diff::{DiffEntry, SyncDiff};
 use crate::sync::target::TargetItem;
 use crate::sync::types::SyncOptions;
@@ -54,7 +54,7 @@ pub enum PlannedAction {
 pub fn create(
     diff: &SyncDiff,
     options: &SyncOptions,
-    cache_bases_dir: &std::path::Path,
+    _cache_bases_dir: &std::path::Path,
     diag: &mut DiagnosticCollector,
 ) -> SyncPlan {
     let mut actions = Vec::new();
@@ -85,41 +85,23 @@ pub fn create(
 
             DiffEntry::Conflict {
                 target,
-                locked,
+                locked: _,
                 local_hash: _,
             } => {
-                let is_skill_conflict = target.id.kind == ItemKind::Skill;
-                if options.force || is_skill_conflict {
-                    if is_skill_conflict && !options.force {
-                        diag.warn(
-                            "skill-conflict-overwrite",
-                            format!(
-                                "skill `{}` has local modifications — overwriting with upstream (directory contents will be replaced)",
-                                target.id.name
-                            ),
-                        );
-                    }
-
-                    // --force and skill conflicts: source wins, overwrite local modifications
-                    actions.push(PlannedAction::Overwrite {
-                        target: target.clone(),
-                    });
-                } else {
-                    // Three-way merge needed
-                    let base_path = cache_bases_dir.join(locked.installed_checksum.as_ref());
-
-                    // Read base content from cache (or empty if missing)
-                    let base_content = std::fs::read(&base_path).unwrap_or_default();
-
-                    // Local path is the installed dest
-                    let local_path = locked.dest_path.as_path().to_path_buf();
-
-                    actions.push(PlannedAction::Merge {
-                        target: target.clone(),
-                        base_content,
-                        local_path,
-                    });
+                if !options.force {
+                    diag.warn(
+                        "conflict-overwrite",
+                        format!(
+                            "{} `{}` has local modifications — overwriting with upstream",
+                            target.id.kind, target.id.name
+                        ),
+                    );
                 }
+
+                // Source wins: overwrite local modifications
+                actions.push(PlannedAction::Overwrite {
+                    target: target.clone(),
+                });
             }
 
             DiffEntry::Orphan { locked } => {
@@ -251,6 +233,16 @@ mod tests {
         create(diff, options, cache_bases_dir, &mut diag)
     }
 
+    fn create_plan_with_diag(
+        diff: &SyncDiff,
+        options: &SyncOptions,
+        cache_bases_dir: &std::path::Path,
+    ) -> (SyncPlan, DiagnosticCollector) {
+        let mut diag = DiagnosticCollector::new();
+        let plan = create(diff, options, cache_bases_dir, &mut diag);
+        (plan, diag)
+    }
+
     #[test]
     fn add_produces_install() {
         let cache_dir = TempDir::new().unwrap();
@@ -302,7 +294,7 @@ mod tests {
     }
 
     #[test]
-    fn conflict_produces_merge() {
+    fn conflict_produces_overwrite_and_warning() {
         let cache_dir = TempDir::new().unwrap();
         let diff = SyncDiff {
             items: vec![DiffEntry::Conflict {
@@ -312,9 +304,13 @@ mod tests {
             }],
         };
 
-        let plan = create_plan(&diff, &default_options(), cache_dir.path());
+        let (plan, mut diag) = create_plan_with_diag(&diff, &default_options(), cache_dir.path());
         assert_eq!(plan.actions.len(), 1);
-        assert!(matches!(&plan.actions[0], PlannedAction::Merge { .. }));
+        assert!(matches!(&plan.actions[0], PlannedAction::Overwrite { .. }));
+
+        let diagnostics = diag.drain();
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].code, "conflict-overwrite");
     }
 
     #[test]
@@ -335,10 +331,10 @@ mod tests {
 
         let diagnostics = diag.drain();
         assert_eq!(diagnostics.len(), 1);
-        assert_eq!(diagnostics[0].code, "skill-conflict-overwrite");
+        assert_eq!(diagnostics[0].code, "conflict-overwrite");
         assert_eq!(
             diagnostics[0].message,
-            "skill `planning` has local modifications — overwriting with upstream (directory contents will be replaced)"
+            "skill `planning` has local modifications — overwriting with upstream"
         );
     }
 
@@ -402,61 +398,6 @@ mod tests {
         let plan = create_plan(&diff, &force_options(), cache_dir.path());
         assert_eq!(plan.actions.len(), 1);
         assert!(matches!(&plan.actions[0], PlannedAction::Overwrite { .. }));
-    }
-
-    #[test]
-    fn merge_reads_base_from_cache() {
-        let cache_dir = TempDir::new().unwrap();
-        let installed_hash = hash::hash_bytes(b"installed content");
-
-        // Write base content to cache
-        let base_path = cache_dir.path().join(&installed_hash);
-        std::fs::write(&base_path, b"installed content").unwrap();
-
-        let diff = SyncDiff {
-            items: vec![DiffEntry::Conflict {
-                target: make_target("agent"),
-                locked: {
-                    let mut locked = make_locked("agent");
-                    locked.installed_checksum = installed_hash.into();
-                    locked
-                },
-                local_hash: "sha256:local".into(),
-            }],
-        };
-
-        let plan = create_plan(&diff, &default_options(), cache_dir.path());
-        match &plan.actions[0] {
-            PlannedAction::Merge { base_content, .. } => {
-                assert_eq!(base_content, b"installed content");
-            }
-            other => panic!("expected Merge, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn merge_with_missing_cache_uses_empty_base() {
-        let cache_dir = TempDir::new().unwrap();
-        // Don't write any cache file
-
-        let diff = SyncDiff {
-            items: vec![DiffEntry::Conflict {
-                target: make_target("agent"),
-                locked: make_locked("agent"),
-                local_hash: "sha256:local".into(),
-            }],
-        };
-
-        let plan = create_plan(&diff, &default_options(), cache_dir.path());
-        match &plan.actions[0] {
-            PlannedAction::Merge { base_content, .. } => {
-                assert!(
-                    base_content.is_empty(),
-                    "missing cache should fall back to empty base"
-                );
-            }
-            other => panic!("expected Merge, got {other:?}"),
-        }
     }
 
     #[test]
