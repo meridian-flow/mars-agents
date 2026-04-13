@@ -15,12 +15,13 @@ pub fn run(_args: &DoctorArgs, ctx: &super::MarsContext, json: bool) -> Result<i
     let mut warnings = Vec::new();
 
     // Check config is valid
-    match crate::config::load(&ctx.project_root) {
-        Ok(_) => {}
+    let config = match crate::config::load(&ctx.project_root) {
+        Ok(config) => Some(config),
         Err(e) => {
             errors.push(format!("config error: {e}"));
+            None
         }
-    }
+    };
 
     // Check lock file
     let lock = match crate::lock::load(&ctx.project_root) {
@@ -69,10 +70,10 @@ pub fn run(_args: &DoctorArgs, ctx: &super::MarsContext, json: bool) -> Result<i
     }
 
     // Check agent→skill references
-    if let Ok(config) = crate::config::load(&ctx.project_root) {
+    if let Some(config) = &config {
         let local = crate::config::load_local(&ctx.project_root).unwrap_or_default();
         if let Ok((effective, _diagnostics)) =
-            crate::config::merge_with_root(config, local, &ctx.project_root)
+            crate::config::merge_with_root(config.clone(), local, &ctx.project_root)
         {
             // Check that all sources in config have corresponding lock entries
             for source_name in effective.dependencies.keys() {
@@ -154,6 +155,21 @@ pub fn run(_args: &DoctorArgs, ctx: &super::MarsContext, json: bool) -> Result<i
     // Check .mars/ gitignore (D29) as warning only.
     check_mars_gitignore(&ctx.project_root, &mut warnings);
 
+    // Check managed targets (.agents/, .claude/, etc.) against lock checksums.
+    if let Some(config) = &config {
+        let target_divergence_count = check_target_divergence(
+            &ctx.project_root,
+            &lock,
+            &config.settings.managed_targets(),
+            &mut warnings,
+        );
+        if target_divergence_count > 0 {
+            warnings.push(
+                "target divergence detected; run `mars sync --force` to reset modified files or `mars repair` to restore missing files".to_string(),
+            );
+        }
+    }
+
     output::print_doctor(&errors, &warnings, json);
 
     if errors.is_empty() { Ok(0) } else { Ok(2) }
@@ -181,6 +197,140 @@ fn check_mars_gitignore(project_root: &std::path::Path, warnings: &mut Vec<Strin
         warnings.push(
             ".mars/ is not in .gitignore — add `.mars/` to your .gitignore to avoid committing cached data"
                 .to_string(),
+        );
+    }
+}
+
+/// Check managed target directories against lockfile-installed checksums.
+///
+/// Returns the number of divergent or missing target items found.
+fn check_target_divergence(
+    project_root: &std::path::Path,
+    lock: &crate::lock::LockFile,
+    targets: &[String],
+    warnings: &mut Vec<String>,
+) -> usize {
+    let mut divergence_count = 0;
+
+    for target_name in targets {
+        for (dest_path, item) in &lock.items {
+            let relative_path = std::path::Path::new(target_name).join(dest_path.as_path());
+            let target_path = project_root.join(&relative_path);
+
+            if !target_path.exists() && target_path.symlink_metadata().is_err() {
+                warnings.push(format!("missing in target: {}", relative_path.display()));
+                divergence_count += 1;
+                continue;
+            }
+
+            match hash::compute_hash(&target_path, item.kind) {
+                Ok(target_hash) => {
+                    if target_hash != item.installed_checksum {
+                        warnings.push(format!(
+                            "divergent in target: {} (local modifications)",
+                            relative_path.display()
+                        ));
+                        divergence_count += 1;
+                    }
+                }
+                Err(e) => {
+                    warnings.push(format!(
+                        "divergent in target: {} (local modifications; failed to hash: {e})",
+                        relative_path.display()
+                    ));
+                    divergence_count += 1;
+                }
+            }
+        }
+    }
+
+    divergence_count
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use tempfile::TempDir;
+
+    use super::check_target_divergence;
+
+    fn make_locked_agent(dest_path: &str, expected_content: &str) -> crate::lock::LockedItem {
+        let expected_hash = crate::hash::hash_bytes(expected_content.as_bytes());
+        crate::lock::LockedItem {
+            source: "test-source".into(),
+            kind: crate::lock::ItemKind::Agent,
+            version: None,
+            source_checksum: expected_hash.clone().into(),
+            installed_checksum: expected_hash.into(),
+            dest_path: dest_path.into(),
+        }
+    }
+
+    #[test]
+    fn check_target_divergence_warns_for_missing_and_modified_items() {
+        let temp = TempDir::new().expect("create temp dir");
+        let root = temp.path();
+
+        let mut lock = crate::lock::LockFile::empty();
+        lock.items.insert(
+            "agents/missing.md".into(),
+            make_locked_agent("agents/missing.md", "expected missing"),
+        );
+        lock.items.insert(
+            "agents/modified.md".into(),
+            make_locked_agent("agents/modified.md", "expected content"),
+        );
+
+        fs::create_dir_all(root.join(".agents/agents")).expect("create target dir");
+        fs::write(root.join(".agents/agents/modified.md"), "local edits")
+            .expect("write modified file");
+
+        let mut warnings = Vec::new();
+        let divergences =
+            check_target_divergence(root, &lock, &[".agents".to_string()], &mut warnings);
+
+        assert_eq!(divergences, 2);
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w == "missing in target: .agents/agents/missing.md")
+        );
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w == "divergent in target: .agents/agents/modified.md (local modifications)")
+        );
+    }
+
+    #[test]
+    fn check_target_divergence_checks_every_managed_target() {
+        let temp = TempDir::new().expect("create temp dir");
+        let root = temp.path();
+
+        let mut lock = crate::lock::LockFile::empty();
+        lock.items.insert(
+            "agents/test.md".into(),
+            make_locked_agent("agents/test.md", "expected content"),
+        );
+
+        fs::create_dir_all(root.join(".agents/agents")).expect("create .agents tree");
+        fs::write(root.join(".agents/agents/test.md"), "expected content")
+            .expect("write matching file");
+
+        let mut warnings = Vec::new();
+        let divergences = check_target_divergence(
+            root,
+            &lock,
+            &[".agents".to_string(), ".claude".to_string()],
+            &mut warnings,
+        );
+
+        assert_eq!(divergences, 1);
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w == "missing in target: .claude/agents/test.md")
         );
     }
 }
