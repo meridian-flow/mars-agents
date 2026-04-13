@@ -393,6 +393,20 @@ fn create_plan(
         request.options.force,
     )?;
 
+    if !request.options.force {
+        for entry in &sync_diff.items {
+            if let diff::DiffEntry::LocalModified { target, .. } = entry {
+                diag.warn(
+                    "disk-lock-divergent",
+                    format!(
+                        "{} diverged from mars.lock checksum; preserving local content (run `mars sync --force` or `mars repair` to reset)",
+                        target.dest_path
+                    ),
+                );
+            }
+        }
+    }
+
     // Create plan.
     let sync_plan = plan::create(&sync_diff, &request.options, &cache_bases_dir, diag);
 

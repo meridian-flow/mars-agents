@@ -146,11 +146,8 @@ fn execute_action(
                 &labels,
             )?;
 
-            // Write merged content
-            fs_ops::atomic_write_file(&dest, &merge_result.content)?;
-
-            let installed_checksum =
-                ContentHash::from(crate::hash::hash_bytes(&merge_result.content));
+            // Write merged content and verify persisted bytes before recording checksum.
+            let installed_checksum = write_file_and_verify(&dest, &merge_result.content)?;
 
             // Cache the merged content as new base
             cache_base_content(cache_bases_dir, &installed_checksum, &dest, target.id.kind)?;
@@ -196,6 +193,7 @@ fn execute_action(
             item_id,
             dest_path,
             source_name,
+            installed_checksum,
             reason: _,
         } => Ok(ActionOutcome {
             item_id: item_id.clone(),
@@ -203,7 +201,7 @@ fn execute_action(
             dest_path: dest_path.clone(),
             source_name: source_name.clone(),
             source_checksum: None,
-            installed_checksum: None,
+            installed_checksum: installed_checksum.clone(),
         }),
 
         PlannedAction::KeepLocal {
@@ -266,6 +264,7 @@ fn dry_run_action(action: &PlannedAction) -> ActionOutcome {
             item_id,
             dest_path,
             source_name,
+            installed_checksum,
             ..
         } => ActionOutcome {
             item_id: item_id.clone(),
@@ -273,7 +272,7 @@ fn dry_run_action(action: &PlannedAction) -> ActionOutcome {
             dest_path: dest_path.clone(),
             source_name: source_name.clone(),
             source_checksum: None,
-            installed_checksum: None,
+            installed_checksum: installed_checksum.clone(),
         },
         PlannedAction::KeepLocal {
             item_id,
@@ -297,8 +296,7 @@ fn install_item(target: &TargetItem, dest: &Path) -> Result<ContentHash, MarsErr
     match target.id.kind {
         ItemKind::Agent => {
             let content = content_to_install(target)?;
-            fs_ops::atomic_write_file(dest, &content)?;
-            Ok(ContentHash::from(crate::hash::hash_bytes(&content)))
+            write_file_and_verify(dest, &content)
         }
         ItemKind::Skill => {
             if target.is_flat_skill {
@@ -310,9 +308,26 @@ fn install_item(target: &TargetItem, dest: &Path) -> Result<ContentHash, MarsErr
             } else {
                 fs_ops::atomic_install_dir(&target.source_path, dest)?;
             }
+            // Skills are verified by hashing the installed directory content.
             crate::hash::compute_hash(dest, ItemKind::Skill).map(ContentHash::from)
         }
     }
+}
+
+/// Write bytes to `dest` and verify persisted bytes hash matches expected.
+fn write_file_and_verify(dest: &Path, content: &[u8]) -> Result<ContentHash, MarsError> {
+    fs_ops::atomic_write_file(dest, content)?;
+    let expected = ContentHash::from(crate::hash::hash_bytes(content));
+    let persisted = std::fs::read(dest)?;
+    let actual = ContentHash::from(crate::hash::hash_bytes(&persisted));
+    if expected != actual {
+        return Err(std::io::Error::other(format!(
+            "post-write verification failed for {}: expected {expected}, got {actual}",
+            dest.display()
+        ))
+        .into());
+    }
+    Ok(actual)
 }
 
 /// Read bytes to install for an agent, honoring in-memory rewrite overrides.
@@ -708,6 +723,7 @@ mod tests {
                 },
                 dest_path: "agents/stable.md".into(),
                 source_name: "base".into(),
+                installed_checksum: Some("sha256:stable".into()),
                 reason: "unchanged",
             }],
         };
@@ -726,6 +742,10 @@ mod tests {
             crate::types::DestPath::from("agents/stable.md")
         );
         assert_eq!(result.outcomes[0].source_name, "base");
+        assert_eq!(
+            result.outcomes[0].installed_checksum.as_deref(),
+            Some("sha256:stable")
+        );
     }
 
     #[test]

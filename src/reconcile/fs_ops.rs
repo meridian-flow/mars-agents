@@ -17,6 +17,10 @@ pub fn atomic_install_dir(source: &Path, dest: &Path) -> Result<(), MarsError> {
 /// Atomic file copy: read source (following symlinks), write to tmp, rename to dest.
 pub fn atomic_copy_file(source: &Path, dest: &Path) -> Result<(), MarsError> {
     let content = fs::read(source)?;
+    #[cfg(windows)]
+    if dest.exists() {
+        crate::fs::clear_readonly(dest)?;
+    }
     atomic_write_file(dest, &content)
 }
 
@@ -30,6 +34,8 @@ pub fn atomic_copy_dir(source: &Path, dest: &Path) -> Result<(), MarsError> {
     let tmp_path = tmp_dir.keep();
 
     if dest.exists() {
+        #[cfg(windows)]
+        crate::fs::clear_readonly(dest)?;
         let old_path = parent.join(format!(
             ".{}.old",
             dest.file_name().unwrap_or_default().to_string_lossy()
@@ -60,12 +66,40 @@ pub fn safe_remove(path: &Path) -> Result<(), MarsError> {
         Err(e) => return Err(e.into()),
     };
 
+    #[cfg(windows)]
+    if metadata.is_dir() {
+        clear_readonly_recursive(path)?;
+    } else {
+        crate::fs::clear_readonly(path)?;
+    }
+
     if metadata.is_dir() {
         fs::remove_dir_all(path)?;
     } else {
         fs::remove_file(path)?;
     }
 
+    Ok(())
+}
+
+#[cfg(windows)]
+fn clear_readonly_recursive(path: &Path) -> Result<(), MarsError> {
+    if let Ok(entries) = fs::read_dir(path) {
+        for entry in entries {
+            let entry = entry?;
+            let child_path = entry.path();
+            let child_meta = match fs::symlink_metadata(&child_path) {
+                Ok(meta) => meta,
+                Err(_) => continue,
+            };
+            if child_meta.is_dir() {
+                clear_readonly_recursive(&child_path)?;
+            } else {
+                crate::fs::clear_readonly(&child_path)?;
+            }
+        }
+    }
+    crate::fs::clear_readonly(path)?;
     Ok(())
 }
 

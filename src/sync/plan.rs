@@ -5,7 +5,7 @@ use crate::lock::{ItemId, ItemKind, LockedItem};
 use crate::sync::diff::{DiffEntry, SyncDiff};
 use crate::sync::target::TargetItem;
 use crate::sync::types::SyncOptions;
-use crate::types::{DestPath, SourceName};
+use crate::types::{ContentHash, DestPath, SourceName};
 
 /// A planned set of actions to execute.
 #[derive(Debug, Clone)]
@@ -28,6 +28,7 @@ pub enum PlannedAction {
         item_id: ItemId,
         dest_path: DestPath,
         source_name: SourceName,
+        installed_checksum: Option<ContentHash>,
         reason: &'static str,
     },
     /// Three-way merge required.
@@ -72,11 +73,12 @@ pub fn create(
                 });
             }
 
-            DiffEntry::Unchanged { target, locked: _ } => {
+            DiffEntry::Unchanged { target, locked } => {
                 actions.push(PlannedAction::Skip {
                     item_id: target.id.clone(),
                     dest_path: target.dest_path.clone(),
                     source_name: target.source_name.clone(),
+                    installed_checksum: Some(locked.installed_checksum.clone()),
                     reason: "unchanged",
                 });
             }

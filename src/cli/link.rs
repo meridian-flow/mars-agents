@@ -219,7 +219,7 @@ fn lock_items_as_sync_outcomes(lock: &LockFile) -> Vec<ActionOutcome> {
             dest_path: item.dest_path.clone(),
             source_name: item.source.clone(),
             source_checksum: None,
-            installed_checksum: None,
+            installed_checksum: Some(item.installed_checksum.clone()),
         })
         .collect()
 }

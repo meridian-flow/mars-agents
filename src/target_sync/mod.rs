@@ -12,6 +12,7 @@ use crate::diagnostic::DiagnosticCollector;
 use crate::error::MarsError;
 use crate::reconcile::fs_ops;
 use crate::sync::apply::{ActionOutcome, ActionTaken};
+use crate::types::ContentHash;
 
 /// A directory that mars manages — materialized from .mars/.
 #[derive(Debug, Clone)]
@@ -61,6 +62,7 @@ pub fn sync_managed_targets(
             outcomes,
             previous_managed_paths,
             force,
+            diag,
         ) {
             Ok(outcome) => {
                 if !outcome.errors.is_empty() {
@@ -99,6 +101,7 @@ fn sync_one_target(
     outcomes: &[ActionOutcome],
     previous_managed_paths: &HashSet<PathBuf>,
     force: bool,
+    diag: &mut DiagnosticCollector,
 ) -> Result<TargetSyncOutcome, MarsError> {
     let mut items_synced = 0;
     let mut items_removed = 0;
@@ -128,15 +131,34 @@ fn sync_one_target(
             ActionTaken::Skipped => {
                 // Item is unchanged in .mars/ — still expected in target
                 expected_paths.insert(dest_rel.to_path_buf());
-                // Ensure it exists in target (idempotent convergence).
-                // In --force mode, always refresh from .mars/ even if target exists.
                 let source = mars_dir.join(dest_rel);
                 let dest = target_root.join(dest_rel);
-                if source.exists() && (force || !dest.exists()) {
-                    match copy_item_to_target(&source, &dest) {
-                        Ok(()) => items_synced += 1,
-                        Err(e) => {
-                            errors.push(format!("failed to copy {}: {e}", dest_rel.display()))
+                if source.exists() || source.symlink_metadata().is_ok() {
+                    if force || !dest.exists() {
+                        match copy_item_to_target(&source, &dest) {
+                            Ok(()) => items_synced += 1,
+                            Err(e) => {
+                                errors.push(format!("failed to copy {}: {e}", dest_rel.display()))
+                            }
+                        }
+                    } else if let Some(expected_checksum) = &outcome.installed_checksum {
+                        match crate::hash::compute_hash(&dest, outcome.item_id.kind) {
+                            Ok(actual) => {
+                                let actual = ContentHash::from(actual);
+                                if &actual != expected_checksum {
+                                    diag.warn(
+                                        "target-divergent",
+                                        format!(
+                                            "target `{target_name}` item `{}` diverged from `.mars` (preserved local content; run `mars sync --force` or `mars repair` to reset)",
+                                            dest_rel.display()
+                                        ),
+                                    );
+                                }
+                            }
+                            Err(e) => errors.push(format!(
+                                "failed to verify {} checksum: {e}",
+                                dest_rel.display()
+                            )),
                         }
                     }
                 }
@@ -264,6 +286,7 @@ fn cleanup_orphans(
 mod tests {
     use super::*;
     use crate::diagnostic::DiagnosticCollector;
+    use crate::hash;
     use crate::sync::apply::{ActionOutcome, ActionTaken};
     use crate::types::{DestPath, ItemName};
     use tempfile::TempDir;
@@ -287,6 +310,12 @@ mod tests {
             .iter()
             .map(|p| PathBuf::from(*p))
             .collect::<HashSet<PathBuf>>()
+    }
+
+    fn make_skipped_with_checksum(dest: &str, checksum: &str) -> ActionOutcome {
+        let mut outcome = make_outcome(dest, ActionTaken::Skipped);
+        outcome.installed_checksum = Some(checksum.into());
+        outcome
     }
 
     #[test]
@@ -533,6 +562,71 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(target.join("agents/coder.md")).unwrap(),
             "# Canonical"
+        );
+    }
+
+    #[test]
+    fn sync_skipped_recopies_missing_target() {
+        let dir = TempDir::new().unwrap();
+        let mars_dir = dir.path().join(".mars");
+        let target = dir.path().join(".agents");
+
+        std::fs::create_dir_all(mars_dir.join("agents")).unwrap();
+        std::fs::write(mars_dir.join("agents/coder.md"), "# Canonical").unwrap();
+
+        let checksum = hash::hash_bytes(b"# Canonical");
+        let outcomes = vec![make_skipped_with_checksum("agents/coder.md", &checksum)];
+        let mut diag = DiagnosticCollector::new();
+        let results = sync_managed_targets(
+            dir.path(),
+            &mars_dir,
+            &[".agents".to_string()],
+            &outcomes,
+            &managed_paths(&["agents/coder.md"]),
+            false,
+            &mut diag,
+        );
+
+        assert_eq!(results[0].items_synced, 1);
+        assert!(target.join("agents/coder.md").exists());
+    }
+
+    #[test]
+    fn sync_skipped_warns_on_divergent_target_and_preserves_local_content() {
+        let dir = TempDir::new().unwrap();
+        let mars_dir = dir.path().join(".mars");
+        let target = dir.path().join(".agents");
+
+        std::fs::create_dir_all(mars_dir.join("agents")).unwrap();
+        std::fs::write(mars_dir.join("agents/coder.md"), "# Canonical").unwrap();
+
+        std::fs::create_dir_all(target.join("agents")).unwrap();
+        std::fs::write(target.join("agents/coder.md"), "# Locally edited").unwrap();
+
+        let checksum = hash::hash_bytes(b"# Canonical");
+        let outcomes = vec![make_skipped_with_checksum("agents/coder.md", &checksum)];
+        let mut diag = DiagnosticCollector::new();
+        let results = sync_managed_targets(
+            dir.path(),
+            &mars_dir,
+            &[".agents".to_string()],
+            &outcomes,
+            &managed_paths(&["agents/coder.md"]),
+            false,
+            &mut diag,
+        );
+
+        assert_eq!(results[0].items_synced, 0);
+        assert_eq!(
+            std::fs::read_to_string(target.join("agents/coder.md")).unwrap(),
+            "# Locally edited"
+        );
+
+        let diagnostics = diag.drain();
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.code == "target-divergent" && d.message.contains("agents/coder.md"))
         );
     }
 }

@@ -112,6 +112,50 @@ pub fn build(
     let mut dependencies = IndexMap::new();
     let mut items = IndexMap::new();
 
+    for outcome in &applied.outcomes {
+        match outcome.action {
+            ActionTaken::Installed
+            | ActionTaken::Updated
+            | ActionTaken::Merged
+            | ActionTaken::Conflicted => {
+                let installed =
+                    outcome
+                        .installed_checksum
+                        .as_ref()
+                        .ok_or_else(|| LockError::Corrupt {
+                            message: format!(
+                                "missing checksum for write-producing action on {}",
+                                outcome.dest_path
+                            ),
+                        })?;
+                if checksum_is_empty(installed) {
+                    return Err(LockError::Corrupt {
+                        message: format!("empty installed_checksum for {}", outcome.dest_path),
+                    }
+                    .into());
+                }
+
+                let source =
+                    outcome
+                        .source_checksum
+                        .as_ref()
+                        .ok_or_else(|| LockError::Corrupt {
+                            message: format!(
+                                "missing source checksum for write-producing action on {}",
+                                outcome.dest_path
+                            ),
+                        })?;
+                if checksum_is_empty(source) {
+                    return Err(LockError::Corrupt {
+                        message: format!("empty source_checksum for {}", outcome.dest_path),
+                    }
+                    .into());
+                }
+            }
+            ActionTaken::Removed | ActionTaken::Skipped | ActionTaken::Kept => {}
+        }
+    }
+
     // Build dependency entries directly from resolved graph provenance.
     for (name, node) in &graph.nodes {
         dependencies.insert(name.clone(), to_locked_source(node));
@@ -161,14 +205,26 @@ pub fn build(
                         .and_then(|n| n.resolved_ref.version_tag.clone())
                 });
 
-                let source_checksum = outcome
-                    .source_checksum
-                    .clone()
-                    .unwrap_or_else(|| ContentHash::from(""));
-                let installed_checksum = outcome
-                    .installed_checksum
-                    .clone()
-                    .unwrap_or_else(|| source_checksum.clone());
+                let source_checksum =
+                    outcome
+                        .source_checksum
+                        .clone()
+                        .ok_or_else(|| LockError::Corrupt {
+                            message: format!(
+                                "missing source checksum for write-producing action on {}",
+                                outcome.dest_path
+                            ),
+                        })?;
+                let installed_checksum =
+                    outcome
+                        .installed_checksum
+                        .clone()
+                        .ok_or_else(|| LockError::Corrupt {
+                            message: format!(
+                                "missing checksum for write-producing action on {}",
+                                outcome.dest_path
+                            ),
+                        })?;
 
                 items.insert(
                     dest_path.clone(),
@@ -201,6 +257,21 @@ pub fn build(
         );
     }
 
+    for item in items.values() {
+        if checksum_is_empty(&item.source_checksum) {
+            return Err(LockError::Corrupt {
+                message: format!("empty source_checksum for {}", item.dest_path),
+            }
+            .into());
+        }
+        if checksum_is_empty(&item.installed_checksum) {
+            return Err(LockError::Corrupt {
+                message: format!("empty installed_checksum for {}", item.dest_path),
+            }
+            .into());
+        }
+    }
+
     // Sort keys for deterministic output.
     dependencies.sort_keys();
     items.sort_keys();
@@ -210,6 +281,10 @@ pub fn build(
         dependencies,
         items,
     })
+}
+
+fn checksum_is_empty(checksum: &ContentHash) -> bool {
+    checksum.as_ref().trim().is_empty()
 }
 
 fn to_locked_source(node: &crate::resolve::ResolvedNode) -> LockedSource {
@@ -573,5 +648,77 @@ dest_path = "agents/helper.md"
         assert_eq!(item.kind, ItemKind::Skill);
         assert_eq!(item.source_checksum, "sha256:self");
         assert_eq!(item.installed_checksum, "sha256:self");
+    }
+
+    #[test]
+    fn build_rejects_missing_installed_checksum_for_write_actions() {
+        let graph = ResolvedGraph {
+            nodes: IndexMap::new(),
+            order: Vec::new(),
+            id_index: HashMap::new(),
+            filters: HashMap::new(),
+        };
+        let old_lock = LockFile::empty();
+        let applied = ApplyResult {
+            outcomes: vec![ActionOutcome {
+                item_id: ItemId {
+                    kind: ItemKind::Agent,
+                    name: "coder".into(),
+                },
+                action: ActionTaken::Installed,
+                dest_path: "agents/coder.md".into(),
+                source_name: "base".into(),
+                source_checksum: Some("sha256:source".into()),
+                installed_checksum: None,
+            }],
+        };
+
+        let err = build(&graph, &applied, &old_lock).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("missing checksum for write-producing action"));
+        assert!(msg.contains("agents/coder.md"));
+    }
+
+    #[test]
+    fn build_rejects_empty_checksums_from_carried_items() {
+        let graph = ResolvedGraph {
+            nodes: IndexMap::new(),
+            order: Vec::new(),
+            id_index: HashMap::new(),
+            filters: HashMap::new(),
+        };
+        let old_lock = LockFile {
+            version: 1,
+            dependencies: IndexMap::new(),
+            items: IndexMap::from([(
+                DestPath::from("agents/coder.md"),
+                LockedItem {
+                    source: "base".into(),
+                    kind: ItemKind::Agent,
+                    version: None,
+                    source_checksum: "".into(),
+                    installed_checksum: "sha256:installed".into(),
+                    dest_path: DestPath::from("agents/coder.md"),
+                },
+            )]),
+        };
+        let applied = ApplyResult {
+            outcomes: vec![ActionOutcome {
+                item_id: ItemId {
+                    kind: ItemKind::Agent,
+                    name: "coder".into(),
+                },
+                action: ActionTaken::Skipped,
+                dest_path: "agents/coder.md".into(),
+                source_name: "base".into(),
+                source_checksum: None,
+                installed_checksum: None,
+            }],
+        };
+
+        let err = build(&graph, &applied, &old_lock).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("empty source_checksum"));
+        assert!(msg.contains("agents/coder.md"));
     }
 }

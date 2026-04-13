@@ -145,6 +145,18 @@ pub fn remove_item(path: &Path, kind: ItemKind) -> Result<(), MarsError> {
     Ok(())
 }
 
+#[cfg(windows)]
+pub fn clear_readonly(path: &Path) -> std::io::Result<()> {
+    if let Ok(metadata) = std::fs::metadata(path) {
+        let mut perms = metadata.permissions();
+        if perms.readonly() {
+            perms.set_readonly(false);
+            std::fs::set_permissions(path, perms)?;
+        }
+    }
+    Ok(())
+}
+
 /// Advisory file lock (flock) for concurrent access.
 ///
 /// Prevents concurrent `mars sync` from corrupting state.
