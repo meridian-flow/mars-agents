@@ -26,9 +26,7 @@ use crate::source::GlobalCache;
 use crate::sync::apply::ApplyResult;
 pub use crate::sync::apply::SyncOptions;
 use crate::sync::target::{RenameAction, TargetItem, TargetState};
-use crate::types::{
-    ContentHash, DestPath, MarsContext, Materialization, SourceId, SourceName, SourceOrigin,
-};
+use crate::types::{ContentHash, DestPath, MarsContext, SourceId, SourceName, SourceOrigin};
 use crate::validate::ValidationWarning;
 
 // Re-export mutation types for public API compatibility.
@@ -330,9 +328,6 @@ fn build_target(
                     },
                     source_name: local_source_name.clone(),
                     origin: SourceOrigin::LocalPackage,
-                    materialization: Materialization::Symlink {
-                        source_abs: source_path.clone(),
-                    },
                     source_id: local_source_id.clone(),
                     source_path,
                     dest_path,

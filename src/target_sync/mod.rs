@@ -4,7 +4,6 @@
 //! this module copies that content to all configured target directories (`.agents/`, `.claude/`, etc.).
 //!
 //! All targets are managed outputs — they get copies (not symlinks) of .mars/ content.
-//! Symlinks in .mars/ (from local packages) are followed, so targets always get file copies (D26).
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -37,7 +36,7 @@ pub struct TargetSyncOutcome {
 /// Sync all managed targets from .mars/ canonical store.
 ///
 /// For each configured target, copies content from `.mars/agents/` and `.mars/skills/`
-/// into the target directory, following symlinks (local package items are symlinks in .mars/).
+/// into the target directory.
 /// Cleans up orphaned items that are no longer in the apply outcomes.
 ///
 /// Target sync is non-fatal by default (D9) — errors per-target are recorded but don't
@@ -143,7 +142,7 @@ fn sync_one_target(
                 }
             }
             _ => {
-                // Installed, Updated, Merged, Conflicted, Kept, Symlinked
+                // Installed, Updated, Merged, Conflicted, Kept
                 // All of these mean content exists in .mars/ and should be copied to target
                 expected_paths.insert(dest_rel.to_path_buf());
                 let source = mars_dir.join(dest_rel);
@@ -436,46 +435,6 @@ mod tests {
         assert_eq!(results.len(), 2);
         assert!(dir.path().join(".agents/agents/coder.md").exists());
         assert!(dir.path().join(".claude/agents/coder.md").exists());
-    }
-
-    #[test]
-    fn sync_follows_symlinks_in_mars_dir() {
-        let dir = TempDir::new().unwrap();
-        let mars_dir = dir.path().join(".mars");
-        let target = dir.path().join(".agents");
-
-        // Create a real file and symlink to it in .mars/
-        let real_dir = dir.path().join("local-agents");
-        std::fs::create_dir_all(&real_dir).unwrap();
-        std::fs::write(real_dir.join("local.md"), "# Local").unwrap();
-
-        std::fs::create_dir_all(mars_dir.join("agents")).unwrap();
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(real_dir.join("local.md"), mars_dir.join("agents/local.md"))
-            .unwrap();
-
-        let outcomes = vec![make_outcome("agents/local.md", ActionTaken::Symlinked)];
-        let mut diag = DiagnosticCollector::new();
-
-        let results = sync_managed_targets(
-            dir.path(),
-            &mars_dir,
-            &[".agents".to_string()],
-            &outcomes,
-            &managed_paths(&[]),
-            false,
-            &mut diag,
-        );
-
-        assert_eq!(results[0].items_synced, 1);
-        let dest = target.join("agents/local.md");
-        assert!(dest.exists());
-        // Should be a regular file, not a symlink (D26)
-        assert!(
-            !dest.symlink_metadata().unwrap().file_type().is_symlink(),
-            "target should have a regular file copy, not a symlink"
-        );
-        assert_eq!(std::fs::read_to_string(&dest).unwrap(), "# Local");
     }
 
     #[test]

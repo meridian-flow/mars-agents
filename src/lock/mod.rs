@@ -137,25 +137,6 @@ pub fn build(
                     items.insert(dest_path, old_item.clone());
                 }
             }
-            ActionTaken::Symlinked => {
-                // Track _self items in the lock file
-                let dest_path = outcome.dest_path.clone();
-                let source_checksum = outcome
-                    .source_checksum
-                    .clone()
-                    .unwrap_or_else(|| ContentHash::from(""));
-                items.insert(
-                    dest_path.clone(),
-                    LockedItem {
-                        source: SourceOrigin::LocalPackage.to_string().into(),
-                        kind: outcome.item_id.kind,
-                        version: None,
-                        source_checksum: source_checksum.clone(),
-                        installed_checksum: source_checksum,
-                        dest_path,
-                    },
-                );
-            }
             ActionTaken::Installed
             | ActionTaken::Updated
             | ActionTaken::Merged
@@ -204,7 +185,7 @@ pub fn build(
         }
     }
 
-    // Add synthetic _self source if any symlinked items exist
+    // Add synthetic _self source if any local package items exist.
     let local_source_name: SourceName = SourceOrigin::LocalPackage.to_string().into();
     let has_self_items = items.values().any(|item| item.source == local_source_name);
     if has_self_items {

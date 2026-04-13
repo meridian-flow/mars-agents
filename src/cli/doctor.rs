@@ -2,7 +2,6 @@
 
 use crate::error::MarsError;
 use crate::hash;
-use crate::types::SourceOrigin;
 
 use super::output;
 
@@ -94,20 +93,22 @@ pub fn run(_args: &DoctorArgs, ctx: &super::MarsContext, json: bool) -> Result<i
 
         let installed = crate::discover::discover_installed(&mars_dir)?;
 
-        // Report symlinked items
+        // Warn on legacy symlinks found in managed directories.
         for item in installed.agents.iter().chain(installed.skills.iter()) {
-            if item.is_symlink {
-                if is_self_symlink(item, ctx, &lock) {
-                    continue;
-                }
+            if item
+                .path
+                .symlink_metadata()
+                .map(|m| m.file_type().is_symlink())
+                .unwrap_or(false)
+            {
                 let kind = if item.id.kind == crate::lock::ItemKind::Agent {
                     "agent"
                 } else {
                     "skill"
                 };
                 warnings.push(format!(
-                    "skipping symlinked {kind} `{}` — individual symlinks in managed dirs are not validated",
-                    item.id.name
+                    "legacy symlinked {kind} `{}` detected in managed dir — run `mars sync` to normalize to copied content",
+                    item.id.name,
                 ));
             }
         }
@@ -115,14 +116,12 @@ pub fn run(_args: &DoctorArgs, ctx: &super::MarsContext, json: bool) -> Result<i
         let available_skills: HashSet<String> = installed
             .skills
             .iter()
-            .filter(|s| !s.is_symlink)
             .map(|s| s.id.name.to_string())
             .collect();
 
         let agents_for_check: Vec<(String, std::path::PathBuf)> = installed
             .agents
             .iter()
-            .filter(|a| !a.is_symlink)
             .map(|a| (a.id.name.to_string(), a.path.clone()))
             .collect();
 
@@ -184,20 +183,4 @@ fn check_mars_gitignore(project_root: &std::path::Path, warnings: &mut Vec<Strin
                 .to_string(),
         );
     }
-}
-
-fn is_self_symlink(
-    item: &crate::discover::InstalledItem,
-    ctx: &super::MarsContext,
-    lock: &crate::lock::LockFile,
-) -> bool {
-    let mars_dir = ctx.project_root.join(".mars");
-    let Ok(rel_path) = item.path.strip_prefix(&mars_dir) else {
-        return false;
-    };
-    let dest_path = crate::types::DestPath::from(rel_path);
-    let local_source_name = SourceOrigin::LocalPackage.to_string();
-    lock.items
-        .get(&dest_path)
-        .is_some_and(|locked| locked.source.as_ref() == local_source_name.as_str())
 }

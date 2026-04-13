@@ -6,7 +6,7 @@ use crate::reconcile::fs_ops;
 use crate::sync::plan::{PlannedAction, SyncPlan};
 use crate::sync::target::TargetItem;
 pub use crate::sync::types::SyncOptions;
-use crate::types::{ContentHash, DestPath, ItemName, SourceName, SourceOrigin};
+use crate::types::{ContentHash, DestPath, ItemName, SourceName};
 
 /// The result of applying the sync plan.
 #[derive(Debug, Clone)]
@@ -38,7 +38,6 @@ pub enum ActionTaken {
     Removed,
     Skipped,
     Kept,
-    Symlinked,
 }
 
 /// Execute the sync plan, applying changes to disk.
@@ -219,41 +218,6 @@ fn execute_action(
             source_checksum: None,
             installed_checksum: None,
         }),
-
-        PlannedAction::Symlink {
-            source_abs,
-            dest_rel,
-            kind,
-            name,
-        } => {
-            let dest = root.join(dest_rel.as_path());
-            // Create parent directories
-            if let Some(parent) = dest.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            // Compute relative symlink path
-            let from_dir = dest.parent().unwrap();
-            let rel_target =
-                pathdiff::diff_paths(source_abs, from_dir).unwrap_or_else(|| source_abs.clone());
-            // Create symlink after removing any existing content.
-            fs_ops::atomic_symlink(&dest, &rel_target)?;
-
-            let source_hash: ContentHash = crate::hash::compute_hash(source_abs, *kind)
-                .unwrap_or_default()
-                .into();
-
-            Ok(ActionOutcome {
-                item_id: ItemId {
-                    kind: *kind,
-                    name: name.clone(),
-                },
-                action: ActionTaken::Symlinked,
-                dest_path: dest_rel.clone(),
-                source_name: SourceOrigin::LocalPackage.to_string().into(),
-                source_checksum: Some(source_hash.clone()),
-                installed_checksum: Some(source_hash),
-            })
-        }
     }
 }
 
@@ -320,22 +284,6 @@ fn dry_run_action(action: &PlannedAction) -> ActionOutcome {
             action: ActionTaken::Kept,
             dest_path: dest_path.clone(),
             source_name: source_name.clone(),
-            source_checksum: None,
-            installed_checksum: None,
-        },
-        PlannedAction::Symlink {
-            dest_rel,
-            kind,
-            name,
-            ..
-        } => ActionOutcome {
-            item_id: ItemId {
-                kind: *kind,
-                name: name.clone(),
-            },
-            action: ActionTaken::Symlinked,
-            dest_path: dest_rel.clone(),
-            source_name: SourceOrigin::LocalPackage.to_string().into(),
             source_checksum: None,
             installed_checksum: None,
         },
@@ -507,7 +455,6 @@ mod tests {
             },
             source_name: "test-source".into(),
             origin: crate::types::SourceOrigin::Dependency("test-source".into()),
-            materialization: crate::types::Materialization::Copy,
             source_id: crate::types::SourceId::Path {
                 canonical: source_path.clone(),
             },
@@ -838,7 +785,6 @@ mod tests {
             },
             source_name: "test".into(),
             origin: crate::types::SourceOrigin::Dependency("test".into()),
-            materialization: crate::types::Materialization::Copy,
             source_id: crate::types::SourceId::Path {
                 canonical: source_skill.clone(),
             },
@@ -902,7 +848,6 @@ mod tests {
             },
             source_name: "test".into(),
             origin: crate::types::SourceOrigin::Dependency("test".into()),
-            materialization: crate::types::Materialization::Copy,
             source_id: crate::types::SourceId::Path {
                 canonical: flat_source.clone(),
             },

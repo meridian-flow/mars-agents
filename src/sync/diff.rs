@@ -176,7 +176,6 @@ mod tests {
             },
             source_name: SourceName::from("test-source"),
             origin: crate::types::SourceOrigin::Dependency(SourceName::from("test-source")),
-            materialization: crate::types::Materialization::Copy,
             source_id: crate::types::SourceId::Path {
                 canonical: source_path.clone(),
             },

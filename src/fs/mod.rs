@@ -1,6 +1,5 @@
 use std::fs;
 use std::io::Write;
-use std::os::unix::io::AsRawFd;
 use std::path::Path;
 
 use crate::error::MarsError;
@@ -159,14 +158,7 @@ impl FileLock {
     /// Acquire an advisory file lock, blocking until available.
     pub fn acquire(lock_path: &Path) -> Result<Self, MarsError> {
         let file = Self::open_lock_file(lock_path)?;
-        let fd = file.as_raw_fd();
-
-        // SAFETY: fd is a valid open file descriptor
-        let ret = unsafe { libc::flock(fd, libc::LOCK_EX) };
-        if ret != 0 {
-            return Err(std::io::Error::last_os_error().into());
-        }
-
+        platform::lock_exclusive(&file)?;
         Ok(FileLock { _fd: file })
     }
 
@@ -174,19 +166,11 @@ impl FileLock {
     /// Returns `Ok(Some(lock))` if acquired, `Ok(None)` if already held by another process.
     pub fn try_acquire(lock_path: &Path) -> Result<Option<Self>, MarsError> {
         let file = Self::open_lock_file(lock_path)?;
-        let fd = file.as_raw_fd();
-
-        // SAFETY: fd is a valid open file descriptor
-        let ret = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) };
-        if ret != 0 {
-            let err = std::io::Error::last_os_error();
-            if err.kind() == std::io::ErrorKind::WouldBlock {
-                return Ok(None);
-            }
-            return Err(err.into());
+        match platform::try_lock_exclusive(&file) {
+            Ok(true) => Ok(Some(FileLock { _fd: file })),
+            Ok(false) => Ok(None),
+            Err(err) => Err(err.into()),
         }
-
-        Ok(Some(FileLock { _fd: file }))
     }
 
     /// Open (or create) the lock file, creating parent dirs if needed.
@@ -201,6 +185,93 @@ impl FileLock {
             .truncate(false)
             .open(lock_path)?;
         Ok(file)
+    }
+}
+
+#[cfg(unix)]
+mod platform {
+    use std::fs;
+    use std::os::unix::io::AsRawFd;
+
+    pub fn lock_exclusive(file: &fs::File) -> std::io::Result<()> {
+        // SAFETY: the file descriptor is valid while `file` is alive.
+        let ret = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
+        if ret != 0 {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    }
+
+    pub fn try_lock_exclusive(file: &fs::File) -> std::io::Result<bool> {
+        // SAFETY: the file descriptor is valid while `file` is alive.
+        let ret = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        if ret != 0 {
+            let err = std::io::Error::last_os_error();
+            if err.kind() == std::io::ErrorKind::WouldBlock {
+                Ok(false)
+            } else {
+                Err(err)
+            }
+        } else {
+            Ok(true)
+        }
+    }
+}
+
+#[cfg(windows)]
+mod platform {
+    use std::fs;
+    use std::os::windows::io::AsRawHandle;
+
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::Storage::FileSystem::{
+        LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY, LockFileEx,
+    };
+
+    const ERROR_LOCK_VIOLATION: i32 = 33;
+
+    pub fn lock_exclusive(file: &fs::File) -> std::io::Result<()> {
+        let handle = file.as_raw_handle() as HANDLE;
+        // SAFETY: zero-initialized OVERLAPPED is accepted by LockFileEx for
+        // whole-file locks at offset 0.
+        let mut overlapped = unsafe { std::mem::zeroed() };
+        // SAFETY: handle is valid while `file` is alive and `overlapped` outlives the call.
+        let ret =
+            unsafe { LockFileEx(handle, LOCKFILE_EXCLUSIVE_LOCK, 0, !0, !0, &mut overlapped) };
+        if ret == 0 {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    }
+
+    pub fn try_lock_exclusive(file: &fs::File) -> std::io::Result<bool> {
+        let handle = file.as_raw_handle() as HANDLE;
+        // SAFETY: zero-initialized OVERLAPPED is accepted by LockFileEx for
+        // whole-file locks at offset 0.
+        let mut overlapped = unsafe { std::mem::zeroed() };
+        // SAFETY: handle is valid while `file` is alive and `overlapped` outlives the call.
+        let ret = unsafe {
+            LockFileEx(
+                handle,
+                LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
+                0,
+                !0,
+                !0,
+                &mut overlapped,
+            )
+        };
+        if ret == 0 {
+            let err = std::io::Error::last_os_error();
+            if err.raw_os_error() == Some(ERROR_LOCK_VIOLATION) {
+                Ok(false)
+            } else {
+                Err(err)
+            }
+        } else {
+            Ok(true)
+        }
     }
 }
 

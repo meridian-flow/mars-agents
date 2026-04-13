@@ -1375,17 +1375,17 @@ fn full_pipeline_with_local_package_and_custom_target() {
         "external agent should exist"
     );
 
-    // In .mars/ canonical store, local items should be symlinks
+    // In .mars/ canonical store, local items are regular copied content
     let mars_dir = project.child(".mars");
     let mars_local_agent = mars_dir.child("agents").child("local-agent.md");
     assert!(
-        mars_local_agent
+        !mars_local_agent
             .path()
             .symlink_metadata()
             .unwrap()
             .file_type()
             .is_symlink(),
-        "local agent in .mars/ should be a symlink"
+        "local agent in .mars/ should be a regular file copy"
     );
 
     // In target directories, ALL items are regular file copies (D26)

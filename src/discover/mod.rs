@@ -123,8 +123,6 @@ pub struct InstalledItem {
     pub description: Option<String>,
     /// Skills referenced in frontmatter (agents only).
     pub skill_refs: Vec<String>,
-    /// Whether this is a symlink (skipped from validation).
-    pub is_symlink: bool,
 }
 
 /// Result of scanning an installed managed root.
@@ -137,8 +135,7 @@ pub struct InstalledState {
 /// Discover all installed agents and skills in a managed root.
 ///
 /// Scans `agents/*.md` and `skills/*/SKILL.md`, parses frontmatter,
-/// and collects metadata. Includes symlinks (marked as such) so
-/// callers can decide whether to skip or warn.
+/// and collects metadata.
 pub fn discover_installed(root: &Path) -> Result<InstalledState, MarsError> {
     let mut agents = Vec::new();
     let mut skills = Vec::new();
@@ -156,11 +153,6 @@ pub fn discover_installed(root: &Path) -> Result<InstalledState, MarsError> {
             if name_str.starts_with('.') {
                 continue;
             }
-
-            let is_symlink = path
-                .symlink_metadata()
-                .map(|m| m.file_type().is_symlink())
-                .unwrap_or(false);
 
             // Must be a .md file (following symlinks for the check)
             if !path.is_file() {
@@ -187,7 +179,6 @@ pub fn discover_installed(root: &Path) -> Result<InstalledState, MarsError> {
                 frontmatter_name,
                 description,
                 skill_refs,
-                is_symlink,
             });
         }
     }
@@ -205,11 +196,6 @@ pub fn discover_installed(root: &Path) -> Result<InstalledState, MarsError> {
             if name_str.starts_with('.') {
                 continue;
             }
-
-            let is_symlink = path
-                .symlink_metadata()
-                .map(|m| m.file_type().is_symlink())
-                .unwrap_or(false);
 
             if !path.is_dir() {
                 continue;
@@ -231,7 +217,6 @@ pub fn discover_installed(root: &Path) -> Result<InstalledState, MarsError> {
                 frontmatter_name,
                 description,
                 skill_refs: Vec::new(),
-                is_symlink,
             });
         }
     }
@@ -617,37 +602,5 @@ mod tests {
         assert_eq!(state.agents[0].id.name, "bare");
         assert!(state.agents[0].frontmatter_name.is_none());
         assert!(state.agents[0].skill_refs.is_empty());
-    }
-
-    #[test]
-    fn discover_installed_handles_symlinks() {
-        let root = TempDir::new().unwrap();
-        let agents_dir = root.path().join("agents");
-        fs::create_dir_all(&agents_dir).unwrap();
-
-        // Create a real agent file
-        let real = agents_dir.join("real.md");
-        fs::write(&real, "# Real agent").unwrap();
-
-        // Create a symlink
-        let link = agents_dir.join("linked.md");
-        std::os::unix::fs::symlink(&real, &link).unwrap();
-
-        let state = discover_installed(root.path()).unwrap();
-        assert_eq!(state.agents.len(), 2);
-
-        let linked = state
-            .agents
-            .iter()
-            .find(|a| a.id.name.as_str() == "linked")
-            .unwrap();
-        assert!(linked.is_symlink);
-
-        let real_agent = state
-            .agents
-            .iter()
-            .find(|a| a.id.name.as_str() == "real")
-            .unwrap();
-        assert!(!real_agent.is_symlink);
     }
 }

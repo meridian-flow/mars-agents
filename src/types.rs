@@ -122,15 +122,6 @@ impl fmt::Display for SourceOrigin {
     }
 }
 
-/// How an item should be materialized in the managed root.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Materialization {
-    /// Copy source content to destination (standard for dependency items).
-    Copy,
-    /// Create a symlink to the source (for local package items — edits propagate).
-    Symlink { source_abs: PathBuf },
-}
-
 /// Kind of installable item.
 #[derive(Debug, Clone, Copy, Hash, Eq, PartialEq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

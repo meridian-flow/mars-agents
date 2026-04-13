@@ -1,10 +1,10 @@
 use std::path::PathBuf;
 
-use crate::lock::{ItemId, ItemKind, LockedItem};
+use crate::lock::{ItemId, LockedItem};
 use crate::sync::diff::{DiffEntry, SyncDiff};
 use crate::sync::target::TargetItem;
 use crate::sync::types::SyncOptions;
-use crate::types::{DestPath, ItemName, Materialization, SourceName};
+use crate::types::{DestPath, SourceName};
 
 /// A planned set of actions to execute.
 #[derive(Debug, Clone)]
@@ -43,15 +43,6 @@ pub enum PlannedAction {
         dest_path: DestPath,
         source_name: SourceName,
     },
-    /// Create a symlink for a local package item (`_self` source).
-    Symlink {
-        /// Absolute path to the source file/directory.
-        source_abs: PathBuf,
-        /// Relative destination under managed root.
-        dest_rel: DestPath,
-        kind: ItemKind,
-        name: ItemName,
-    },
 }
 
 /// Create execution plan from diff.
@@ -63,79 +54,58 @@ pub fn create(
     options: &SyncOptions,
     cache_bases_dir: &std::path::Path,
 ) -> SyncPlan {
-    let local_source_name: SourceName = crate::types::SourceOrigin::LocalPackage.to_string().into();
     let mut actions = Vec::new();
 
     for entry in &diff.items {
         match entry {
-            DiffEntry::Add { target } => match &target.materialization {
-                Materialization::Copy => {
-                    actions.push(PlannedAction::Install {
-                        target: target.clone(),
-                    });
-                }
-                Materialization::Symlink { source_abs } => {
-                    actions.push(symlink_action(target, source_abs));
-                }
-            },
+            DiffEntry::Add { target } => {
+                actions.push(PlannedAction::Install {
+                    target: target.clone(),
+                });
+            }
 
-            DiffEntry::Update { target, locked: _ } => match &target.materialization {
-                Materialization::Copy => {
-                    actions.push(PlannedAction::Overwrite {
-                        target: target.clone(),
-                    });
-                }
-                Materialization::Symlink { source_abs } => {
-                    actions.push(symlink_action(target, source_abs));
-                }
-            },
+            DiffEntry::Update { target, locked: _ } => {
+                actions.push(PlannedAction::Overwrite {
+                    target: target.clone(),
+                });
+            }
 
-            DiffEntry::Unchanged { target, locked } => match &target.materialization {
-                Materialization::Symlink { source_abs } if locked.source != local_source_name => {
-                    actions.push(symlink_action(target, source_abs));
-                }
-                _ => {
-                    actions.push(PlannedAction::Skip {
-                        item_id: target.id.clone(),
-                        dest_path: target.dest_path.clone(),
-                        source_name: target.source_name.clone(),
-                        reason: "unchanged",
-                    });
-                }
-            },
+            DiffEntry::Unchanged { target, locked: _ } => {
+                actions.push(PlannedAction::Skip {
+                    item_id: target.id.clone(),
+                    dest_path: target.dest_path.clone(),
+                    source_name: target.source_name.clone(),
+                    reason: "unchanged",
+                });
+            }
 
             DiffEntry::Conflict {
                 target,
                 locked,
                 local_hash: _,
-            } => match &target.materialization {
-                Materialization::Symlink { source_abs } => {
-                    actions.push(symlink_action(target, source_abs));
+            } => {
+                if options.force {
+                    // --force: source wins, overwrite local modifications
+                    actions.push(PlannedAction::Overwrite {
+                        target: target.clone(),
+                    });
+                } else {
+                    // Three-way merge needed
+                    let base_path = cache_bases_dir.join(locked.installed_checksum.as_ref());
+
+                    // Read base content from cache (or empty if missing)
+                    let base_content = std::fs::read(&base_path).unwrap_or_default();
+
+                    // Local path is the installed dest
+                    let local_path = locked.dest_path.as_path().to_path_buf();
+
+                    actions.push(PlannedAction::Merge {
+                        target: target.clone(),
+                        base_content,
+                        local_path,
+                    });
                 }
-                Materialization::Copy => {
-                    if options.force {
-                        // --force: source wins, overwrite local modifications
-                        actions.push(PlannedAction::Overwrite {
-                            target: target.clone(),
-                        });
-                    } else {
-                        // Three-way merge needed
-                        let base_path = cache_bases_dir.join(locked.installed_checksum.as_ref());
-
-                        // Read base content from cache (or empty if missing)
-                        let base_content = std::fs::read(&base_path).unwrap_or_default();
-
-                        // Local path is the installed dest
-                        let local_path = locked.dest_path.as_path().to_path_buf();
-
-                        actions.push(PlannedAction::Merge {
-                            target: target.clone(),
-                            base_content,
-                            local_path,
-                        });
-                    }
-                }
-            },
+            }
 
             DiffEntry::Orphan { locked } => {
                 actions.push(PlannedAction::Remove {
@@ -147,38 +117,24 @@ pub fn create(
                 target,
                 locked: _,
                 local_hash: _,
-            } => match &target.materialization {
-                Materialization::Symlink { source_abs } => {
-                    actions.push(symlink_action(target, source_abs));
+            } => {
+                if options.force {
+                    // --force: source wins even when only local changed
+                    actions.push(PlannedAction::Overwrite {
+                        target: target.clone(),
+                    });
+                } else {
+                    actions.push(PlannedAction::KeepLocal {
+                        item_id: target.id.clone(),
+                        dest_path: target.dest_path.clone(),
+                        source_name: target.source_name.clone(),
+                    });
                 }
-                Materialization::Copy => {
-                    if options.force {
-                        // --force: source wins even when only local changed
-                        actions.push(PlannedAction::Overwrite {
-                            target: target.clone(),
-                        });
-                    } else {
-                        actions.push(PlannedAction::KeepLocal {
-                            item_id: target.id.clone(),
-                            dest_path: target.dest_path.clone(),
-                            source_name: target.source_name.clone(),
-                        });
-                    }
-                }
-            },
+            }
         }
     }
 
     SyncPlan { actions }
-}
-
-fn symlink_action(target: &TargetItem, source_abs: &std::path::Path) -> PlannedAction {
-    PlannedAction::Symlink {
-        source_abs: source_abs.to_path_buf(),
-        dest_rel: target.dest_path.clone(),
-        kind: target.id.kind,
-        name: target.id.name.clone(),
-    }
 }
 
 #[cfg(test)]
@@ -199,7 +155,6 @@ mod tests {
             },
             source_name: "test".into(),
             origin: crate::types::SourceOrigin::Dependency("test".into()),
-            materialization: crate::types::Materialization::Copy,
             source_id: crate::types::SourceId::Path {
                 canonical: PathBuf::from(format!("/tmp/source/agents/{name}.md")),
             },
@@ -211,17 +166,6 @@ mod tests {
         }
     }
 
-    fn make_symlink_target(name: &str) -> TargetItem {
-        TargetItem {
-            materialization: crate::types::Materialization::Symlink {
-                source_abs: PathBuf::from(format!("/tmp/source/local/agents/{name}.md")),
-            },
-            source_name: crate::types::SourceOrigin::LocalPackage.to_string().into(),
-            origin: crate::types::SourceOrigin::LocalPackage,
-            ..make_target(name)
-        }
-    }
-
     fn make_locked(name: &str) -> LockedItem {
         LockedItem {
             source: "test".into(),
@@ -230,13 +174,6 @@ mod tests {
             source_checksum: hash::hash_bytes(b"old content").into(),
             installed_checksum: hash::hash_bytes(b"old content").into(),
             dest_path: format!("agents/{name}.md").into(),
-        }
-    }
-
-    fn make_locked_from_source(name: &str, source: &str) -> LockedItem {
-        LockedItem {
-            source: source.into(),
-            ..make_locked(name)
         }
     }
 
@@ -325,22 +262,6 @@ mod tests {
     }
 
     #[test]
-    fn conflict_with_symlink_materialization_produces_symlink() {
-        let cache_dir = TempDir::new().unwrap();
-        let diff = SyncDiff {
-            items: vec![DiffEntry::Conflict {
-                target: make_symlink_target("conflicted"),
-                locked: make_locked("conflicted"),
-                local_hash: "sha256:local".into(),
-            }],
-        };
-
-        let plan = create(&diff, &default_options(), cache_dir.path());
-        assert_eq!(plan.actions.len(), 1);
-        assert!(matches!(&plan.actions[0], PlannedAction::Symlink { .. }));
-    }
-
-    #[test]
     fn conflict_with_force_produces_overwrite() {
         let cache_dir = TempDir::new().unwrap();
         let diff = SyncDiff {
@@ -400,63 +321,6 @@ mod tests {
         let plan = create(&diff, &force_options(), cache_dir.path());
         assert_eq!(plan.actions.len(), 1);
         assert!(matches!(&plan.actions[0], PlannedAction::Overwrite { .. }));
-    }
-
-    #[test]
-    fn local_modified_with_symlink_materialization_produces_symlink() {
-        let cache_dir = TempDir::new().unwrap();
-        let diff = SyncDiff {
-            items: vec![DiffEntry::LocalModified {
-                target: make_symlink_target("modified"),
-                locked: make_locked("modified"),
-                local_hash: "sha256:local".into(),
-            }],
-        };
-
-        let plan = create(&diff, &default_options(), cache_dir.path());
-        assert_eq!(plan.actions.len(), 1);
-        assert!(matches!(&plan.actions[0], PlannedAction::Symlink { .. }));
-    }
-
-    #[test]
-    fn unchanged_symlink_with_dependency_lock_source_produces_symlink() {
-        let cache_dir = TempDir::new().unwrap();
-        let diff = SyncDiff {
-            items: vec![DiffEntry::Unchanged {
-                target: make_symlink_target("owner-change"),
-                locked: make_locked_from_source("owner-change", "dep-source"),
-            }],
-        };
-
-        let plan = create(&diff, &default_options(), cache_dir.path());
-        assert_eq!(plan.actions.len(), 1);
-        assert!(matches!(&plan.actions[0], PlannedAction::Symlink { .. }));
-    }
-
-    #[test]
-    fn unchanged_symlink_with_self_lock_source_produces_skip() {
-        let cache_dir = TempDir::new().unwrap();
-        let diff = SyncDiff {
-            items: vec![DiffEntry::Unchanged {
-                target: make_symlink_target("already-self"),
-                locked: make_locked_from_source(
-                    "already-self",
-                    crate::types::SourceOrigin::LocalPackage
-                        .to_string()
-                        .as_str(),
-                ),
-            }],
-        };
-
-        let plan = create(&diff, &default_options(), cache_dir.path());
-        assert_eq!(plan.actions.len(), 1);
-        assert!(matches!(
-            &plan.actions[0],
-            PlannedAction::Skip {
-                reason: "unchanged",
-                ..
-            }
-        ));
     }
 
     #[test]

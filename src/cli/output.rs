@@ -134,7 +134,7 @@ fn print_sync_report_json(report: &SyncReport) {
 
     for outcome in &report.applied.outcomes {
         match outcome.action {
-            ActionTaken::Installed | ActionTaken::Symlinked => installed += 1,
+            ActionTaken::Installed => installed += 1,
             ActionTaken::Updated => updated += 1,
             ActionTaken::Merged => updated += 1,
             ActionTaken::Conflicted => conflicts += 1,
@@ -193,7 +193,7 @@ fn print_sync_report_human(report: &SyncReport, no_upgrade_hint: bool) {
     // Print per-item actions
     for outcome in &report.applied.outcomes {
         match outcome.action {
-            ActionTaken::Installed | ActionTaken::Symlinked => {
+            ActionTaken::Installed => {
                 installed += 1;
                 print_action_line(&mut stdout, "+", Color::Green, outcome);
             }

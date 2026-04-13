@@ -12,14 +12,12 @@ pub enum DestinationState {
     Empty,
     File { hash: ContentHash },
     Directory { hash: ContentHash },
-    Symlink { target: PathBuf },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DesiredState {
     CopyFile { source: PathBuf, hash: ContentHash },
     CopyDir { source: PathBuf, hash: ContentHash },
-    Symlink { target: PathBuf },
     Absent,
 }
 
@@ -71,11 +69,6 @@ pub fn reconcile_one(
             } if existing_hash == hash => Ok(ReconcileOutcome::Skipped {
                 reason: "already up-to-date",
             }),
-            DestinationState::Symlink { .. } => {
-                safe_remove(dest)?;
-                atomic_copy_file(&source, dest)?;
-                Ok(ReconcileOutcome::Updated)
-            }
             existing_state => {
                 if !force {
                     return Ok(ReconcileOutcome::Conflict {
@@ -98,11 +91,6 @@ pub fn reconcile_one(
             } if existing_hash == hash => Ok(ReconcileOutcome::Skipped {
                 reason: "already up-to-date",
             }),
-            DestinationState::Symlink { .. } => {
-                safe_remove(dest)?;
-                atomic_copy_dir(&source, dest)?;
-                Ok(ReconcileOutcome::Updated)
-            }
             existing_state => {
                 if !force {
                     return Ok(ReconcileOutcome::Conflict {
@@ -115,42 +103,15 @@ pub fn reconcile_one(
                 Ok(ReconcileOutcome::Updated)
             }
         },
-        DesiredState::Symlink { target } => match existing {
-            DestinationState::Symlink {
-                target: existing_target,
-            } if existing_target == target => Ok(ReconcileOutcome::Skipped {
-                reason: "already symlinked",
-            }),
-            DestinationState::Empty => {
-                atomic_symlink(dest, &target)?;
-                Ok(ReconcileOutcome::Created)
-            }
-            existing_state => {
-                if !force {
-                    return Ok(ReconcileOutcome::Conflict {
-                        existing: existing_state,
-                        desired: DesiredState::Symlink { target },
-                    });
-                }
-                safe_remove(dest)?;
-                atomic_symlink(dest, &target)?;
-                Ok(ReconcileOutcome::Updated)
-            }
-        },
     }
 }
 
 fn scan_destination_checked(path: &Path) -> Result<DestinationState, MarsError> {
-    let metadata = match std::fs::symlink_metadata(path) {
+    let metadata = match std::fs::metadata(path) {
         Ok(metadata) => metadata,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(DestinationState::Empty),
         Err(e) => return Err(e.into()),
     };
-
-    if metadata.file_type().is_symlink() {
-        let target = path.read_link()?;
-        return Ok(DestinationState::Symlink { target });
-    }
 
     if metadata.is_file() {
         return Ok(DestinationState::File {

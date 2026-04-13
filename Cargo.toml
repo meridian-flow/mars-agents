@@ -35,6 +35,9 @@ pathdiff = "0.2.3"
 walkdir = "2"
 which = "7"
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem", "Win32_Foundation", "Win32_System_IO"] }
+
 [dev-dependencies]
 assert_fs = "1"
 predicates = "3"

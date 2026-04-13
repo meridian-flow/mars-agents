@@ -52,70 +52,6 @@ pub fn atomic_copy_dir(source: &Path, dest: &Path) -> Result<(), MarsError> {
     Ok(())
 }
 
-/// Create a symlink atomically via tmp-symlink + rename.
-///
-/// Creates a temporary symlink in the same directory, then renames it into
-/// place. `rename(2)` atomically replaces whatever non-directory entry exists
-/// at the destination, avoiding the remove-then-create gap.
-pub fn atomic_symlink(link_path: &Path, target: &Path) -> Result<(), MarsError> {
-    #[cfg(unix)]
-    {
-        let parent = link_path.parent().unwrap_or(Path::new("."));
-        fs::create_dir_all(parent)?;
-
-        // Create temp symlink with a unique name in the same directory
-        let tmp = parent.join(format!(
-            ".mars-tmp-symlink-{}-{}",
-            std::process::id(),
-            link_path.file_name().unwrap_or_default().to_string_lossy()
-        ));
-
-        // Clean up any stale temp from a prior crash
-        let _ = fs::remove_file(&tmp);
-
-        std::os::unix::fs::symlink(target, &tmp).map_err(|e| MarsError::Link {
-            target: link_path.display().to_string(),
-            message: format!(
-                "failed to create symlink {} -> {}: {e}",
-                link_path.display(),
-                target.display()
-            ),
-        })?;
-
-        // rename(2) cannot replace a directory entry. Remove real directories first.
-        if let Ok(metadata) = link_path.symlink_metadata()
-            && metadata.is_dir()
-            && !metadata.file_type().is_symlink()
-        {
-            safe_remove(link_path)?;
-        }
-
-        // Atomic rename — replaces whatever non-directory entry exists at link_path.
-        if let Err(e) = fs::rename(&tmp, link_path) {
-            let _ = fs::remove_file(&tmp);
-            return Err(MarsError::Link {
-                target: link_path.display().to_string(),
-                message: format!(
-                    "failed to atomically place symlink {} -> {}: {e}",
-                    link_path.display(),
-                    target.display()
-                ),
-            });
-        }
-
-        Ok(())
-    }
-
-    #[cfg(not(unix))]
-    {
-        let _ = (link_path, target);
-        Err(MarsError::Link {
-            target: String::new(),
-            message: "symlinks are only supported on Unix".to_string(),
-        })
-    }
-}
-
 /// Remove a file or directory tree safely.
 pub fn safe_remove(path: &Path) -> Result<(), MarsError> {
     let metadata = match path.symlink_metadata() {
@@ -286,31 +222,6 @@ mod tests {
         assert_eq!(
             fs::read_to_string(dest.join("docs-link").join("guide.md")).expect("read guide"),
             "guide"
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn atomic_symlink_replaces_existing_directory() {
-        let dir = TempDir::new().expect("temp dir");
-        let link_path = dir.path().join("skills").join("planning");
-        fs::create_dir_all(&link_path).expect("create existing directory");
-        fs::write(link_path.join("SKILL.md"), "old").expect("write old content");
-
-        let source_dir = dir.path().join("local-skills").join("planning");
-        fs::create_dir_all(&source_dir).expect("create source dir");
-        fs::write(source_dir.join("SKILL.md"), "new").expect("write source content");
-
-        atomic_symlink(&link_path, &source_dir).expect("replace directory with symlink");
-
-        let meta = fs::symlink_metadata(&link_path).expect("symlink metadata");
-        assert!(
-            meta.file_type().is_symlink(),
-            "destination should be a symlink"
-        );
-        assert_eq!(
-            fs::read_to_string(link_path.join("SKILL.md")).expect("read via symlink"),
-            "new"
         );
     }
 }
