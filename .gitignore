@@ -4,5 +4,7 @@
 # Meridian workspace state
 .meridian/
 .agents/
+.mars/
 .codex
+mars.local.toml
 uv.lock

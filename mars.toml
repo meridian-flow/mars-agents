@@ -1,0 +1,5 @@
+[dependencies.meridian-dev-workflow]
+url = "https://github.com/meridian-flow/meridian-dev-workflow"
+
+[settings]
+models_cache_ttl_hours = 24
