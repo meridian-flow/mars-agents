@@ -1,6 +1,6 @@
 {
   "name": "@meridian-flow/mars-agents",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Mars — agent package manager for .agents/ directories",
   "license": "MIT",
   "repository": {
@@ -17,9 +17,9 @@
     "node": ">=16"
   },
   "optionalDependencies": {
-    "@meridian-flow/mars-agents-linux-x64": "0.1.1",
-    "@meridian-flow/mars-agents-linux-arm64": "0.1.1",
-    "@meridian-flow/mars-agents-darwin-arm64": "0.1.1",
-    "@meridian-flow/mars-agents-darwin-x64": "0.1.1"
+    "@meridian-flow/mars-agents-linux-x64": "0.1.2",
+    "@meridian-flow/mars-agents-linux-arm64": "0.1.2",
+    "@meridian-flow/mars-agents-darwin-arm64": "0.1.2",
+    "@meridian-flow/mars-agents-darwin-x64": "0.1.2"
   }
 }
