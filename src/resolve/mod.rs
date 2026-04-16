@@ -931,6 +931,7 @@ mod tests {
                 dep_name.to_string(),
                 ManifestDep {
                     url: SourceUrl::from(dep_url),
+                    subpath: None,
                     version: Some(dep_ver.to_string()),
                     filter: crate::config::FilterConfig::default(),
                 },
@@ -958,6 +959,7 @@ mod tests {
                 dep_name.to_string(),
                 ManifestDep {
                     url: SourceUrl::from(dep_url),
+                    subpath: None,
                     version: Some(dep_ver.to_string()),
                     filter: dep_filter,
                 },
@@ -1554,6 +1556,7 @@ mod tests {
             crate::lock::LockedSource {
                 url: Some("https://example.com/a.git".into()),
                 path: None,
+                subpath: None,
                 version: Some("v1.1.0".into()),
                 commit: Some("abc".into()),
                 tree_hash: None,
@@ -1592,6 +1595,7 @@ mod tests {
             crate::lock::LockedSource {
                 url: Some("https://example.com/a.git".into()),
                 path: None,
+                subpath: None,
                 version: Some("v1.0.0".into()),
                 commit: Some("abc".into()),
                 tree_hash: None,
@@ -1626,6 +1630,7 @@ mod tests {
             crate::lock::LockedSource {
                 url: Some("https://example.com/a.git".into()),
                 path: None,
+                subpath: None,
                 version: Some("v1.1.0".into()),
                 commit: Some(locked_commit.into()),
                 tree_hash: None,
@@ -1667,6 +1672,7 @@ mod tests {
             crate::lock::LockedSource {
                 url: Some("https://example.com/a.git".into()),
                 path: None,
+                subpath: None,
                 version: Some("v1.1.0".into()),
                 commit: Some(unreachable_commit.into()),
                 tree_hash: None,
@@ -1712,6 +1718,7 @@ mod tests {
             crate::lock::LockedSource {
                 url: Some("https://example.com/a.git".into()),
                 path: None,
+                subpath: None,
                 version: Some("v1.1.0".into()),
                 commit: Some(unreachable_commit.into()),
                 tree_hash: None,
@@ -1760,6 +1767,7 @@ mod tests {
             crate::lock::LockedSource {
                 url: Some("https://example.com/a.git".into()),
                 path: None,
+                subpath: None,
                 version: Some("v1.0.0".into()),
                 commit: Some(unreachable_commit.into()),
                 tree_hash: None,
@@ -2027,6 +2035,7 @@ mod tests {
             crate::lock::LockedSource {
                 url: Some("https://example.com/a.git".into()),
                 path: None,
+                subpath: None,
                 version: None,
                 commit: Some(locked_commit.into()),
                 tree_hash: None,
@@ -2064,6 +2073,7 @@ mod tests {
             crate::lock::LockedSource {
                 url: Some("https://example.com/a.git".into()),
                 path: None,
+                subpath: None,
                 version: None,
                 commit: Some(unreachable_commit.into()),
                 tree_hash: None,
@@ -2101,6 +2111,7 @@ mod tests {
             crate::lock::LockedSource {
                 url: Some("https://example.com/a.git".into()),
                 path: None,
+                subpath: None,
                 version: None,
                 commit: Some(unreachable_commit.into()),
                 tree_hash: None,

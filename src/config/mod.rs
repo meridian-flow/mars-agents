@@ -5,7 +5,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::diagnostic::{Diagnostic, DiagnosticLevel};
 use crate::error::{ConfigError, MarsError};
-use crate::types::{ItemName, RenameMap, SourceId, SourceName, SourceOrigin, SourceUrl};
+use crate::types::{
+    ItemName, RenameMap, SourceId, SourceName, SourceOrigin, SourceSubpath, SourceUrl,
+};
 
 /// Top-level mars.toml configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -38,6 +40,8 @@ pub struct InstallDep {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subpath: Option<SourceSubpath>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
     #[serde(flatten)]
     pub filter: FilterConfig,
@@ -51,6 +55,7 @@ pub type DependencyEntry = InstallDep;
 #[derive(Debug, Clone, PartialEq)]
 pub struct ManifestDep {
     pub url: SourceUrl,
+    pub subpath: Option<SourceSubpath>,
     pub version: Option<String>,
     pub filter: FilterConfig,
 }
@@ -281,6 +286,7 @@ pub fn load_manifest(source_root: &Path) -> Result<(Option<Manifest>, Vec<Diagno
                         name.to_string(),
                         ManifestDep {
                             url,
+                            subpath: entry.subpath,
                             version: entry.version,
                             filter: entry.filter,
                         },
@@ -967,6 +973,7 @@ path = "/home/dev/local-base"
                     DependencyEntry {
                         url: Some("https://github.com/org/base.git".into()),
                         path: None,
+                        subpath: None,
                         version: Some("v1.0".into()),
                         filter: FilterConfig::default(),
                     },
@@ -1001,6 +1008,7 @@ path = "/home/dev/local-base"
                     DependencyEntry {
                         url: Some("https://github.com/org/base.git".into()),
                         path: None,
+                        subpath: None,
                         version: Some("v1.0".into()),
                         filter: FilterConfig::default(),
                     },
@@ -1046,6 +1054,7 @@ path = "/home/dev/local-base"
                     DependencyEntry {
                         url: Some("https://github.com/org/base.git".into()),
                         path: None,
+                        subpath: None,
                         version: None,
                         filter: FilterConfig::default(),
                     },
@@ -1073,6 +1082,7 @@ path = "/home/dev/local-base"
                     DependencyEntry {
                         url: Some("https://github.com/org/base.git".into()),
                         path: None,
+                        subpath: None,
                         version: Some("v2.0".into()),
                         filter: FilterConfig::default(),
                     },
@@ -1302,6 +1312,7 @@ only_agents = true
             DependencyEntry {
                 url: Some("https://github.com/org/base.git".into()),
                 path: None,
+                subpath: None,
                 version: Some("v1.0".into()),
                 filter: FilterConfig::default(),
             },
@@ -1439,6 +1450,7 @@ exclude = ["deprecated"]
                     DependencyEntry {
                         url: Some("https://github.com/org/base.git".into()),
                         path: None,
+                        subpath: None,
                         version: None,
                         filter: FilterConfig::default(),
                     },

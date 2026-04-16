@@ -3,7 +3,7 @@ use std::borrow::Borrow;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::ops::Deref;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 macro_rules! string_newtype {
     ($(#[$meta:meta])* $name:ident) => {
@@ -103,6 +103,145 @@ string_newtype!(ItemName);
 string_newtype!(SourceUrl);
 string_newtype!(CommitHash);
 string_newtype!(ContentHash);
+
+/// Normalized relative package coordinate under a fetched source root.
+#[derive(Hash, Eq, PartialEq, Clone, Debug, Ord, PartialOrd)]
+pub struct SourceSubpath(String);
+
+impl SourceSubpath {
+    pub fn new(value: impl AsRef<str>) -> Result<Self, SourceSubpathError> {
+        let raw = value.as_ref();
+        if raw.is_empty() {
+            return Err(SourceSubpathError::Empty);
+        }
+
+        let normalized_separators = raw.replace('\\', "/");
+        if is_windows_absolute(&normalized_separators) {
+            return Err(SourceSubpathError::Absolute {
+                input: raw.to_string(),
+            });
+        }
+
+        let mut segments = Vec::new();
+        for component in Path::new(&normalized_separators).components() {
+            match component {
+                Component::Normal(seg) => segments.push(seg.to_string_lossy().into_owned()),
+                Component::CurDir => {}
+                Component::ParentDir => {
+                    return Err(SourceSubpathError::Escaping {
+                        input: raw.to_string(),
+                    });
+                }
+                Component::RootDir | Component::Prefix(_) => {
+                    return Err(SourceSubpathError::Absolute {
+                        input: raw.to_string(),
+                    });
+                }
+            }
+        }
+
+        if segments.is_empty() {
+            return Err(SourceSubpathError::Empty);
+        }
+
+        Ok(Self(segments.join("/")))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn as_path(&self) -> &Path {
+        Path::new(&self.0)
+    }
+
+    pub fn into_inner(self) -> String {
+        self.0
+    }
+
+    /// Join this relative subpath under `base`, rejecting traversal attempts.
+    pub fn join_under(&self, base: &Path) -> Result<PathBuf, SourceSubpathError> {
+        let mut joined = base.to_path_buf();
+        for component in self.as_path().components() {
+            match component {
+                Component::Normal(seg) => joined.push(seg),
+                Component::CurDir => {}
+                Component::ParentDir => {
+                    return Err(SourceSubpathError::Escaping {
+                        input: self.0.clone(),
+                    });
+                }
+                Component::RootDir | Component::Prefix(_) => {
+                    return Err(SourceSubpathError::Absolute {
+                        input: self.0.clone(),
+                    });
+                }
+            }
+        }
+
+        if joined.strip_prefix(base).is_err() {
+            return Err(SourceSubpathError::Escaping {
+                input: self.0.clone(),
+            });
+        }
+
+        Ok(joined)
+    }
+}
+
+impl fmt::Display for SourceSubpath {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl AsRef<str> for SourceSubpath {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl std::str::FromStr for SourceSubpath {
+    type Err = SourceSubpathError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::new(s)
+    }
+}
+
+impl Serialize for SourceSubpath {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for SourceSubpath {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = String::deserialize(deserializer)?;
+        SourceSubpath::new(value).map_err(serde::de::Error::custom)
+    }
+}
+
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum SourceSubpathError {
+    #[error("subpath cannot be empty")]
+    Empty,
+    #[error("subpath must be relative, got absolute value: {input:?}")]
+    Absolute { input: String },
+    #[error("subpath cannot escape package root: {input:?}")]
+    Escaping { input: String },
+}
+
+fn is_windows_absolute(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    if path.starts_with('/') {
+        return true;
+    }
+    if bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'/' {
+        return true;
+    }
+    false
+}
 
 /// Where an item came from — used for lock provenance and display.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -379,6 +518,7 @@ impl<'de> Deserialize<'de> for RenameMap {
 mod tests {
     use super::*;
     use serde::{Deserialize, Serialize};
+    use std::path::PathBuf;
 
     #[derive(Debug, Serialize, Deserialize, PartialEq)]
     struct Wrapper<T> {
@@ -412,5 +552,274 @@ mod tests {
         let serialized = toml::to_string(&parsed).unwrap();
         let reparsed: RenameWrapper = toml::from_str(&serialized).unwrap();
         assert_eq!(parsed, reparsed);
+    }
+
+    #[test]
+    fn source_subpath_normalizes_windows_and_unix_separators() {
+        let subpath = SourceSubpath::new(r"plugins\foo/bar\baz").unwrap();
+        assert_eq!(subpath.as_str(), "plugins/foo/bar/baz");
+    }
+
+    #[test]
+    fn source_subpath_rejects_empty() {
+        let err = SourceSubpath::new("").unwrap_err();
+        assert_eq!(err, SourceSubpathError::Empty);
+    }
+
+    #[test]
+    fn source_subpath_rejects_absolute() {
+        let err = SourceSubpath::new("/abs/path").unwrap_err();
+        assert!(matches!(err, SourceSubpathError::Absolute { .. }));
+    }
+
+    #[test]
+    fn source_subpath_rejects_root_only() {
+        let err = SourceSubpath::new("/").unwrap_err();
+        assert!(matches!(err, SourceSubpathError::Absolute { .. }));
+    }
+
+    #[test]
+    fn source_subpath_rejects_windows_absolute() {
+        let err = SourceSubpath::new(r"C:\abs\path").unwrap_err();
+        assert!(matches!(err, SourceSubpathError::Absolute { .. }));
+    }
+
+    #[test]
+    fn source_subpath_rejects_escape() {
+        let err = SourceSubpath::new("../escape").unwrap_err();
+        assert!(matches!(err, SourceSubpathError::Escaping { .. }));
+    }
+
+    #[test]
+    fn source_subpath_accepts_nested_relative_path() {
+        let subpath = SourceSubpath::new("a/b/c").unwrap();
+        assert_eq!(subpath.as_str(), "a/b/c");
+    }
+
+    #[test]
+    fn source_subpath_accepts_plugins_foo() {
+        let subpath = SourceSubpath::new("plugins/foo").unwrap();
+        assert_eq!(subpath.as_str(), "plugins/foo");
+    }
+
+    #[test]
+    fn source_subpath_serializes_with_forward_slashes() {
+        #[derive(Debug, Serialize, Deserialize, PartialEq)]
+        struct SubpathWrapper {
+            subpath: SourceSubpath,
+        }
+
+        let wrapper = SubpathWrapper {
+            subpath: SourceSubpath::new(r"plugins\foo").unwrap(),
+        };
+        let toml = toml::to_string(&wrapper).unwrap();
+        assert!(toml.contains("subpath = \"plugins/foo\""));
+    }
+
+    #[test]
+    fn source_subpath_join_under_base() {
+        let base = PathBuf::from("/tmp/mars");
+        let subpath = SourceSubpath::new("plugins/foo").unwrap();
+        let joined = subpath.join_under(&base).unwrap();
+        assert_eq!(joined, base.join("plugins").join("foo"));
+    }
+
+    #[test]
+    fn source_subpath_join_under_rejects_escape_path() {
+        let escaped = SourceSubpath(String::from("../escape"));
+        let err = escaped.join_under(Path::new("/tmp/base")).unwrap_err();
+        assert!(matches!(err, SourceSubpathError::Escaping { .. }));
+    }
+
+    // --- Additional edge cases ---
+
+    // Edge case 4: deeply nested path (5 levels)
+    #[test]
+    fn source_subpath_accepts_deeply_nested() {
+        let subpath = SourceSubpath::new("a/b/c/d/e").unwrap();
+        assert_eq!(subpath.as_str(), "a/b/c/d/e");
+    }
+
+    // Edge case 7: Windows drive letter with forward slash (C:/foo)
+    #[test]
+    fn source_subpath_rejects_windows_drive_forward_slash() {
+        let err = SourceSubpath::new("C:/foo").unwrap_err();
+        assert!(matches!(err, SourceSubpathError::Absolute { .. }));
+    }
+
+    // Edge case 9: "." alone — CurDir is skipped → segments empty → Empty error
+    #[test]
+    fn source_subpath_rejects_current_dir_dot() {
+        let err = SourceSubpath::new(".").unwrap_err();
+        assert_eq!(err, SourceSubpathError::Empty);
+    }
+
+    // Edge case 11: mid-path parent escape "a/../../escape" — hits ParentDir immediately after
+    // pushing "a", so it is rejected as Escaping (conservative: any ".." rejected)
+    #[test]
+    fn source_subpath_rejects_mid_path_double_parent_escape() {
+        let err = SourceSubpath::new("a/../../escape").unwrap_err();
+        assert!(matches!(err, SourceSubpathError::Escaping { .. }));
+    }
+
+    // Edge case 12: "a/b/../c" — conservative policy: any ".." is rejected as Escaping,
+    // even when logically harmless. This documents and pins the chosen policy.
+    #[test]
+    fn source_subpath_rejects_harmless_parent_in_middle() {
+        let err = SourceSubpath::new("a/b/../c").unwrap_err();
+        assert!(matches!(err, SourceSubpathError::Escaping { .. }));
+    }
+
+    // Edge case 13: trailing slash normalizes (no trailing slash in canonical form)
+    #[test]
+    fn source_subpath_normalizes_trailing_slash() {
+        let subpath = SourceSubpath::new("plugins/foo/").unwrap();
+        assert_eq!(subpath.as_str(), "plugins/foo");
+    }
+
+    // Edge case 14: leading "./" normalizes to the bare path
+    #[test]
+    fn source_subpath_normalizes_leading_dot_slash() {
+        let subpath = SourceSubpath::new("./plugins/foo").unwrap();
+        assert_eq!(subpath.as_str(), "plugins/foo");
+    }
+
+    // join_under: base path with trailing slash (PathBuf handles it consistently)
+    #[test]
+    fn source_subpath_join_under_base_with_trailing_slash() {
+        let base = PathBuf::from("/tmp/mars/");
+        let subpath = SourceSubpath::new("plugins/foo").unwrap();
+        let joined = subpath.join_under(&base).unwrap();
+        // PathBuf normalizes trailing slash — result should be /tmp/mars/plugins/foo
+        assert_eq!(joined, PathBuf::from("/tmp/mars/plugins/foo"));
+    }
+
+    // JSON serde round-trip: LockedSource without subpath → subpath = None
+    #[test]
+    fn locked_source_json_roundtrip_without_subpath() {
+        let json = r#"{"url":"https://github.com/org/base.git"}"#;
+        let parsed: crate::lock::LockedSource = serde_json::from_str(json).unwrap();
+        assert!(parsed.subpath.is_none());
+    }
+
+    // JSON serde round-trip: LockedSource with subpath serializes as forward-slash string
+    #[test]
+    fn locked_source_json_roundtrip_with_subpath() {
+        let source = crate::lock::LockedSource {
+            url: Some(SourceUrl::from("https://github.com/org/base.git")),
+            path: None,
+            subpath: Some(SourceSubpath::new("plugins/foo").unwrap()),
+            version: None,
+            commit: None,
+            tree_hash: None,
+        };
+        let json = serde_json::to_string(&source).unwrap();
+        assert!(json.contains("\"subpath\":\"plugins/foo\""));
+        let reparsed: crate::lock::LockedSource = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            reparsed.subpath.as_ref().map(SourceSubpath::as_str),
+            Some("plugins/foo")
+        );
+    }
+
+    // Backward compat: old lock TOML with no subpath field deserializes with subpath = None (RES-013)
+    #[test]
+    fn locked_source_toml_missing_subpath_field_is_none() {
+        let toml_str = r#"
+version = 1
+
+[dependencies.dep]
+url = "https://github.com/org/dep.git"
+commit = "deadbeef"
+"#;
+        let lock: crate::lock::LockFile = toml::from_str(toml_str).unwrap();
+        assert!(lock.dependencies["dep"].subpath.is_none());
+    }
+
+    // RES-014: LockedSource with subpath serializes the subpath field alongside other fields
+    #[test]
+    fn locked_source_toml_subpath_serializes_alongside_other_fields() {
+        let source = crate::lock::LockedSource {
+            url: Some(SourceUrl::from("https://github.com/org/base.git")),
+            path: None,
+            subpath: Some(SourceSubpath::new("plugins/foo").unwrap()),
+            version: Some("v1.0.0".to_string()),
+            commit: Some(CommitHash::from("abc123")),
+            tree_hash: None,
+        };
+        #[derive(Serialize)]
+        struct Wrapper {
+            source: crate::lock::LockedSource,
+        }
+        let serialized = toml::to_string(&Wrapper { source }).unwrap();
+        assert!(serialized.contains("subpath = \"plugins/foo\""));
+        assert!(serialized.contains("url = "));
+        assert!(serialized.contains("commit = "));
+    }
+
+    #[test]
+    fn lock_roundtrip_with_and_without_subpath() {
+        let old_lock = r#"
+version = 1
+
+[dependencies.base]
+url = "https://github.com/org/base.git"
+"#;
+        let parsed_old: crate::lock::LockFile = toml::from_str(old_lock).unwrap();
+        assert!(parsed_old.dependencies["base"].subpath.is_none());
+
+        let lock = crate::lock::LockFile {
+            version: 1,
+            dependencies: indexmap::IndexMap::from([(
+                SourceName::from("base"),
+                crate::lock::LockedSource {
+                    url: Some(SourceUrl::from("https://github.com/org/base.git")),
+                    path: None,
+                    subpath: Some(SourceSubpath::new(r"plugins\foo").unwrap()),
+                    version: Some("v1.2.3".to_string()),
+                    commit: Some(CommitHash::from("abc123")),
+                    tree_hash: None,
+                },
+            )]),
+            items: indexmap::IndexMap::new(),
+        };
+        let serialized = toml::to_string_pretty(&lock).unwrap();
+        assert!(serialized.contains("subpath = \"plugins/foo\""));
+        let reparsed: crate::lock::LockFile = toml::from_str(&serialized).unwrap();
+        assert_eq!(
+            reparsed.dependencies["base"]
+                .subpath
+                .as_ref()
+                .map(SourceSubpath::as_str),
+            Some("plugins/foo")
+        );
+    }
+
+    #[test]
+    fn config_roundtrip_preserves_subpath() {
+        let config = r#"
+[dependencies.base]
+url = "https://github.com/org/base.git"
+subpath = "plugins\\foo"
+"#;
+        let parsed: crate::config::Config = toml::from_str(config).unwrap();
+        assert_eq!(
+            parsed.dependencies["base"]
+                .subpath
+                .as_ref()
+                .map(SourceSubpath::as_str),
+            Some("plugins/foo")
+        );
+
+        let serialized = toml::to_string(&parsed).unwrap();
+        assert!(serialized.contains("subpath = \"plugins/foo\""));
+        let reparsed: crate::config::Config = toml::from_str(&serialized).unwrap();
+        assert_eq!(
+            reparsed.dependencies["base"]
+                .subpath
+                .as_ref()
+                .map(SourceSubpath::as_str),
+            Some("plugins/foo")
+        );
     }
 }

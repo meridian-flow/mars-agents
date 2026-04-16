@@ -1048,6 +1048,7 @@ mod tests {
         DependencyEntry {
             url: None,
             path: Some(path.to_path_buf()),
+            subpath: None,
             version: None,
             filter: FilterConfig::default(),
         }
@@ -1057,6 +1058,7 @@ mod tests {
         DependencyEntry {
             url: Some(url.into()),
             path: None,
+            subpath: None,
             version: Some(version.to_string()),
             filter,
         }
@@ -1352,6 +1354,7 @@ mod tests {
             DependencyEntry {
                 url: Some("https://example.com/floating.git".into()),
                 path: None,
+                subpath: None,
                 version: None,
                 filter: FilterConfig::default(),
             },

@@ -72,6 +72,7 @@ pub fn run(args: &AddArgs, ctx: &super::MarsContext, json: bool) -> Result<i32, 
             let entry = DependencyEntry {
                 url: parsed.entry.url,
                 path: parsed.entry.path,
+                subpath: parsed.entry.subpath,
                 version: parsed.entry.version,
                 filter: filter_config.clone(),
             };
@@ -189,6 +190,7 @@ fn parse_dependency_specifier(spec: &str) -> Result<ParsedDependency, MarsError>
         entry: DependencyEntry {
             url: parsed.url,
             path: parsed.path,
+            subpath: None,
             version: parsed.version,
             filter: FilterConfig::default(),
         },

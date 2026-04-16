@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{LockError, MarsError};
 use crate::types::{
-    CommitHash, ContentHash, DestPath, SourceId, SourceName, SourceOrigin, SourceUrl,
+    CommitHash, ContentHash, DestPath, SourceId, SourceName, SourceOrigin, SourceSubpath, SourceUrl,
 };
 
 /// The complete lock file — ownership registry for all managed items.
@@ -40,6 +40,8 @@ pub struct LockedSource {
     pub url: Option<SourceUrl>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subpath: Option<SourceSubpath>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -238,6 +240,7 @@ pub fn build(
             LockedSource {
                 url: None,
                 path: Some(".".into()),
+                subpath: None,
                 version: None,
                 commit: None,
                 tree_hash: None,
@@ -284,6 +287,7 @@ fn to_locked_source(node: &crate::resolve::ResolvedNode) -> LockedSource {
     LockedSource {
         url,
         path,
+        subpath: None,
         version: node.resolved_ref.version_tag.clone(),
         commit: node.resolved_ref.commit.clone(),
         tree_hash: None,
@@ -309,6 +313,7 @@ mod tests {
             LockedSource {
                 url: Some("https://github.com/org/base.git".into()),
                 path: None,
+                subpath: None,
                 version: Some("v1.0.0".into()),
                 commit: Some("abc123".into()),
                 tree_hash: Some("def456".into()),
@@ -551,6 +556,7 @@ dest_path = "agents/helper.md"
             LockedSource {
                 url: Some("https://example.com/old.git".into()),
                 path: None,
+                subpath: None,
                 version: Some("v0.0.1".into()),
                 commit: Some("deadbeef".into()),
                 tree_hash: None,
@@ -593,6 +599,7 @@ dest_path = "agents/helper.md"
                 LockedSource {
                     url: None,
                     path: Some(".".into()),
+                    subpath: None,
                     version: None,
                     commit: None,
                     tree_hash: None,

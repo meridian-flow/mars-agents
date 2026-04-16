@@ -195,6 +195,7 @@ mod tests {
         let entry1 = DependencyEntry {
             url: Some("https://github.com/org/base.git".into()),
             path: None,
+            subpath: None,
             version: Some("v1".into()),
             filter: FilterConfig {
                 agents: Some(vec!["reviewer".into()]),
@@ -215,6 +216,7 @@ mod tests {
         let entry2 = DependencyEntry {
             url: Some("https://github.com/org/base.git".into()),
             path: None,
+            subpath: None,
             version: Some("v1".into()),
             filter: FilterConfig {
                 only_skills: true,
@@ -245,6 +247,7 @@ mod tests {
         let entry1 = DependencyEntry {
             url: Some("https://github.com/org/base.git".into()),
             path: None,
+            subpath: None,
             version: Some("v1".into()),
             filter: FilterConfig {
                 agents: Some(vec!["coder".into()]),
@@ -264,6 +267,7 @@ mod tests {
         let entry2 = DependencyEntry {
             url: Some("https://github.com/org/base.git".into()),
             path: None,
+            subpath: None,
             version: Some("v2".into()),
             filter: FilterConfig::default(),
         };
@@ -294,6 +298,7 @@ mod tests {
         let entry1 = DependencyEntry {
             url: Some("https://github.com/org/base.git".into()),
             path: None,
+            subpath: None,
             version: None,
             filter: FilterConfig {
                 agents: Some(vec!["coder".into()]),
@@ -314,6 +319,7 @@ mod tests {
         let entry2 = DependencyEntry {
             url: Some("https://github.com/org/base.git".into()),
             path: None,
+            subpath: None,
             version: None,
             filter: FilterConfig {
                 only_skills: true,
@@ -351,6 +357,7 @@ mod tests {
                 DependencyEntry {
                     url: Some("https://github.com/org/base.git".into()),
                     path: None,
+                    subpath: None,
                     version: Some("v1".into()),
                     filter: FilterConfig::default(),
                 },
@@ -360,6 +367,7 @@ mod tests {
                 DependencyEntry {
                     url: Some("https://github.com/org/workflow.git".into()),
                     path: None,
+                    subpath: None,
                     version: Some("v2".into()),
                     filter: FilterConfig::default(),
                 },
@@ -378,6 +386,7 @@ mod tests {
         let entry1 = DependencyEntry {
             url: Some("https://github.com/org/base.git".into()),
             path: None,
+            subpath: None,
             version: Some("v1".into()),
             filter: FilterConfig {
                 agents: Some(vec!["reviewer".into()]),
@@ -396,6 +405,7 @@ mod tests {
         let entry2 = DependencyEntry {
             url: Some("https://github.com/org/base.git".into()),
             path: None,
+            subpath: None,
             version: Some("v2".into()),
             filter: FilterConfig {
                 only_skills: true,
