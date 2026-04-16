@@ -22,17 +22,18 @@ Caveman style. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [0.1.2] - 2026-04-16
 
 ### Added
-- Subpath source support for monorepo-style packages across local paths, GitHub sources, GitLab sources, and generic git sources.
-- Source parser coverage for GitHub aliases and tree URLs, GitLab aliases and tree URLs, generic git URLs, and explicit rejection of archive-download and direct file-download URLs.
-- Manual smoke-testing guide covering parser, discovery, transport, and sync regressions.
-- Mars project configuration for developing this repo with `meridian-dev-workflow`.
+- Subpath support. One repo can hold many packages.
+- Parser understands more source forms: GitHub, GitLab, generic git, local path.
+- Smoke testing guide added.
+- Repo now uses `meridian-dev-workflow` through Mars.
 
 ### Changed
-- Discovery fallback now uses explicit manifest-declared local paths first, then deterministic logical-layer selection with first-match precedence inside the selected layer.
-- `mars add` now supports explicit `--subpath` handling and rooted-source dependency naming.
-- User-facing command and configuration docs now describe `--subpath`, supported source forms, and rejection of unsupported download URLs.
+- Fallback discovery now does explicit paths first, then nearest non-empty layer.
+- Same-layer fallback picks first deterministic match.
+- `mars add` supports `--subpath`.
+- Docs now explain subpath and supported source forms.
 
 ### Fixed
-- Fallback discovery no longer fails on the `caveman` mirrored layout when installing `meridian-dev-workflow`.
-- GitLab-like source URLs now preserve explicit ports during normalization.
-- Source parser now satisfies clippy’s strict warning set in release preflight.
+- `meridian-dev-workflow` install no longer breaks on mirrored `caveman` layout.
+- GitLab-like URLs keep explicit ports.
+- Parser clippy failure fixed for release checks.
