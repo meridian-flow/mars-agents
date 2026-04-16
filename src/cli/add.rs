@@ -6,7 +6,7 @@ use crate::source::parse;
 use crate::sync::{
     ConfigMutation, DependencyUpsertChange, ResolutionMode, SyncOptions, SyncRequest,
 };
-use crate::types::{ItemName, SourceName};
+use crate::types::{ItemName, SourceName, SourceSubpath};
 
 use super::output;
 
@@ -16,6 +16,10 @@ pub struct AddArgs {
     /// Source specifiers (one or more): owner/repo, owner/repo@version, URL, or local path.
     #[arg(required = true)]
     pub sources: Vec<String>,
+
+    /// Root the fetched source at a package subdirectory.
+    #[arg(long)]
+    pub subpath: Option<String>,
 
     /// Only install specific agents from this source.
     #[arg(long, value_delimiter = ',')]
@@ -39,6 +43,7 @@ pub struct AddArgs {
 }
 
 /// Parsed dependency specifier.
+#[derive(Debug)]
 struct ParsedDependency {
     name: SourceName,
     entry: DependencyEntry,
@@ -58,6 +63,11 @@ pub fn run(args: &AddArgs, ctx: &super::MarsContext, json: bool) -> Result<i32, 
             message: "filters may only be used when adding exactly one source".to_string(),
         });
     }
+    if args.subpath.is_some() && args.sources.len() != 1 {
+        return Err(MarsError::InvalidRequest {
+            message: "--subpath requires exactly one source argument".to_string(),
+        });
+    }
 
     // Validate filter flag combinations early
     let filter_config = build_filter_config(args);
@@ -68,7 +78,7 @@ pub fn run(args: &AddArgs, ctx: &super::MarsContext, json: bool) -> Result<i32, 
         .sources
         .iter()
         .map(|source| {
-            let parsed = parse_dependency_specifier(source)?;
+            let parsed = parse_dependency_specifier(source, args.subpath.as_deref())?;
             let entry = DependencyEntry {
                 url: parsed.entry.url,
                 path: parsed.entry.path,
@@ -178,22 +188,70 @@ fn build_filter_config(args: &AddArgs) -> FilterConfig {
 /// - `github.com/owner/repo` → full git URL
 /// - `https://github.com/owner/repo.git` → full git URL
 /// - `./path` or `../path` or `/absolute` → local path
-fn parse_dependency_specifier(spec: &str) -> Result<ParsedDependency, MarsError> {
+fn parse_dependency_specifier(
+    spec: &str,
+    explicit_subpath: Option<&str>,
+) -> Result<ParsedDependency, MarsError> {
     let parsed = parse::parse(spec).map_err(|e| {
         MarsError::Config(ConfigError::Invalid {
             message: e.to_string(),
         })
     })?;
 
+    let explicit_subpath = explicit_subpath
+        .map(|value| {
+            SourceSubpath::new(value).map_err(|e| {
+                MarsError::Config(ConfigError::Invalid {
+                    message: e.to_string(),
+                })
+            })
+        })
+        .transpose()?;
+    let subpath = merge_subpath(parsed.subpath.clone(), explicit_subpath)?;
+    let name = derive_dependency_name(&parsed, subpath.as_ref())?;
+
     Ok(ParsedDependency {
-        name: SourceName::from(parsed.name),
+        name: SourceName::from(name),
         entry: DependencyEntry {
             url: parsed.url,
             path: parsed.path,
-            subpath: None,
+            subpath,
             version: parsed.version,
             filter: FilterConfig::default(),
         },
+    })
+}
+
+fn merge_subpath(
+    parsed_subpath: Option<SourceSubpath>,
+    explicit_subpath: Option<SourceSubpath>,
+) -> Result<Option<SourceSubpath>, MarsError> {
+    match (parsed_subpath, explicit_subpath) {
+        (Some(parsed), Some(explicit)) if parsed != explicit => Err(MarsError::InvalidRequest {
+            message: format!(
+                "conflicting subpath input: source provides `{parsed}` but --subpath provides `{explicit}`"
+            ),
+        }),
+        (Some(parsed), Some(_)) => Ok(Some(parsed)),
+        (Some(parsed), None) => Ok(Some(parsed)),
+        (None, Some(explicit)) => Ok(Some(explicit)),
+        (None, None) => Ok(None),
+    }
+}
+
+fn derive_dependency_name(
+    parsed: &parse::ParsedSourceSpec,
+    subpath: Option<&SourceSubpath>,
+) -> Result<String, MarsError> {
+    let root_name = parsed.name.split('/').next().ok_or_else(|| {
+        MarsError::Config(ConfigError::Invalid {
+            message: format!("cannot derive dependency name from `{}`", parsed.raw),
+        })
+    })?;
+
+    Ok(match subpath {
+        Some(subpath) => format!("{root_name}/{}", subpath.as_str()),
+        None => root_name.to_string(),
     })
 }
 
@@ -261,7 +319,7 @@ mod tests {
 
     #[test]
     fn parse_github_shorthand() {
-        let parsed = parse_dependency_specifier("meridian-flow/meridian-base").unwrap();
+        let parsed = parse_dependency_specifier("meridian-flow/meridian-base", None).unwrap();
         assert_eq!(parsed.name, "meridian-base");
         assert_eq!(
             parsed.entry.url.as_deref(),
@@ -273,7 +331,8 @@ mod tests {
 
     #[test]
     fn parse_github_shorthand_with_version() {
-        let parsed = parse_dependency_specifier("meridian-flow/meridian-base@v0.5.0").unwrap();
+        let parsed =
+            parse_dependency_specifier("meridian-flow/meridian-base@v0.5.0", None).unwrap();
         assert_eq!(parsed.name, "meridian-base");
         assert_eq!(
             parsed.entry.url.as_deref(),
@@ -285,7 +344,7 @@ mod tests {
     #[test]
     fn parse_full_url() {
         let parsed =
-            parse_dependency_specifier("github.com/meridian-flow/meridian-dev-workflow@v2")
+            parse_dependency_specifier("github.com/meridian-flow/meridian-dev-workflow@v2", None)
                 .unwrap();
         assert_eq!(parsed.name, "meridian-dev-workflow");
         assert_eq!(
@@ -298,7 +357,7 @@ mod tests {
     #[test]
     fn parse_https_url() {
         let parsed =
-            parse_dependency_specifier("https://github.com/someone/cool-agents.git").unwrap();
+            parse_dependency_specifier("https://github.com/someone/cool-agents.git", None).unwrap();
         assert_eq!(parsed.name, "cool-agents");
         assert_eq!(
             parsed.entry.url.as_deref(),
@@ -308,7 +367,8 @@ mod tests {
 
     #[test]
     fn parse_ssh_url() {
-        let parsed = parse_dependency_specifier("git@github.com:someone/cool-agents.git").unwrap();
+        let parsed =
+            parse_dependency_specifier("git@github.com:someone/cool-agents.git", None).unwrap();
         assert_eq!(parsed.name, "cool-agents");
         assert_eq!(
             parsed.entry.url.as_deref(),
@@ -320,18 +380,18 @@ mod tests {
     #[test]
     fn parse_ssh_url_keeps_at_suffix_in_path() {
         let parsed =
-            parse_dependency_specifier("git@github.com:someone/cool-agents.git@v2").unwrap();
-        assert_eq!(parsed.name, "cool-agents.git@v2");
+            parse_dependency_specifier("git@github.com:someone/cool-agents.git@v2", None).unwrap();
+        assert_eq!(parsed.name, "cool-agents");
         assert_eq!(
             parsed.entry.url.as_deref(),
-            Some("git@github.com:someone/cool-agents.git@v2")
+            Some("git@github.com:someone/cool-agents.git")
         );
-        assert!(parsed.entry.version.is_none());
+        assert_eq!(parsed.entry.version.as_deref(), Some("v2"));
     }
 
     #[test]
     fn parse_local_path_relative() {
-        let parsed = parse_dependency_specifier("./my-agents").unwrap();
+        let parsed = parse_dependency_specifier("./my-agents", None).unwrap();
         assert_eq!(parsed.name, "my-agents");
         assert!(parsed.entry.url.is_none());
         assert_eq!(parsed.entry.path.as_deref(), Some(Path::new("./my-agents")));
@@ -339,7 +399,7 @@ mod tests {
 
     #[test]
     fn parse_local_path_parent() {
-        let parsed = parse_dependency_specifier("../meridian-dev-workflow").unwrap();
+        let parsed = parse_dependency_specifier("../meridian-dev-workflow", None).unwrap();
         assert_eq!(parsed.name, "meridian-dev-workflow");
         assert!(parsed.entry.url.is_none());
         assert_eq!(
@@ -350,13 +410,41 @@ mod tests {
 
     #[test]
     fn parse_local_path_absolute() {
-        let parsed = parse_dependency_specifier("/home/dev/agents").unwrap();
+        let parsed = parse_dependency_specifier("/home/dev/agents", None).unwrap();
         assert_eq!(parsed.name, "agents");
         assert!(parsed.entry.url.is_none());
         assert_eq!(
             parsed.entry.path.as_deref(),
             Some(Path::new("/home/dev/agents"))
         );
+    }
+
+    #[test]
+    fn parse_source_embedded_subpath() {
+        let parsed = parse_dependency_specifier("owner/repo/plugins/foo", None).unwrap();
+        assert_eq!(parsed.name, "repo/plugins/foo");
+        assert_eq!(
+            parsed.entry.subpath.as_ref().map(SourceSubpath::as_str),
+            Some("plugins/foo")
+        );
+    }
+
+    #[test]
+    fn parse_explicit_subpath_merges_when_source_has_none() {
+        let parsed =
+            parse_dependency_specifier("gitlab:group/subgroup/repo", Some("plugins/foo")).unwrap();
+        assert_eq!(parsed.name, "repo/plugins/foo");
+        assert_eq!(
+            parsed.entry.subpath.as_ref().map(SourceSubpath::as_str),
+            Some("plugins/foo")
+        );
+    }
+
+    #[test]
+    fn conflicting_subpath_is_rejected() {
+        let err =
+            parse_dependency_specifier("owner/repo/plugins/foo", Some("plugins/bar")).unwrap_err();
+        assert!(matches!(err, MarsError::InvalidRequest { .. }));
     }
 
     #[test]

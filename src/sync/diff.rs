@@ -62,7 +62,9 @@ pub fn compute(
     for (_dest_key, target_item) in &target.items {
         if let Some(locked_item) = lock.items.get(&target_item.dest_path) {
             // Item exists in lock — compare checksums
-            let source_changed = target_item.source_hash != locked_item.source_checksum;
+            let source_changed = target_item.source_hash != locked_item.source_checksum
+                || rewritten_installed_checksum(target_item)
+                    .is_some_and(|checksum| checksum != locked_item.installed_checksum);
 
             // Check disk hash against the expected baseline.
             // In --force mode, baseline is source_checksum so conflicted files
@@ -145,6 +147,13 @@ pub fn compute(
     }
 
     Ok(SyncDiff { items })
+}
+
+fn rewritten_installed_checksum(target_item: &TargetItem) -> Option<ContentHash> {
+    target_item
+        .rewritten_content
+        .as_ref()
+        .map(|content| ContentHash::from(hash::hash_bytes(content.as_bytes())))
 }
 
 #[cfg(test)]
@@ -593,5 +602,70 @@ mod tests {
 
         let forced = compute(root.path(), &lock, &target, true).unwrap();
         assert!(matches!(&forced.items[0], DiffEntry::LocalModified { .. }));
+    }
+
+    #[test]
+    fn rewritten_content_change_produces_update() {
+        let root = TempDir::new().unwrap();
+
+        let source_content = b"---\nskills:\n- planning\n---\n# Agent\n";
+        let source_hash = hash::hash_bytes(source_content);
+        let old_installed_content = b"---\nskills:\n- planning\n---\n# Agent\n";
+        let old_installed_hash = hash::hash_bytes(old_installed_content);
+        let rewritten_content = "---\nskills:\n- strategy\n---\n# Agent\n";
+        let rewritten_hash = hash::hash_bytes(rewritten_content.as_bytes());
+
+        let agents_dir = root.path().join("agents");
+        fs::create_dir_all(&agents_dir).unwrap();
+        fs::write(agents_dir.join("coder.md"), old_installed_content).unwrap();
+
+        let mut target_items = IndexMap::new();
+        target_items.insert(
+            "agents/coder.md".into(),
+            TargetItem {
+                id: ItemId {
+                    kind: ItemKind::Agent,
+                    name: "coder".into(),
+                },
+                source_name: SourceName::from("test-source"),
+                origin: crate::types::SourceOrigin::Dependency(SourceName::from("test-source")),
+                source_id: crate::types::SourceId::Path {
+                    canonical: PathBuf::from("/tmp/source/agents/coder.md"),
+                    subpath: None,
+                },
+                source_path: PathBuf::from("/tmp/source/agents/coder.md"),
+                dest_path: "agents/coder.md".into(),
+                source_hash: source_hash.clone().into(),
+                is_flat_skill: false,
+                rewritten_content: Some(rewritten_content.to_string()),
+            },
+        );
+        let target = TargetState {
+            items: target_items,
+        };
+
+        let mut lock_items = IndexMap::new();
+        lock_items.insert(
+            "agents/coder.md".into(),
+            LockedItem {
+                source: SourceName::from("test-source"),
+                kind: ItemKind::Agent,
+                version: None,
+                source_checksum: source_hash.into(),
+                installed_checksum: old_installed_hash.clone().into(),
+                dest_path: "agents/coder.md".into(),
+            },
+        );
+        let lock = LockFile {
+            version: 1,
+            dependencies: IndexMap::new(),
+            items: lock_items,
+        };
+
+        let diff = compute(root.path(), &lock, &target, false).unwrap();
+        assert_eq!(diff.items.len(), 1);
+        assert!(matches!(&diff.items[0], DiffEntry::Update { .. }));
+
+        assert_ne!(rewritten_hash, old_installed_hash);
     }
 }

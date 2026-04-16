@@ -67,7 +67,20 @@ Each dependency must have exactly one of `url` or `path` (not both, not neither)
 |---|---|---|
 | `url` | string | Git URL (HTTPS, SSH, or GitHub shorthand expanded to HTTPS) |
 | `path` | string | Local filesystem path (relative to project root or absolute) |
+| `subpath` | string | Optional package root under the fetched repo or local path |
 | `version` | string | Version constraint for git sources (see [Version Constraints](#version-constraints)) |
+
+`subpath` is the explicit escape hatch for monorepo packages. When omitted, Mars discovers from the source root itself.
+
+Supported source forms in v1:
+- GitHub shorthand, `github:` aliases, repo URLs, and tree URLs
+- GitLab `gitlab:` aliases, repo URLs, and tree URLs, including subgroup and custom-host forms
+- Generic git SSH or `git://` URLs
+- Local filesystem paths
+
+Explicitly unsupported in v1:
+- archive-download URLs such as `.zip`, `.tar.gz`, or similar
+- direct file-download URLs such as `raw` or individual `SKILL.md` links
 
 #### Filter fields
 

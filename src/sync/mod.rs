@@ -25,7 +25,7 @@ use crate::resolve::{ResolveOptions, ResolvedGraph};
 use crate::source::GlobalCache;
 use crate::sync::apply::ApplyResult;
 pub use crate::sync::apply::SyncOptions;
-use crate::sync::target::{RenameAction, TargetItem, TargetState};
+use crate::sync::target::{ExplicitSkillRename, TargetItem, TargetState};
 use crate::types::{ContentHash, DestPath, MarsContext, SourceId, SourceName, SourceOrigin};
 use crate::validate::ValidationWarning;
 
@@ -106,7 +106,7 @@ pub struct ResolvedState {
 pub struct TargetedState {
     pub resolved: ResolvedState,
     pub target: TargetState,
-    pub renames: Vec<RenameAction>,
+    pub renames: Vec<ExplicitSkillRename>,
     pub warnings: Vec<ValidationWarning>,
 }
 
@@ -276,8 +276,10 @@ fn build_target(
             subpath: None,
         };
 
-        let local_items =
-            discover::discover_source(&ctx.project_root, Some(local_source_name.as_str()))?;
+        let local_items = discover::discover_resolved_source(
+            &ctx.project_root,
+            Some(local_source_name.as_str()),
+        )?;
         for item in local_items {
             let source_path = ctx.project_root.join(&item.source_path);
             let is_flat_skill =

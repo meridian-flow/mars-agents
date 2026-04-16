@@ -1062,6 +1062,75 @@ fn rename_applies_path_mapping_during_sync() {
 }
 
 #[test]
+fn rename_skill_rewrites_agent_skill_references() {
+    let dir = TempDir::new().unwrap();
+    let source = create_source(
+        &dir,
+        "base",
+        &[(
+            "coder",
+            "---\nname: coder\ndescription: test agent\nskills:\n  - planning\n---\n# Coder\n",
+        )],
+        &[("planning", "# Planning skill")],
+    );
+
+    let project_root = dir.child("project");
+    let agents_dir = project_root.child(".agents");
+
+    mars()
+        .args(["init", "--root", project_root.path().to_str().unwrap()])
+        .assert()
+        .success();
+
+    mars()
+        .args([
+            "add",
+            source.to_str().unwrap(),
+            "--root",
+            project_root.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    mars()
+        .args([
+            "rename",
+            "skills/planning",
+            "skills/strategy",
+            "--root",
+            project_root.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    agents_dir
+        .child("skills")
+        .child("strategy")
+        .child("SKILL.md")
+        .assert(predicate::path::exists());
+    agents_dir
+        .child("skills")
+        .child("planning")
+        .assert(predicate::path::missing());
+
+    let agent_content = fs::read_to_string(agents_dir.child("agents").child("coder.md").path())
+        .expect("expected installed agent");
+    assert!(
+        agent_content.contains("- strategy"),
+        "expected renamed skill ref in agent frontmatter, got:\n{agent_content}"
+    );
+    assert!(
+        !agent_content.contains("- planning"),
+        "old skill ref should be removed after rename, got:\n{agent_content}"
+    );
+
+    mars()
+        .args(["doctor", "--root", project_root.path().to_str().unwrap()])
+        .assert()
+        .success();
+}
+
+#[test]
 fn init_with_root_uses_resolved_root_path_in_message() {
     let dir = TempDir::new().unwrap();
     let project = dir.child("proj");

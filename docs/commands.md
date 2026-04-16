@@ -59,6 +59,7 @@ mars add <source...> [filter flags]
 
 | Flag | Description |
 |---|---|
+| `--subpath PATH` | Install from a package rooted under a subdirectory (requires exactly one source) |
 | `--agents NAME,...` | Install only named agents (include mode) |
 | `--skills NAME,...` | Install only named skills (include mode) |
 | `--exclude NAME,...` | Exclude named items |
@@ -66,9 +67,15 @@ mars add <source...> [filter flags]
 | `--only-agents` | Install only agents + transitive skill dependencies (skills those agents declare in frontmatter) |
 
 **Rules:**
+- `--subpath` requires exactly one source.
 - Filter flags require exactly one source. Multi-source add is only for whole-source installs.
 - Re-adding an existing dependency updates it. Filter fields are replaced atomically when any filter flag is present; version-only changes preserve existing filters.
-- Source specifiers: `owner/repo`, `owner/repo@version`, URLs, local paths.
+- Source specifiers:
+  - GitHub: `owner/repo`, `owner/repo/plugins/foo`, `github:owner/repo`, `https://github.com/owner/repo/tree/main/plugins/foo`
+  - GitLab: `gitlab:group/subgroup/repo`, `https://gitlab.example.com/group/subgroup/repo`, `https://gitlab.example.com/group/subgroup/repo/-/tree/main/plugins/foo`
+  - Generic git: `git@example.com:org/repo.git`, `git://host/org/repo.git`
+  - Local paths
+- Archive-download and direct file-download URLs are rejected in v1.
 
 Dependency naming model:
 - `mars add` uses the source specifier to derive a dependency name (for example, `meridian-flow/meridian-base` -> `meridian-base`).
@@ -78,7 +85,10 @@ Dependency naming model:
 ```bash
 mars add meridian-flow/meridian-base
 mars add meridian-flow/meridian-base@^1.0
+mars add meridian-flow/meridian-base/plugins/foo
+mars add gitlab:group/subgroup/repo --subpath plugins/foo
 mars add ../my-local-agents
+mars add ../monorepo --subpath packages/agents
 mars add acme/ops --agents deployer,monitor
 mars add acme/toolkit --only-skills
 mars add source1 source2          # Multi-source (no filters)

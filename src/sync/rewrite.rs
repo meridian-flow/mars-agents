@@ -12,7 +12,7 @@ use crate::error::MarsError;
 use crate::frontmatter;
 use crate::lock::ItemKind;
 use crate::resolve::ResolvedGraph;
-use crate::sync::target::{RenameAction, TargetState};
+use crate::sync::target::{ExplicitSkillRename, TargetState};
 use crate::types::{DestPath, ItemName, SourceName};
 
 /// Rewrite frontmatter skill references for renamed transitive deps.
@@ -22,7 +22,7 @@ use crate::types::{DestPath, ItemName, SourceName};
 /// to point at the correct renamed version.
 pub fn rewrite_skill_refs(
     target: &mut TargetState,
-    renames: &[RenameAction],
+    renames: &[ExplicitSkillRename],
     graph: &ResolvedGraph,
 ) -> Result<Vec<String>, MarsError> {
     let mut warnings = Vec::new();
@@ -118,7 +118,7 @@ mod tests {
     use crate::hash;
     use crate::lock::{ItemId, ItemKind};
     use crate::resolve::ResolvedGraph;
-    use crate::sync::target::{RenameAction, TargetItem, TargetState};
+    use crate::sync::target::{ExplicitSkillRename, TargetItem, TargetState};
     use crate::types::SourceId;
     use indexmap::IndexMap;
     use std::fs;
@@ -184,7 +184,7 @@ mod tests {
         );
 
         let mut target = TargetState { items };
-        let renames = vec![RenameAction {
+        let renames = vec![ExplicitSkillRename {
             original_name: "plan".into(),
             new_name: "plan__org_base".into(),
             source_name: "source-a".into(),
@@ -236,7 +236,7 @@ mod tests {
         );
 
         let mut target = TargetState { items };
-        let renames = vec![RenameAction {
+        let renames = vec![ExplicitSkillRename {
             original_name: "plan".into(),
             new_name: "plan__org_base".into(),
             source_name: "source-a".into(),
@@ -335,12 +335,12 @@ mod tests {
 
         let mut target = TargetState { items };
         let renames = vec![
-            RenameAction {
+            ExplicitSkillRename {
                 original_name: "planning".into(),
                 new_name: "planning__org_b".into(),
                 source_name: "source-b".into(),
             },
-            RenameAction {
+            ExplicitSkillRename {
                 original_name: "planning".into(),
                 new_name: "planning__org_c".into(),
                 source_name: "source-c".into(),

@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use indexmap::IndexMap;
@@ -42,9 +42,9 @@ pub struct TargetItem {
     pub rewritten_content: Option<String>,
 }
 
-/// Rename action produced by collision detection.
+/// Explicit skill rename that changes the installed skill name.
 #[derive(Debug, Clone)]
-pub struct RenameAction {
+pub struct ExplicitSkillRename {
     pub original_name: ItemName,
     pub new_name: ItemName,
     pub source_name: SourceName,
@@ -52,21 +52,24 @@ pub struct RenameAction {
 
 /// Build target state with collision detection integrated.
 ///
-/// This is the main entry point — it builds the target, detects collisions,
-/// applies auto-renames, and returns both the target state and rename actions.
+/// This is the main entry point — it builds the target, applies explicit
+/// rename mappings, and raises hard collisions when two sources want the same
+/// destination.
 pub fn build_with_collisions(
     graph: &ResolvedGraph,
     config: &EffectiveConfig,
-) -> Result<(TargetState, Vec<RenameAction>), MarsError> {
-    // Phase 1: Collect all items without dedup
-    let mut all_items: Vec<TargetItem> = Vec::new();
+) -> Result<(TargetState, Vec<ExplicitSkillRename>), MarsError> {
+    let mut items: IndexMap<DestPath, TargetItem> = IndexMap::new();
+    let mut explicit_skill_renames = Vec::new();
 
     for source_name in &graph.order {
         let node = &graph.nodes[source_name];
         let source_config = config.dependencies.get(source_name);
 
-        let discovered =
-            discover::discover_source(&node.rooted_ref.package_root, Some(source_name.as_str()))?;
+        let discovered = discover::discover_resolved_source(
+            &node.rooted_ref.package_root,
+            Some(source_name.as_str()),
+        )?;
 
         let source_id = source_config
             .map(|s| s.id.clone())
@@ -101,8 +104,15 @@ pub fn build_with_collisions(
             };
 
             let (dest_name, dest_path) = apply_item_rename(item.id.kind, &item.id.name, &renames);
+            if item.id.kind == ItemKind::Skill && dest_name != item.id.name {
+                explicit_skill_renames.push(ExplicitSkillRename {
+                    original_name: item.id.name.clone(),
+                    new_name: dest_name.clone(),
+                    source_name: source_name.clone(),
+                });
+            }
 
-            all_items.push(TargetItem {
+            let target_item = TargetItem {
                 id: ItemId {
                     kind: item.id.kind,
                     name: dest_name,
@@ -115,61 +125,21 @@ pub fn build_with_collisions(
                 source_hash,
                 is_flat_skill,
                 rewritten_content: None,
-            });
+            };
+
+            if let Some(existing) = items.get(&target_item.dest_path) {
+                return Err(MarsError::Collision {
+                    item: format!("{} `{}`", target_item.id.kind, target_item.id.name),
+                    source_a: existing.source_name.to_string(),
+                    source_b: target_item.source_name.to_string(),
+                });
+            }
+
+            items.insert(target_item.dest_path.clone(), target_item);
         }
     }
 
-    // Phase 2: Detect collisions on dest_path
-    let mut dest_counts: HashMap<DestPath, Vec<usize>> = HashMap::new();
-    for (idx, item) in all_items.iter().enumerate() {
-        let key = item.dest_path.clone();
-        dest_counts.entry(key).or_default().push(idx);
-    }
-
-    let mut rename_actions = Vec::new();
-
-    // Phase 3: Apply auto-rename for collisions
-    for indices in dest_counts.values() {
-        if indices.len() <= 1 {
-            continue;
-        }
-
-        // Collision detected — rename all colliding items
-        for &idx in indices {
-            let item = &all_items[idx];
-            let original_name = item.id.name.clone();
-
-            // Extract owner_repo suffix from source URL or source name
-            let suffix = extract_owner_repo_from_id(&item.source_id, &item.source_name);
-            let new_name = format!("{original_name}__{suffix}");
-            let new_item_name = ItemName::from(new_name.clone());
-
-            let new_dest_path = DestPath::from(match item.id.kind {
-                ItemKind::Agent => PathBuf::from("agents").join(format!("{new_name}.md")),
-                ItemKind::Skill => PathBuf::from("skills").join(&new_name),
-            });
-
-            rename_actions.push(RenameAction {
-                original_name: original_name.clone(),
-                new_name: new_item_name.clone(),
-                source_name: item.source_name.clone(),
-            });
-
-            // Apply rename in-place
-            let item_mut = &mut all_items[idx];
-            item_mut.id.name = new_item_name;
-            item_mut.dest_path = new_dest_path;
-        }
-    }
-
-    // Phase 4: Build final TargetState from (possibly renamed) items
-    let mut items = IndexMap::new();
-    for item in all_items {
-        let key = item.dest_path.clone();
-        items.insert(key, item);
-    }
-
-    Ok((TargetState { items }, rename_actions))
+    Ok((TargetState { items }, explicit_skill_renames))
 }
 
 fn apply_filter_union(
@@ -304,51 +274,6 @@ fn dest_name_from_path(kind: ItemKind, path: &Path) -> String {
     }
 }
 
-/// Extract `{owner}_{repo}` from a source URL.
-///
-/// For git URLs like `github.com/meridian-flow/meridian-base`, extracts `meridian-flow_meridian-base`.
-/// For path sources, uses the source name directly.
-pub fn extract_owner_repo(url: Option<&str>, source_name: &str) -> String {
-    if let Some(url) = url {
-        // Try to extract from URL patterns:
-        // github.com/owner/repo, https://github.com/owner/repo.git, etc.
-        let cleaned = url.trim_end_matches('/').trim_end_matches(".git");
-
-        // Strip protocol
-        let without_proto = cleaned
-            .strip_prefix("https://")
-            .or_else(|| cleaned.strip_prefix("http://"))
-            .or_else(|| cleaned.strip_prefix("ssh://"))
-            .or_else(|| cleaned.strip_prefix("git://"))
-            .unwrap_or(cleaned);
-
-        // Handle git@ SSH format: git@github.com:owner/repo
-        let normalized = if let Some(rest) = without_proto.strip_prefix("git@") {
-            rest.replacen(':', "/", 1)
-        } else {
-            without_proto.to_string()
-        };
-
-        // Split by '/' and take last two parts as owner/repo
-        let parts: Vec<&str> = normalized.split('/').collect();
-        if parts.len() >= 2 {
-            let owner = parts[parts.len() - 2];
-            let repo = parts[parts.len() - 1];
-            return format!("{owner}_{repo}");
-        }
-    }
-
-    // Fallback: use source name
-    source_name.to_string()
-}
-
-fn extract_owner_repo_from_id(source_id: &SourceId, source_name: &str) -> String {
-    match source_id {
-        SourceId::Git { url, .. } => extract_owner_repo(Some(url.as_ref()), source_name),
-        SourceId::Path { .. } => extract_owner_repo(None, source_name),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -468,53 +393,6 @@ mod tests {
         (graph, config)
     }
 
-    // === extract_owner_repo tests ===
-
-    #[test]
-    fn extract_github_https_url() {
-        let result = extract_owner_repo(
-            Some("https://github.com/meridian-flow/meridian-base"),
-            "base",
-        );
-        assert_eq!(result, "meridian-flow_meridian-base");
-    }
-
-    #[test]
-    fn extract_github_https_with_git_suffix() {
-        let result = extract_owner_repo(
-            Some("https://github.com/meridian-flow/meridian-base.git"),
-            "base",
-        );
-        assert_eq!(result, "meridian-flow_meridian-base");
-    }
-
-    #[test]
-    fn extract_github_ssh_url() {
-        let result = extract_owner_repo(
-            Some("git@github.com:meridian-flow/meridian-base.git"),
-            "base",
-        );
-        assert_eq!(result, "meridian-flow_meridian-base");
-    }
-
-    #[test]
-    fn extract_bare_github_url() {
-        let result = extract_owner_repo(Some("github.com/someone/cool-agents"), "cool");
-        assert_eq!(result, "someone_cool-agents");
-    }
-
-    #[test]
-    fn extract_fallback_to_source_name() {
-        let result = extract_owner_repo(None, "my-source");
-        assert_eq!(result, "my-source");
-    }
-
-    #[test]
-    fn extract_from_short_url() {
-        let result = extract_owner_repo(Some("single-segment"), "fallback");
-        assert_eq!(result, "fallback");
-    }
-
     // === Target build tests ===
 
     #[test]
@@ -563,7 +441,7 @@ mod tests {
     // === Collision tests ===
 
     #[test]
-    fn collision_auto_renames_both() {
+    fn collision_errors_instead_of_auto_renaming() {
         let tree1 = make_source_tree(&[("coder.md", "# coder from source 1")], &[]);
         let tree2 = make_source_tree(&[("coder.md", "# coder from source 2")], &[]);
 
@@ -582,14 +460,8 @@ mod tests {
             ),
         ]);
 
-        let (target, renames) = build_with_collisions(&graph, &config).unwrap();
-        assert_eq!(renames.len(), 2);
-        assert_eq!(target.items.len(), 2);
-
-        // Both should have been renamed
-        let names: Vec<&str> = target.items.values().map(|i| i.id.name.as_str()).collect();
-        assert!(names.contains(&"coder__alice_agents"));
-        assert!(names.contains(&"coder__bob_agents"));
+        let err = build_with_collisions(&graph, &config).unwrap_err();
+        assert!(matches!(err, MarsError::Collision { .. }));
     }
 
     #[test]

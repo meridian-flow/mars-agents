@@ -87,7 +87,7 @@ fn check_dir(base: &Path) -> Result<CheckReport, MarsError> {
     let mut errors: Vec<String> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
 
-    let discovered = discover::discover_source(base, None)?;
+    let discovered = discover::discover_resolved_source(base, None)?;
 
     // ── Validate discovered agents/skills ────────────────────────────
     let mut agent_names: HashMap<String, PathBuf> = HashMap::new();

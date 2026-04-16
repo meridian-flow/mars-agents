@@ -85,6 +85,69 @@ pub enum MarsError {
         message: String,
     },
 
+    #[error(
+        "source error: {source_name}: subpath `{subpath}` escapes checkout root `{}`",
+        checkout_root.display()
+    )]
+    SubpathTraversal {
+        source_name: String,
+        subpath: String,
+        checkout_root: PathBuf,
+    },
+
+    #[error(
+        "source error: {source_name}: subpath `{subpath}` does not exist under checkout root `{}`",
+        checkout_root.display()
+    )]
+    SubpathMissing {
+        source_name: String,
+        subpath: String,
+        checkout_root: PathBuf,
+    },
+
+    #[error(
+        "source error: {source_name}: subpath `{subpath}` is not a directory under checkout root `{}`",
+        checkout_root.display()
+    )]
+    SubpathNotDirectory {
+        source_name: String,
+        subpath: String,
+        checkout_root: PathBuf,
+    },
+
+    #[error(
+        "discovery collision in `{source_name}`: {kind} `{item_name}` found at `{}` and `{}`",
+        path_a.display(),
+        path_b.display()
+    )]
+    DiscoveryCollision {
+        source_name: String,
+        kind: String,
+        item_name: String,
+        path_a: PathBuf,
+        path_b: PathBuf,
+    },
+
+    #[error(
+        "source error: {source_name}: plugin manifest path `{manifest_path}` escapes package root `{}`",
+        package_root.display()
+    )]
+    ManifestDeclaredPathEscape {
+        source_name: String,
+        manifest_path: String,
+        package_root: PathBuf,
+    },
+
+    #[error(
+        "source error: {source_name}: plugin manifest path `{manifest_path}` does not exist under package root `{}`",
+        package_root.display()
+    )]
+    ManifestDeclaredPathMissing {
+        source_name: String,
+        manifest_path: String,
+        package_root: PathBuf,
+    },
+
     /// Sync refused to overwrite a file/directory not tracked in mars.lock.
     #[error("source error: {source_name}: refusing to overwrite unmanaged path `{}`", path.display())]
     UnmanagedCollision { source_name: String, path: PathBuf },
@@ -158,6 +221,12 @@ impl MarsError {
             | MarsError::FrozenViolation { .. }
             | MarsError::LockedCommitUnreachable { .. } => 2,
             MarsError::Source { .. }
+            | MarsError::SubpathTraversal { .. }
+            | MarsError::SubpathMissing { .. }
+            | MarsError::SubpathNotDirectory { .. }
+            | MarsError::DiscoveryCollision { .. }
+            | MarsError::ManifestDeclaredPathEscape { .. }
+            | MarsError::ManifestDeclaredPathMissing { .. }
             | MarsError::UnmanagedCollision { .. }
             | MarsError::ModelCacheUnavailable { .. }
             | MarsError::Io(_)
@@ -239,6 +308,56 @@ mod tests {
                 MarsError::Source {
                     source_name: "origin".to_string(),
                     message: "network failed".to_string(),
+                },
+                3,
+            ),
+            (
+                MarsError::SubpathTraversal {
+                    source_name: "origin".to_string(),
+                    subpath: "../escape".to_string(),
+                    checkout_root: PathBuf::from("/tmp/root"),
+                },
+                3,
+            ),
+            (
+                MarsError::SubpathMissing {
+                    source_name: "origin".to_string(),
+                    subpath: "plugins/foo".to_string(),
+                    checkout_root: PathBuf::from("/tmp/root"),
+                },
+                3,
+            ),
+            (
+                MarsError::SubpathNotDirectory {
+                    source_name: "origin".to_string(),
+                    subpath: "plugins/foo".to_string(),
+                    checkout_root: PathBuf::from("/tmp/root"),
+                },
+                3,
+            ),
+            (
+                MarsError::DiscoveryCollision {
+                    source_name: "origin".to_string(),
+                    kind: "skill".to_string(),
+                    item_name: "plan".to_string(),
+                    path_a: PathBuf::from("skills/a"),
+                    path_b: PathBuf::from("skills/b"),
+                },
+                3,
+            ),
+            (
+                MarsError::ManifestDeclaredPathEscape {
+                    source_name: "origin".to_string(),
+                    manifest_path: "./../escape".to_string(),
+                    package_root: PathBuf::from("/tmp/root"),
+                },
+                3,
+            ),
+            (
+                MarsError::ManifestDeclaredPathMissing {
+                    source_name: "origin".to_string(),
+                    manifest_path: "./missing".to_string(),
+                    package_root: PathBuf::from("/tmp/root"),
                 },
                 3,
             ),
