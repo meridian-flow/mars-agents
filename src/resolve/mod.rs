@@ -10,6 +10,7 @@
 
 pub mod compat;
 mod constraint;
+mod context;
 mod types;
 
 use std::collections::{HashMap, HashSet};
@@ -19,6 +20,7 @@ use indexmap::IndexMap;
 use semver::{Version, VersionReq};
 
 pub use constraint::parse_version_constraint;
+pub use context::ResolverContext;
 pub use types::*;
 
 use crate::config::{EffectiveConfig, FilterMode, GitSpec, Manifest, SourceSpec};
@@ -141,14 +143,7 @@ pub fn resolve(
     options: &ResolveOptions,
     diag: &mut DiagnosticCollector,
 ) -> Result<ResolvedGraph, MarsError> {
-    let mut id_index: HashMap<SourceId, SourceName> = HashMap::new();
-    let mut filter_constraints: HashMap<SourceName, Vec<FilterMode>> = HashMap::new();
-    let mut constraints: HashMap<SourceName, Vec<(String, VersionConstraint)>> = HashMap::new();
-    let mut registry: IndexMap<SourceName, RegisteredPackage> = IndexMap::new();
-    let mut package_states: HashMap<SourceName, PackageResolutionState> = HashMap::new();
-    let mut stack: Vec<PendingItem> = Vec::new();
-    let mut visited = VisitedSet::new();
-    let mut package_versions = PackageVersions::new();
+    let mut ctx = ResolverContext::new();
 
     let mut direct_requests: Vec<PendingSource> = Vec::new();
     for (name, source) in &config.dependencies {
@@ -179,59 +174,38 @@ pub fn resolve(
         .iter()
         .filter(|request| is_unfiltered_request(&request.filter))
     {
-        resolve_package_bottom_up(
-            request,
-            true,
-            provider,
-            locked,
-            options,
-            diag,
-            &mut registry,
-            &mut package_states,
-            &mut id_index,
-            &mut constraints,
-            &mut filter_constraints,
-            &mut stack,
-        )?;
+        resolve_package_bottom_up(request, true, provider, locked, options, diag, &mut ctx)?;
     }
     for request in direct_requests
         .iter()
         .filter(|request| !is_unfiltered_request(&request.filter))
     {
-        resolve_package_bottom_up(
-            request,
-            true,
-            provider,
-            locked,
-            options,
-            diag,
-            &mut registry,
-            &mut package_states,
-            &mut id_index,
-            &mut constraints,
-            &mut filter_constraints,
-            &mut stack,
-        )?;
+        resolve_package_bottom_up(request, true, provider, locked, options, diag, &mut ctx)?;
     }
 
-    while let Some(pending_item) = stack.pop() {
-        let Some(package) = registry.get(&pending_item.package) else {
-            return Err(ResolutionError::SourceNotFound {
-                name: pending_item.package.to_string(),
-            }
-            .into());
-        };
+    while let Some(pending_item) = ctx.pop_pending() {
+        let (resolved_ref, skill_deps) = {
+            let Some(package) = ctx.registry().get(&pending_item.package) else {
+                return Err(ResolutionError::SourceNotFound {
+                    name: pending_item.package.to_string(),
+                }
+                .into());
+            };
 
-        if package
-            .item(pending_item.kind, &pending_item.item)
-            .is_none()
-        {
-            continue;
-        }
+            if package
+                .item(pending_item.kind, &pending_item.item)
+                .is_none()
+            {
+                continue;
+            }
+
+            let skill_deps = parse_pending_item_skill_deps(&pending_item, package)?;
+            (package.node.resolved_ref.clone(), skill_deps)
+        };
 
         match apply_item_version_policy(
             &pending_item,
-            visited.check_version(
+            ctx.visited().check_version(
                 &pending_item.package,
                 &pending_item.item,
                 &pending_item.constraint,
@@ -244,63 +218,56 @@ pub fn resolve(
             VersionAction::Skip => continue,
         }
 
-        package_versions
+        ctx.package_versions_mut()
             .check_or_insert(
                 &pending_item.package,
-                &package.node.resolved_ref,
+                &resolved_ref,
                 &pending_item.constraint,
                 &pending_item.required_by,
                 pending_item.is_local,
             )
             .map_err(MarsError::from)?;
 
-        visited.insert(
+        ctx.visited_mut().insert(
             pending_item.package.clone(),
             pending_item.item.clone(),
             pending_item.constraint.clone(),
-            package.node.resolved_ref.clone(),
+            resolved_ref,
         );
 
-        let skill_deps = parse_pending_item_skill_deps(&pending_item, package)?;
         for skill_dep in skill_deps {
-            let resolved_skill =
-                resolve_skill_ref(&skill_dep, &pending_item, &registry, &constraints)?;
+            let resolved_skill = resolve_skill_ref(
+                &skill_dep,
+                &pending_item,
+                ctx.registry(),
+                ctx.version_constraints(),
+            )?;
             if is_item_excluded(
-                &filter_constraints,
-                &registry,
+                ctx.materialization_filters(),
+                ctx.registry(),
                 &resolved_skill.package,
                 resolved_skill.kind,
                 &resolved_skill.item,
             ) {
                 continue;
             }
-            push_filter_constraint(
-                &mut filter_constraints,
+            ctx.add_filter(
                 &resolved_skill.package,
-                &FilterMode::Include {
+                FilterMode::Include {
                     agents: Vec::new(),
                     skills: vec![resolved_skill.item.clone()],
                 },
             );
-            stack.push(resolved_skill);
+            ctx.push_pending(resolved_skill);
         }
     }
 
-    let mut nodes: IndexMap<SourceName, ResolvedNode> = IndexMap::new();
-    for (name, package) in &registry {
-        nodes.insert(name.clone(), package.node.clone());
-    }
+    let version_constraints = ctx.version_constraints().clone();
+    let graph = ctx.into_graph();
 
-    validate_all_constraints(&nodes, &constraints)?;
+    validate_all_constraints(&graph.nodes, &version_constraints)?;
 
-    let order = alphabetical_order(&nodes);
-
-    Ok(ResolvedGraph {
-        nodes,
-        order,
-        id_index,
-        filters: filter_constraints,
-    })
+    Ok(graph)
 }
 
 /// Internal: a source waiting to be resolved.
@@ -352,14 +319,9 @@ fn resolve_package_bottom_up(
     locked: Option<&LockFile>,
     options: &ResolveOptions,
     diag: &mut DiagnosticCollector,
-    registry: &mut IndexMap<SourceName, RegisteredPackage>,
-    package_states: &mut HashMap<SourceName, PackageResolutionState>,
-    id_index: &mut HashMap<SourceId, SourceName>,
-    constraints: &mut HashMap<SourceName, Vec<(String, VersionConstraint)>>,
-    filter_constraints: &mut HashMap<SourceName, Vec<FilterMode>>,
-    stack: &mut Vec<PendingItem>,
+    ctx: &mut ResolverContext,
 ) -> Result<(), MarsError> {
-    if let Some(existing_name) = id_index.get(&pending_src.source_id)
+    if let Some(existing_name) = ctx.id_index().get(&pending_src.source_id)
         && existing_name != &pending_src.name
     {
         return Err(ResolutionError::DuplicateSourceIdentity {
@@ -370,7 +332,7 @@ fn resolve_package_bottom_up(
         .into());
     }
 
-    if let Some(existing_package) = registry.get(&pending_src.name)
+    if let Some(existing_package) = ctx.registry().get(&pending_src.name)
         && existing_package.node.source_id != pending_src.source_id
     {
         return Err(ResolutionError::SourceIdentityMismatch {
@@ -381,50 +343,61 @@ fn resolve_package_bottom_up(
         .into());
     }
 
-    constraints
-        .entry(pending_src.name.clone())
-        .or_default()
-        .push((
-            pending_src.required_by.clone(),
-            pending_src.constraint.clone(),
-        ));
-    push_filter_constraint(filter_constraints, &pending_src.name, &pending_src.filter);
+    ctx.add_version_constraint(
+        &pending_src.name,
+        &pending_src.required_by,
+        pending_src.constraint.clone(),
+    );
+    ctx.add_filter(&pending_src.name, pending_src.filter.clone());
 
-    if let Some(state) = package_states.get_mut(&pending_src.name) {
-        match state {
-            PackageResolutionState::Resolved => {
-                if seed_items {
-                    let package =
-                        registry
-                            .get(&pending_src.name)
-                            .ok_or_else(|| MarsError::Source {
-                                source_name: pending_src.name.to_string(),
-                                message: "resolved package missing from registry".to_string(),
-                            })?;
-                    seed_items_for_request(pending_src, package, stack);
-                }
-                return Ok(());
-            }
-            PackageResolutionState::Resolving {
-                deferred_seed_requests,
-            } => {
-                if seed_items {
-                    deferred_seed_requests.push(pending_src.clone());
-                }
-                return Ok(());
+    if matches!(
+        ctx.package_states().get(&pending_src.name),
+        Some(PackageResolutionState::Resolved)
+    ) {
+        if seed_items {
+            let package =
+                ctx.registry()
+                    .get(&pending_src.name)
+                    .ok_or_else(|| MarsError::Source {
+                        source_name: pending_src.name.to_string(),
+                        message: "resolved package missing from registry".to_string(),
+                    })?;
+            for pending_item in seed_items_for_request(pending_src, package) {
+                ctx.push_pending(pending_item);
             }
         }
+        return Ok(());
     }
 
-    package_states.insert(
+    if matches!(
+        ctx.package_states().get(&pending_src.name),
+        Some(PackageResolutionState::Resolving { .. })
+    ) {
+        if seed_items
+            && let Some(PackageResolutionState::Resolving {
+                deferred_seed_requests,
+            }) = ctx.package_states_mut().get_mut(&pending_src.name)
+        {
+            deferred_seed_requests.push(pending_src.clone());
+        }
+        return Ok(());
+    }
+
+    ctx.package_states_mut().insert(
         pending_src.name.clone(),
         PackageResolutionState::Resolving {
             deferred_seed_requests: Vec::new(),
         },
     );
 
-    let (resolved_ref, latest_version) =
-        resolve_single_source(pending_src, provider, locked, options, constraints, diag)?;
+    let (resolved_ref, latest_version) = resolve_single_source(
+        pending_src,
+        provider,
+        locked,
+        options,
+        ctx.version_constraints(),
+        diag,
+    )?;
     let rooted_ref = apply_subpath(
         &pending_src.name,
         &resolved_ref.tree_path,
@@ -452,7 +425,7 @@ fn resolve_package_bottom_up(
         }
     }
 
-    registry.insert(
+    ctx.registry_mut().insert(
         pending_src.name.clone(),
         RegisteredPackage {
             node: ResolvedNode {
@@ -472,7 +445,8 @@ fn resolve_package_bottom_up(
             is_local: matches!(pending_src.spec, SourceSpec::Path(_)),
         },
     );
-    id_index.insert(pending_src.source_id.clone(), pending_src.name.clone());
+    ctx.id_index_mut()
+        .insert(pending_src.source_id.clone(), pending_src.name.clone());
 
     let seed_unfiltered_manifest_deps = seed_items && is_unfiltered_request(&pending_src.filter);
     for request in manifest_requests
@@ -486,54 +460,45 @@ fn resolve_package_bottom_up(
             locked,
             options,
             diag,
-            registry,
-            package_states,
-            id_index,
-            constraints,
-            filter_constraints,
-            stack,
+            ctx,
         )?;
     }
     for request in manifest_requests
         .iter()
         .filter(|request| !is_unfiltered_request(&request.filter))
     {
-        resolve_package_bottom_up(
-            request,
-            false,
-            provider,
-            locked,
-            options,
-            diag,
-            registry,
-            package_states,
-            id_index,
-            constraints,
-            filter_constraints,
-            stack,
-        )?;
+        resolve_package_bottom_up(request, false, provider, locked, options, diag, ctx)?;
     }
 
     let mut deferred_seed_requests = Vec::new();
     if let Some(PackageResolutionState::Resolving {
         deferred_seed_requests: deferred,
-    }) = package_states.remove(&pending_src.name)
+    }) = ctx.package_states_mut().remove(&pending_src.name)
     {
         deferred_seed_requests = deferred;
     }
-    package_states.insert(pending_src.name.clone(), PackageResolutionState::Resolved);
+    ctx.package_states_mut()
+        .insert(pending_src.name.clone(), PackageResolutionState::Resolved);
 
-    let package = registry
-        .get(&pending_src.name)
-        .ok_or_else(|| MarsError::Source {
-            source_name: pending_src.name.to_string(),
-            message: "resolved package missing from registry".to_string(),
-        })?;
-    if seed_items {
-        seed_items_for_request(pending_src, package, stack);
-    }
-    for deferred_request in deferred_seed_requests {
-        seed_items_for_request(&deferred_request, package, stack);
+    let pending_to_push = {
+        let package = ctx
+            .registry()
+            .get(&pending_src.name)
+            .ok_or_else(|| MarsError::Source {
+                source_name: pending_src.name.to_string(),
+                message: "resolved package missing from registry".to_string(),
+            })?;
+        let mut pending_to_push = Vec::new();
+        if seed_items {
+            pending_to_push.extend(seed_items_for_request(pending_src, package));
+        }
+        for deferred_request in deferred_seed_requests {
+            pending_to_push.extend(seed_items_for_request(&deferred_request, package));
+        }
+        pending_to_push
+    };
+    for pending_item in pending_to_push {
+        ctx.push_pending(pending_item);
     }
 
     Ok(())
@@ -542,8 +507,7 @@ fn resolve_package_bottom_up(
 fn seed_items_for_request(
     pending_src: &PendingSource,
     package: &RegisteredPackage,
-    stack: &mut Vec<PendingItem>,
-) {
+) -> Vec<PendingItem> {
     let mut selected: Vec<&discover::DiscoveredItem> = Vec::new();
     match &pending_src.filter {
         FilterMode::All => {
@@ -583,8 +547,9 @@ fn seed_items_for_request(
         }
     }
 
-    for item in selected {
-        stack.push(PendingItem {
+    selected
+        .into_iter()
+        .map(|item| PendingItem {
             package: pending_src.name.clone(),
             item: item.id.name.clone(),
             kind: item.id.kind,
@@ -592,8 +557,8 @@ fn seed_items_for_request(
             required_by: pending_src.required_by.clone(),
             is_local: package.is_local,
             spec: pending_src.spec.clone(),
-        });
-    }
+        })
+        .collect()
 }
 
 fn collect_manifest_requests(
@@ -846,17 +811,7 @@ fn is_unfiltered_request(filter: &FilterMode) -> bool {
     matches!(filter, FilterMode::All)
 }
 
-fn push_filter_constraint(
-    constraints: &mut HashMap<SourceName, Vec<FilterMode>>,
-    source_name: &SourceName,
-    filter: &FilterMode,
-) {
-    let entry = constraints.entry(source_name.clone()).or_default();
-    if !entry.contains(filter) {
-        entry.push(filter.clone());
-    }
-}
-
+#[cfg(test)]
 fn alphabetical_order(nodes: &IndexMap<SourceName, ResolvedNode>) -> Vec<SourceName> {
     let mut order: Vec<SourceName> = nodes.keys().cloned().collect();
     order.sort();
@@ -1227,7 +1182,6 @@ fn validate_all_constraints(
     }
     Ok(())
 }
-
 
 #[cfg(test)]
 mod tests;
