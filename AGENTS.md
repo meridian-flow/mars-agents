@@ -181,6 +181,8 @@ The script handles:
 
 **Do not manually edit version numbers** — the script keeps Cargo.toml and pyproject.toml in sync. Manual edits cause version mismatches that break PyPI publishing.
 
+**Update CHANGELOG.md before releasing** — move entries from `[Unreleased]` to a new `[X.Y.Z] - YYYY-MM-DD` section. The release script doesn't touch the changelog.
+
 The `v*` tag triggers GitHub Actions to build and publish to PyPI, npm, and crates.io.
 
 **Note:** `mars version` is for prompt packages only (repos with agents/skills). For mars-agents itself, use the shell script.
