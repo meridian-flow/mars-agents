@@ -150,7 +150,10 @@ impl VisitedSet {
     ) -> VersionCheckResult {
         match self.index.get(&Self::index_key(package, item)) {
             None => VersionCheckResult::NotSeen,
-            Some(existing) => match existing.constraint.compatible_with(constraint) {
+            Some(existing) => match existing.constraint.compatible_with_resolved(
+                constraint,
+                existing.resolved_ref.version.as_ref(),
+            ) {
                 CompatibilityResult::Compatible => VersionCheckResult::SameVersion,
                 CompatibilityResult::PotentiallyConflicting => {
                     VersionCheckResult::PotentiallyConflicting {
@@ -222,7 +225,10 @@ impl PackageVersions {
             }
             Entry::Occupied(entry) => {
                 let (existing_ref, existing_constraint, existing_by) = entry.get();
-                match existing_constraint.compatible_with(requested) {
+                match existing_constraint.compatible_with_resolved(
+                    requested,
+                    existing_ref.version.as_ref().or(resolved.version.as_ref()),
+                ) {
                     CompatibilityResult::Compatible
                     | CompatibilityResult::PotentiallyConflicting => {
                         if resolved_ref_matches(existing_ref, resolved) {

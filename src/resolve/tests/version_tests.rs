@@ -366,6 +366,58 @@ fn latest_constraint_does_not_skip_sibling_semver_validation() {
 }
 
 #[test]
+fn equivalent_semver_syntax_accepts_same_resolved_version() {
+    let dir = TempDir::new().unwrap();
+    let tree_a = dir.path().join("a");
+    let tree_b = dir.path().join("b");
+    let tree_shared = dir.path().join("shared");
+    std::fs::create_dir_all(&tree_a).unwrap();
+    std::fs::create_dir_all(&tree_b).unwrap();
+    std::fs::create_dir_all(&tree_shared).unwrap();
+    write_minimal_package_marker(&tree_shared);
+    write_skill(&tree_shared, "common");
+
+    let manifest_a = make_manifest(
+        "a",
+        "1.0.0",
+        vec![("shared", "https://example.com/shared.git", "^1.0")],
+    );
+    let manifest_b = make_manifest(
+        "b",
+        "1.0.0",
+        vec![(
+            "shared",
+            "https://example.com/shared.git",
+            ">=1.0.0, <2.0.0",
+        )],
+    );
+
+    let mut provider = MockProvider::new();
+    provider.add_versions("https://example.com/a.git", vec![(1, 0, 0)]);
+    provider.add_versions("https://example.com/b.git", vec![(1, 0, 0)]);
+    provider.add_versions(
+        "https://example.com/shared.git",
+        vec![(1, 0, 0), (1, 6, 0), (2, 0, 0)],
+    );
+    provider.add_source("a", tree_a, Some(manifest_a));
+    provider.add_source("b", tree_b, Some(manifest_b));
+    provider.add_source("shared", tree_shared, None);
+
+    let config = make_config(vec![
+        ("a", git_spec("https://example.com/a.git", Some("v1.0.0"))),
+        ("b", git_spec("https://example.com/b.git", Some("v1.0.0"))),
+    ]);
+
+    let graph = resolve(&config, &provider, None, &default_options())
+        .expect("equivalent semver syntax should not conflict");
+    assert_eq!(
+        graph.nodes["shared"].resolved_ref.version,
+        Some(Version::new(1, 0, 0))
+    );
+    assert_eq!(provider.fetch_count("shared"), 1);
+}
+
+#[test]
 fn v2_resolves_to_major_range() {
     let dir = TempDir::new().unwrap();
     let tree = dir.path().join("a");
