@@ -297,17 +297,19 @@ fn build_target(
             default_dest_path(item.discovered.id.kind, item.discovered.id.name.as_str());
 
         if let Some(existing) = target_state.items.shift_remove(&dest_path) {
-            diag.warn(
-                "local-shadow",
-                format!(
-                    "local {} `{}` shadows dependency `{}` {} `{}`",
-                    item.discovered.id.kind,
-                    item.discovered.id.name,
-                    existing.source_name,
-                    existing.id.kind,
-                    existing.id.name
-                ),
-            );
+            if existing.source_hash != source_hash {
+                diag.warn(
+                    "local-shadow",
+                    format!(
+                        "local {} `{}` shadows dependency `{}` {} `{}`",
+                        item.discovered.id.kind,
+                        item.discovered.id.name,
+                        existing.source_name,
+                        existing.id.kind,
+                        existing.id.name
+                    ),
+                );
+            }
         }
 
         let disk_path = managed_root.join(dest_path.as_path());
