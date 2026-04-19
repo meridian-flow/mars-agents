@@ -9,6 +9,8 @@
 //!
 //! Uses `semver` crate for all version parsing. No custom version logic.
 
+pub mod compat;
+
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 
