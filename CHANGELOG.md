@@ -4,6 +4,8 @@ Caveman style. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-04-19
+
 ### Added
 - `mars version` runs package check before versioning — catches invalid frontmatter and missing SKILL.md before tagging.
 
