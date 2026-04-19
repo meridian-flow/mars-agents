@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use indexmap::IndexMap;
 
+use super::filter::push_filter_constraint;
 use super::{
     PackageResolutionState, PackageVersions, PendingItem, RegisteredPackage, ResolvedGraph,
     ResolvedNode, VersionConstraint, VisitedSet,
@@ -96,13 +97,7 @@ impl ResolverContext {
     }
 
     pub fn add_filter(&mut self, package: &SourceName, filter: FilterMode) {
-        let entry = self
-            .materialization_filters
-            .entry(package.clone())
-            .or_default();
-        if !entry.contains(&filter) {
-            entry.push(filter);
-        }
+        push_filter_constraint(&mut self.materialization_filters, package, &filter);
     }
 
     pub fn push_pending(&mut self, item: PendingItem) {
