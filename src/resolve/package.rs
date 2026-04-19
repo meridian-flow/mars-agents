@@ -108,7 +108,9 @@ pub(crate) fn resolve_package_bottom_up(
         &pending_src.required_by,
         pending_src.constraint.clone(),
     );
-    ctx.add_filter(&pending_src.name, pending_src.filter.clone());
+    if seed_items {
+        ctx.add_filter(&pending_src.name, pending_src.filter.clone());
+    }
 
     if matches!(
         ctx.package_states().get(&pending_src.name),

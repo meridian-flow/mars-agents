@@ -75,13 +75,16 @@ pub fn build_with_collisions(
             .map(|s| s.id.clone())
             .unwrap_or_else(|| node.source_id.clone());
 
-        let filters = graph
+        let Some(filters) = graph
             .filters
             .get(source_name)
             .filter(|filters| !filters.is_empty())
             .cloned()
             .or_else(|| source_config.map(|source| vec![source.filter.clone()]))
-            .unwrap_or_else(|| vec![FilterMode::All]);
+        else {
+            // No materialization request reached this transitive source.
+            continue;
+        };
 
         let renames = source_config
             .map(|s| &s.rename)
