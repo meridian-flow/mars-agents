@@ -34,7 +34,7 @@ use crate::validate;
 #[derive(Debug, Clone)]
 pub struct ResolvedGraph {
     pub nodes: IndexMap<SourceName, ResolvedNode>,
-    /// Topological order (deps before dependents).
+    /// Deterministic alphabetical order (prompt packages don't require dependency ordering).
     pub order: Vec<SourceName>,
     pub id_index: HashMap<SourceId, SourceName>,
     /// All filter constraints collected for each source (direct + transitive).
@@ -98,25 +98,8 @@ pub struct PendingItem {
     pub required_by: String,
     /// True if from a local path dependency (skip version checks).
     pub is_local: bool,
-    /// True if this was a filtered request.
-    pub is_filtered: bool,
     /// Source spec for fetching if not already in registry.
     pub spec: SourceSpec,
-}
-
-/// A resolved item in the output graph.
-#[derive(Debug, Clone)]
-pub struct ResolvedItem {
-    /// Package this item belongs to.
-    pub package: SourceName,
-    /// Item name.
-    pub name: ItemName,
-    /// Agent or Skill.
-    pub kind: ItemKind,
-    /// Path to item source file(s).
-    pub source_path: PathBuf,
-    /// Skills this item depends on (from frontmatter).
-    pub skill_deps: Vec<ItemName>,
 }
 
 /// Result of checking whether an item was seen already.
@@ -918,7 +901,6 @@ fn seed_items_for_request(
             constraint: pending_src.constraint.clone(),
             required_by: pending_src.required_by.clone(),
             is_local: package.is_local,
-            is_filtered: !is_unfiltered_request(&pending_src.filter),
             spec: pending_src.spec.clone(),
         });
     }
@@ -1125,7 +1107,6 @@ fn resolve_skill_ref(
             constraint,
             required_by,
             is_local: requester_package.is_local,
-            is_filtered: true,
             spec: requester_package.spec.clone(),
         });
     }
@@ -1148,7 +1129,6 @@ fn resolve_skill_ref(
             constraint,
             required_by: required_by.clone(),
             is_local: package.is_local,
-            is_filtered: true,
             spec: package.spec.clone(),
         });
     }
@@ -1705,7 +1685,6 @@ mod tracker_tests {
             constraint: semver_constraint("^1.0"),
             required_by: "mars.toml".to_string(),
             is_local,
-            is_filtered: false,
             spec: SourceSpec::Git(GitSpec {
                 url: SourceUrl::from("https://example.com/alpha.git"),
                 version: Some("v1.0.0".to_string()),
@@ -2001,7 +1980,6 @@ mod tracker_tests {
             constraint: VersionConstraint::Latest,
             required_by: "mars.toml".to_string(),
             is_local: false,
-            is_filtered: true,
             spec: SourceSpec::Git(GitSpec {
                 url: SourceUrl::from("https://example.com/alpha.git"),
                 version: Some("v1.2.3".to_string()),
@@ -2014,28 +1992,7 @@ mod tracker_tests {
         assert!(matches!(pending.constraint, VersionConstraint::Latest));
         assert_eq!(pending.required_by, "mars.toml");
         assert!(!pending.is_local);
-        assert!(pending.is_filtered);
         assert!(matches!(pending.spec, SourceSpec::Git(_)));
-    }
-
-    #[test]
-    fn resolved_item_scaffolding_fields_roundtrip() {
-        let resolved = ResolvedItem {
-            package: SourceName::from("alpha"),
-            name: ItemName::from("coder"),
-            kind: ItemKind::Agent,
-            source_path: PathBuf::from("agents/coder.md"),
-            skill_deps: vec![ItemName::from("planning"), ItemName::from("review")],
-        };
-
-        assert_eq!(resolved.package, "alpha");
-        assert_eq!(resolved.name, "coder");
-        assert_eq!(resolved.kind, ItemKind::Agent);
-        assert_eq!(resolved.source_path, PathBuf::from("agents/coder.md"));
-        assert_eq!(
-            resolved.skill_deps,
-            vec![ItemName::from("planning"), ItemName::from("review")]
-        );
     }
 }
 
