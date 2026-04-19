@@ -73,6 +73,16 @@ pub enum VersionConstraint {
     RefPin(String),
 }
 
+impl std::fmt::Display for VersionConstraint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            VersionConstraint::Semver(req) => write!(f, "{req}"),
+            VersionConstraint::Latest => write!(f, "latest"),
+            VersionConstraint::RefPin(reference) => write!(f, "ref:{reference}"),
+        }
+    }
+}
+
 /// An item waiting to be processed in DFS traversal.
 #[derive(Debug, Clone)]
 pub struct PendingItem {
@@ -116,6 +126,11 @@ pub enum VersionCheckResult {
     NotSeen,
     /// Item was visited with a compatible version.
     SameVersion,
+    /// Item was visited with a potentially conflicting version (latest vs pinned).
+    PotentiallyConflicting {
+        existing: VersionConstraint,
+        requested: VersionConstraint,
+    },
     /// Item was visited with a conflicting version.
     DifferentVersion {
         existing: VersionConstraint,
@@ -168,8 +183,12 @@ impl VisitedSet {
         match self.index.get(&Self::index_key(package, item)) {
             None => VersionCheckResult::NotSeen,
             Some(existing) => match existing.constraint.compatible_with(constraint) {
-                CompatibilityResult::Compatible | CompatibilityResult::PotentiallyConflicting => {
-                    VersionCheckResult::SameVersion
+                CompatibilityResult::Compatible => VersionCheckResult::SameVersion,
+                CompatibilityResult::PotentiallyConflicting => {
+                    VersionCheckResult::PotentiallyConflicting {
+                        existing: existing.constraint.clone(),
+                        requested: constraint.clone(),
+                    }
                 }
                 CompatibilityResult::Conflicting => VersionCheckResult::DifferentVersion {
                     existing: existing.constraint.clone(),
@@ -204,8 +223,8 @@ impl VisitedSet {
 
 /// Tracks resolved version per package and rejects divergent refs.
 pub struct PackageVersions {
-    /// package -> (resolved_ref, first_required_by)
-    versions: HashMap<SourceName, (ResolvedRef, String)>,
+    /// package -> (resolved_ref, first_constraint, first_required_by)
+    versions: HashMap<SourceName, (ResolvedRef, VersionConstraint, String)>,
 }
 
 impl PackageVersions {
@@ -220,24 +239,43 @@ impl PackageVersions {
         &mut self,
         package: &SourceName,
         resolved: &ResolvedRef,
+        requested: &VersionConstraint,
         required_by: &str,
+        is_local: bool,
     ) -> Result<(), ResolutionError> {
+        if is_local {
+            return Ok(());
+        }
+
         match self.versions.entry(package.clone()) {
             Entry::Vacant(entry) => {
-                entry.insert((resolved.clone(), required_by.to_string()));
+                entry.insert((resolved.clone(), requested.clone(), required_by.to_string()));
                 Ok(())
             }
             Entry::Occupied(entry) => {
-                let (existing_ref, existing_by) = entry.get();
-                if resolved_ref_matches(existing_ref, resolved) {
-                    Ok(())
-                } else {
-                    Err(ResolutionError::PackageVersionConflict {
-                        package: package.to_string(),
-                        existing: format!("{existing_ref:?} (required by {existing_by})"),
-                        requested: format!("{resolved:?} (required by {required_by})"),
-                        chain: required_by.to_string(),
-                    })
+                let (existing_ref, existing_constraint, existing_by) = entry.get();
+                match existing_constraint.compatible_with(requested) {
+                    CompatibilityResult::Compatible
+                    | CompatibilityResult::PotentiallyConflicting => {
+                        if resolved_ref_matches(existing_ref, resolved) {
+                            Ok(())
+                        } else {
+                            Err(ResolutionError::PackageVersionConflict {
+                                package: package.to_string(),
+                                existing: format!("{existing_ref:?} (required by {existing_by})"),
+                                requested: format!("{resolved:?} (required by {required_by})"),
+                                chain: required_by.to_string(),
+                            })
+                        }
+                    }
+                    CompatibilityResult::Conflicting => {
+                        Err(ResolutionError::PackageVersionConflict {
+                            package: package.to_string(),
+                            existing: format!("{existing_constraint} (required by {existing_by})"),
+                            requested: format!("{requested} (required by {required_by})"),
+                            chain: required_by.to_string(),
+                        })
+                    }
                 }
             }
         }
@@ -250,6 +288,51 @@ fn resolved_ref_matches(existing: &ResolvedRef, incoming: &ResolvedRef) -> bool 
         && existing.version_tag == incoming.version_tag
         && existing.commit == incoming.commit
         && existing.tree_path == incoming.tree_path
+}
+
+#[derive(Debug)]
+enum VersionAction {
+    Process,
+    Skip,
+}
+
+fn apply_item_version_policy(
+    pending_item: &PendingItem,
+    check: VersionCheckResult,
+    diag: &mut DiagnosticCollector,
+) -> Result<VersionAction, ResolutionError> {
+    match check {
+        VersionCheckResult::NotSeen => Ok(VersionAction::Process),
+        VersionCheckResult::SameVersion => Ok(VersionAction::Skip),
+        VersionCheckResult::PotentiallyConflicting {
+            existing,
+            requested,
+        } => {
+            diag.warn(
+                "potential-version-drift",
+                format!(
+                    "potential version drift: item '{}' from '{}' requested as {} but already seen as {}",
+                    pending_item.item, pending_item.package, requested, existing
+                ),
+            );
+            Ok(VersionAction::Skip)
+        }
+        VersionCheckResult::DifferentVersion {
+            existing,
+            requested,
+        } => {
+            if pending_item.is_local {
+                return Ok(VersionAction::Skip);
+            }
+            Err(ResolutionError::ItemVersionConflict {
+                item: pending_item.item.to_string(),
+                package: pending_item.package.to_string(),
+                existing: existing.to_string(),
+                requested: requested.to_string(),
+                chain: pending_item.required_by.clone(),
+            })
+        }
+    }
 }
 
 /// Options controlling resolution behavior.
@@ -473,41 +556,30 @@ pub fn resolve(
             continue;
         }
 
-        match visited.check_version(
-            &pending_item.package,
-            &pending_item.item,
-            &pending_item.constraint,
-        ) {
-            VersionCheckResult::NotSeen => {}
-            VersionCheckResult::SameVersion => continue,
-            VersionCheckResult::DifferentVersion {
-                existing,
-                requested,
-            } => {
-                if pending_item.is_local {
-                    continue;
-                }
-                return Err(ResolutionError::ItemVersionConflict {
-                    item: pending_item.item.to_string(),
-                    package: pending_item.package.to_string(),
-                    existing: format!("{existing:?}"),
-                    requested: format!("{requested:?}"),
-                    chain: pending_item.required_by.clone(),
-                }
-                .into());
-            }
+        match apply_item_version_policy(
+            &pending_item,
+            visited.check_version(
+                &pending_item.package,
+                &pending_item.item,
+                &pending_item.constraint,
+            ),
+            diag,
+        )
+        .map_err(MarsError::from)?
+        {
+            VersionAction::Process => {}
+            VersionAction::Skip => continue,
         }
 
-        if let Err(err) = package_versions.check_or_insert(
-            &pending_item.package,
-            &package.node.resolved_ref,
-            &pending_item.required_by,
-        ) {
-            if pending_item.is_local {
-                continue;
-            }
-            return Err(err.into());
-        }
+        package_versions
+            .check_or_insert(
+                &pending_item.package,
+                &package.node.resolved_ref,
+                &pending_item.constraint,
+                &pending_item.required_by,
+                pending_item.is_local,
+            )
+            .map_err(MarsError::from)?;
 
         visited.insert(
             pending_item.package.clone(),
@@ -1308,6 +1380,9 @@ fn validate_all_constraints(
     constraints: &HashMap<SourceName, Vec<(String, VersionConstraint)>>,
 ) -> Result<(), MarsError> {
     for (name, constraint_list) in constraints {
+        let has_latest = constraint_list
+            .iter()
+            .any(|(_, constraint)| matches!(constraint, VersionConstraint::Latest));
         let node = match nodes.get(name) {
             Some(n) => n,
             None => continue, // Should not happen, but be safe
@@ -1316,6 +1391,9 @@ fn validate_all_constraints(
         // Only validate semver constraints against resolved versions
         if let Some(ref resolved_ver) = node.resolved_ref.version {
             for (requester, constraint) in constraint_list {
+                if has_latest {
+                    continue;
+                }
                 if let VersionConstraint::Semver(req) = constraint
                     && !req.matches(resolved_ver)
                 {
@@ -1437,6 +1515,135 @@ mod tracker_tests {
     }
 
     #[test]
+    fn visited_set_potentially_conflicting_version() {
+        let mut visited = VisitedSet::new();
+        let package = SourceName::from("alpha");
+        let item = ItemName::from("coder");
+
+        visited.insert(
+            package.clone(),
+            item.clone(),
+            VersionConstraint::Latest,
+            resolved_ref(
+                "alpha",
+                Some("2.0.0"),
+                Some("v2.0.0"),
+                Some("abc123"),
+                "/tmp/alpha",
+            ),
+        );
+
+        let requested = semver_constraint("^1.0");
+        let result = visited.check_version(&package, &item, &requested);
+        match result {
+            VersionCheckResult::PotentiallyConflicting {
+                existing,
+                requested,
+            } => {
+                assert!(matches!(existing, VersionConstraint::Latest));
+                assert!(matches!(requested, VersionConstraint::Semver(_)));
+                assert_eq!(
+                    existing.compatible_with(&requested),
+                    CompatibilityResult::PotentiallyConflicting
+                );
+            }
+            other => panic!("expected PotentiallyConflicting, got {other:?}"),
+        }
+    }
+
+    fn pending_item(is_local: bool) -> PendingItem {
+        PendingItem {
+            package: SourceName::from("alpha"),
+            item: ItemName::from("coder"),
+            kind: ItemKind::Agent,
+            constraint: semver_constraint("^1.0"),
+            required_by: "mars.toml".to_string(),
+            is_local,
+            is_filtered: false,
+            spec: SourceSpec::Git(GitSpec {
+                url: SourceUrl::from("https://example.com/alpha.git"),
+                version: Some("v1.0.0".to_string()),
+            }),
+        }
+    }
+
+    #[test]
+    fn apply_item_version_policy_skips_local_conflict() {
+        let pending = pending_item(true);
+        let mut diag = DiagnosticCollector::new();
+        let action = apply_item_version_policy(
+            &pending,
+            VersionCheckResult::DifferentVersion {
+                existing: semver_constraint("^1.0"),
+                requested: semver_constraint("^2.0"),
+            },
+            &mut diag,
+        )
+        .expect("local conflicting versions should be skipped");
+
+        assert!(matches!(action, VersionAction::Skip));
+    }
+
+    #[test]
+    fn apply_item_version_policy_warns_on_potential_drift() {
+        let pending = pending_item(false);
+        let mut diag = DiagnosticCollector::new();
+        let action = apply_item_version_policy(
+            &pending,
+            VersionCheckResult::PotentiallyConflicting {
+                existing: VersionConstraint::Latest,
+                requested: semver_constraint("^1.0"),
+            },
+            &mut diag,
+        )
+        .expect("potential conflicts should warn and continue");
+
+        assert!(matches!(action, VersionAction::Skip));
+        let diagnostics = diag.drain();
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].code, "potential-version-drift");
+        assert!(
+            diagnostics[0]
+                .message
+                .contains("potential version drift: item 'coder' from 'alpha'"),
+            "unexpected warning text: {}",
+            diagnostics[0].message,
+        );
+    }
+
+    #[test]
+    fn apply_item_version_policy_errors_on_non_local_conflict() {
+        let pending = pending_item(false);
+        let mut diag = DiagnosticCollector::new();
+        let err = apply_item_version_policy(
+            &pending,
+            VersionCheckResult::DifferentVersion {
+                existing: semver_constraint("^1.0"),
+                requested: semver_constraint("^2.0"),
+            },
+            &mut diag,
+        )
+        .expect_err("non-local conflicting versions should error");
+
+        match err {
+            ResolutionError::ItemVersionConflict {
+                item,
+                package,
+                existing,
+                requested,
+                chain,
+            } => {
+                assert_eq!(item, "coder");
+                assert_eq!(package, "alpha");
+                assert_eq!(existing, "^1.0");
+                assert_eq!(requested, "^2.0");
+                assert_eq!(chain, "mars.toml");
+            }
+            other => panic!("expected ItemVersionConflict, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn package_versions_first_insert() {
         let mut versions = PackageVersions::new();
         let package = SourceName::from("alpha");
@@ -1450,7 +1657,13 @@ mod tracker_tests {
 
         assert!(
             versions
-                .check_or_insert(&package, &resolved, "mars.toml")
+                .check_or_insert(
+                    &package,
+                    &resolved,
+                    &VersionConstraint::Latest,
+                    "mars.toml",
+                    false,
+                )
                 .is_ok()
         );
     }
@@ -1467,12 +1680,24 @@ mod tracker_tests {
             "/tmp/alpha",
         );
         versions
-            .check_or_insert(&package, &resolved, "mars.toml")
+            .check_or_insert(
+                &package,
+                &resolved,
+                &VersionConstraint::Latest,
+                "mars.toml",
+                false,
+            )
             .expect("initial insert should succeed");
 
         assert!(
             versions
-                .check_or_insert(&package, &resolved, "agent:coder")
+                .check_or_insert(
+                    &package,
+                    &resolved,
+                    &VersionConstraint::Latest,
+                    "agent:coder",
+                    false,
+                )
                 .is_ok()
         );
     }
@@ -1496,11 +1721,23 @@ mod tracker_tests {
             "/tmp/alpha-v2",
         );
         versions
-            .check_or_insert(&package, &existing, "mars.toml")
+            .check_or_insert(
+                &package,
+                &existing,
+                &semver_constraint("^1.0"),
+                "mars.toml",
+                false,
+            )
             .expect("initial insert should succeed");
 
         let err = versions
-            .check_or_insert(&package, &requested, "agent:coder")
+            .check_or_insert(
+                &package,
+                &requested,
+                &semver_constraint("^1.0"),
+                "agent:coder",
+                false,
+            )
             .expect_err("second insert with different resolved ref should fail");
 
         match err {
@@ -1517,6 +1754,96 @@ mod tracker_tests {
             }
             other => panic!("expected PackageVersionConflict, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn package_versions_conflicting_constraints() {
+        let mut versions = PackageVersions::new();
+        let package = SourceName::from("alpha");
+        let resolved = resolved_ref(
+            "alpha",
+            Some("1.0.0"),
+            Some("v1.0.0"),
+            Some("abc123"),
+            "/tmp/alpha",
+        );
+        versions
+            .check_or_insert(
+                &package,
+                &resolved,
+                &semver_constraint("^1.0"),
+                "mars.toml",
+                false,
+            )
+            .expect("initial insert should succeed");
+
+        let err = versions
+            .check_or_insert(
+                &package,
+                &resolved,
+                &semver_constraint("^2.0"),
+                "agent:coder",
+                false,
+            )
+            .expect_err("conflicting package constraints should fail");
+
+        match err {
+            ResolutionError::PackageVersionConflict {
+                package,
+                existing,
+                requested,
+                chain,
+            } => {
+                assert_eq!(package, "alpha");
+                assert!(existing.contains("^1.0"));
+                assert!(requested.contains("^2.0"));
+                assert_eq!(chain, "agent:coder");
+            }
+            other => panic!("expected PackageVersionConflict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn package_versions_local_conflict_bypassed() {
+        let mut versions = PackageVersions::new();
+        let package = SourceName::from("alpha");
+        let existing = resolved_ref(
+            "alpha",
+            Some("1.0.0"),
+            Some("v1.0.0"),
+            Some("abc123"),
+            "/tmp/alpha-v1",
+        );
+        let requested = resolved_ref(
+            "alpha",
+            Some("2.0.0"),
+            Some("v2.0.0"),
+            Some("def456"),
+            "/tmp/alpha-v2",
+        );
+
+        versions
+            .check_or_insert(
+                &package,
+                &existing,
+                &semver_constraint("^1.0"),
+                "mars.toml",
+                false,
+            )
+            .expect("initial insert should succeed");
+
+        assert!(
+            versions
+                .check_or_insert(
+                    &package,
+                    &requested,
+                    &semver_constraint("^2.0"),
+                    "agent:coder",
+                    true,
+                )
+                .is_ok(),
+            "local package conflicts must be bypassed",
+        );
     }
 
     #[test]
@@ -1573,6 +1900,7 @@ mod tests {
         EffectiveConfig, EffectiveDependency, FilterConfig, FilterMode, GitSpec, Manifest,
         ManifestDep, PackageInfo, Settings, SourceSpec,
     };
+    use crate::diagnostic::DiagnosticLevel;
     use crate::types::{RenameMap, SourceId, SourceName, SourceSubpath, SourceUrl};
     use indexmap::IndexMap;
     use std::cell::RefCell;
@@ -1594,6 +1922,8 @@ mod tests {
         unreachable_preferred_commits: HashSet<String>,
         /// Captures preferred-commit hints passed by the resolver.
         seen_preferred_commits: RefCell<Vec<Option<String>>>,
+        /// Number of fetches keyed by source name.
+        fetch_counts: RefCell<HashMap<String, usize>>,
     }
 
     impl MockProvider {
@@ -1604,6 +1934,7 @@ mod tests {
                 manifests: HashMap::new(),
                 unreachable_preferred_commits: HashSet::new(),
                 seen_preferred_commits: RefCell::new(Vec::new()),
+                fetch_counts: RefCell::new(HashMap::new()),
             }
         }
 
@@ -1638,6 +1969,20 @@ mod tests {
         fn seen_preferred_commits(&self) -> Vec<Option<String>> {
             self.seen_preferred_commits.borrow().clone()
         }
+
+        fn fetch_count(&self, source_name: &str) -> usize {
+            self.fetch_counts
+                .borrow()
+                .get(source_name)
+                .copied()
+                .unwrap_or(0)
+        }
+
+        fn bump_fetch_count(&self, source_name: &str) {
+            let mut counts = self.fetch_counts.borrow_mut();
+            let entry = counts.entry(source_name.to_string()).or_insert(0);
+            *entry += 1;
+        }
     }
 
     impl VersionLister for MockProvider {
@@ -1655,6 +2000,7 @@ mod tests {
             preferred_commit: Option<&str>,
             _diag: &mut DiagnosticCollector,
         ) -> Result<ResolvedRef, MarsError> {
+            self.bump_fetch_count(source_name);
             self.seen_preferred_commits
                 .borrow_mut()
                 .push(preferred_commit.map(str::to_string));
@@ -1690,6 +2036,7 @@ mod tests {
             preferred_commit: Option<&str>,
             _diag: &mut DiagnosticCollector,
         ) -> Result<ResolvedRef, MarsError> {
+            self.bump_fetch_count(source_name);
             self.seen_preferred_commits
                 .borrow_mut()
                 .push(preferred_commit.map(str::to_string));
@@ -1723,6 +2070,7 @@ mod tests {
             source_name: &str,
             _diag: &mut DiagnosticCollector,
         ) -> Result<ResolvedRef, MarsError> {
+            self.bump_fetch_count(source_name);
             Ok(ResolvedRef {
                 source_name: source_name.into(),
                 version: None,
@@ -1837,8 +2185,46 @@ mod tests {
         locked: Option<&LockFile>,
         options: &ResolveOptions,
     ) -> Result<ResolvedGraph, MarsError> {
+        resolve_with_diagnostics(config, provider, locked, options).0
+    }
+
+    fn resolve_with_diagnostics(
+        config: &EffectiveConfig,
+        provider: &dyn SourceProvider,
+        locked: Option<&LockFile>,
+        options: &ResolveOptions,
+    ) -> (
+        Result<ResolvedGraph, MarsError>,
+        Vec<crate::diagnostic::Diagnostic>,
+    ) {
         let mut diag = DiagnosticCollector::new();
-        super::resolve(config, provider, locked, options, &mut diag)
+        let result = super::resolve(config, provider, locked, options, &mut diag);
+        (result, diag.drain())
+    }
+
+    fn write_minimal_package_marker(tree: &Path) {
+        std::fs::write(
+            tree.join("mars.toml"),
+            "[package]\nname = \"pkg\"\nversion = \"1.0.0\"\n",
+        )
+        .expect("write mars.toml");
+    }
+
+    fn write_skill(tree: &Path, name: &str) {
+        let dir = tree.join("skills").join(name);
+        std::fs::create_dir_all(&dir).expect("create skill dir");
+        std::fs::write(dir.join("SKILL.md"), "---\n---\n").expect("write SKILL.md");
+    }
+
+    fn write_agent(tree: &Path, name: &str, skills: &[&str]) {
+        let agents = tree.join("agents");
+        std::fs::create_dir_all(&agents).expect("create agents dir");
+        let frontmatter = if skills.is_empty() {
+            "---\n---\n".to_string()
+        } else {
+            format!("---\nskills: [{}]\n---\n", skills.join(", "))
+        };
+        std::fs::write(agents.join(format!("{name}.md")), frontmatter).expect("write agent");
     }
 
     fn source_id_for_spec(spec: &SourceSpec, subpath: Option<SourceSubpath>) -> SourceId {
@@ -2631,6 +3017,199 @@ mod tests {
         assert_eq!(graph.nodes.len(), 2);
         assert!(graph.nodes.contains_key("a"));
         assert!(graph.nodes.contains_key("b"));
+    }
+
+    #[test]
+    fn same_version_revisit_skips_and_package_fetches_once() {
+        let dir = TempDir::new().unwrap();
+        let tree_a = dir.path().join("a");
+        let tree_b = dir.path().join("b");
+        let tree_shared = dir.path().join("shared");
+        std::fs::create_dir_all(&tree_a).unwrap();
+        std::fs::create_dir_all(&tree_b).unwrap();
+        std::fs::create_dir_all(&tree_shared).unwrap();
+        write_minimal_package_marker(&tree_shared);
+        write_skill(&tree_shared, "common");
+
+        let manifest_a = make_manifest(
+            "a",
+            "1.0.0",
+            vec![("shared", "https://example.com/shared.git", ">=1.0.0")],
+        );
+        let manifest_b = make_manifest(
+            "b",
+            "1.0.0",
+            vec![("shared", "https://example.com/shared.git", ">=1.0.0")],
+        );
+
+        let mut provider = MockProvider::new();
+        provider.add_versions("https://example.com/a.git", vec![(1, 0, 0)]);
+        provider.add_versions("https://example.com/b.git", vec![(1, 0, 0)]);
+        provider.add_versions("https://example.com/shared.git", vec![(1, 0, 0)]);
+        provider.add_source("a", tree_a, Some(manifest_a));
+        provider.add_source("b", tree_b, Some(manifest_b));
+        provider.add_source("shared", tree_shared, None);
+
+        let config = make_config(vec![
+            ("a", git_spec("https://example.com/a.git", Some("v1.0.0"))),
+            ("b", git_spec("https://example.com/b.git", Some("v1.0.0"))),
+        ]);
+
+        let graph = resolve(&config, &provider, None, &default_options()).unwrap();
+        assert!(graph.nodes.contains_key("shared"));
+        assert_eq!(provider.fetch_count("shared"), 1);
+    }
+
+    #[test]
+    fn different_version_revisit_errors() {
+        let dir = TempDir::new().unwrap();
+        let tree_a = dir.path().join("a");
+        let tree_b = dir.path().join("b");
+        let tree_shared = dir.path().join("shared");
+        std::fs::create_dir_all(&tree_a).unwrap();
+        std::fs::create_dir_all(&tree_b).unwrap();
+        std::fs::create_dir_all(&tree_shared).unwrap();
+        write_minimal_package_marker(&tree_shared);
+        write_skill(&tree_shared, "common");
+
+        let manifest_a = make_manifest(
+            "a",
+            "1.0.0",
+            vec![("shared", "https://example.com/shared.git", ">=1.0.0")],
+        );
+        let manifest_b = make_manifest(
+            "b",
+            "1.0.0",
+            vec![("shared", "https://example.com/shared.git", ">=2.0.0")],
+        );
+
+        let mut provider = MockProvider::new();
+        provider.add_versions("https://example.com/a.git", vec![(1, 0, 0)]);
+        provider.add_versions("https://example.com/b.git", vec![(1, 0, 0)]);
+        provider.add_versions("https://example.com/shared.git", vec![(1, 0, 0), (2, 0, 0)]);
+        provider.add_source("a", tree_a, Some(manifest_a));
+        provider.add_source("b", tree_b, Some(manifest_b));
+        provider.add_source("shared", tree_shared, None);
+
+        let config = make_config(vec![
+            ("a", git_spec("https://example.com/a.git", Some("v1.0.0"))),
+            ("b", git_spec("https://example.com/b.git", Some("v1.0.0"))),
+        ]);
+
+        let err = resolve(&config, &provider, None, &default_options()).unwrap_err();
+        match err {
+            MarsError::Resolution(ResolutionError::ItemVersionConflict {
+                item,
+                package,
+                existing,
+                requested,
+                chain,
+            }) => {
+                assert_eq!(item, "common");
+                assert_eq!(package, "shared");
+                assert!(
+                    (existing == ">=1.0.0" && requested == ">=2.0.0")
+                        || (existing == ">=2.0.0" && requested == ">=1.0.0"),
+                    "unexpected version conflict values: existing={existing}, requested={requested}"
+                );
+                assert!(chain == "a" || chain == "b", "unexpected chain: {chain}");
+            }
+            other => panic!("expected ItemVersionConflict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn latest_and_pinned_revisit_emits_warning() {
+        let dir = TempDir::new().unwrap();
+        let tree_a = dir.path().join("a");
+        let tree_b = dir.path().join("b");
+        let tree_shared = dir.path().join("shared");
+        std::fs::create_dir_all(&tree_a).unwrap();
+        std::fs::create_dir_all(&tree_b).unwrap();
+        std::fs::create_dir_all(&tree_shared).unwrap();
+        write_minimal_package_marker(&tree_shared);
+        write_skill(&tree_shared, "common");
+
+        let mut deps_a = IndexMap::new();
+        deps_a.insert(
+            "shared".to_string(),
+            ManifestDep {
+                url: SourceUrl::from("https://example.com/shared.git"),
+                subpath: None,
+                version: None,
+                filter: FilterConfig::default(),
+            },
+        );
+        let manifest_a = Manifest {
+            package: PackageInfo {
+                name: "a".to_string(),
+                version: "1.0.0".to_string(),
+                description: None,
+            },
+            dependencies: deps_a,
+            models: IndexMap::new(),
+        };
+        let manifest_b = make_manifest(
+            "b",
+            "1.0.0",
+            vec![("shared", "https://example.com/shared.git", "v1.0.0")],
+        );
+
+        let mut provider = MockProvider::new();
+        provider.add_versions("https://example.com/a.git", vec![(1, 0, 0)]);
+        provider.add_versions("https://example.com/b.git", vec![(1, 0, 0)]);
+        provider.add_versions("https://example.com/shared.git", vec![(1, 0, 0), (2, 0, 0)]);
+        provider.add_source("a", tree_a, Some(manifest_a));
+        provider.add_source("b", tree_b, Some(manifest_b));
+        provider.add_source("shared", tree_shared, None);
+
+        let config = make_config(vec![
+            ("a", git_spec("https://example.com/a.git", Some("v1.0.0"))),
+            ("b", git_spec("https://example.com/b.git", Some("v1.0.0"))),
+        ]);
+
+        let (result, diagnostics) =
+            resolve_with_diagnostics(&config, &provider, None, &default_options());
+        let graph = result.expect("resolution should succeed");
+        assert!(graph.nodes.contains_key("shared"));
+        let drift = diagnostics
+            .iter()
+            .find(|diag| diag.code == "potential-version-drift")
+            .expect("expected potential-version-drift warning");
+        assert_eq!(drift.level, DiagnosticLevel::Warning);
+        assert!(drift.message.contains("item 'common' from 'shared'"));
+    }
+
+    #[test]
+    fn skill_not_found_has_requester_and_search_context() {
+        let dir = TempDir::new().unwrap();
+        let tree_a = dir.path().join("a");
+        std::fs::create_dir_all(&tree_a).unwrap();
+        write_minimal_package_marker(&tree_a);
+        write_agent(&tree_a, "coder", &["missing-skill"]);
+
+        let mut provider = MockProvider::new();
+        provider.add_versions("https://example.com/a.git", vec![(1, 0, 0)]);
+        provider.add_source("a", tree_a, None);
+
+        let config = make_config(vec![(
+            "a",
+            git_spec("https://example.com/a.git", Some("v1.0.0")),
+        )]);
+
+        let err = resolve(&config, &provider, None, &default_options()).unwrap_err();
+        match err {
+            MarsError::Resolution(ResolutionError::SkillNotFound {
+                skill,
+                required_by,
+                searched,
+            }) => {
+                assert_eq!(skill, "missing-skill");
+                assert_eq!(required_by, "a/coder");
+                assert_eq!(searched, vec!["a".to_string()]);
+            }
+            other => panic!("expected SkillNotFound, got {other:?}"),
+        }
     }
 
     #[test]

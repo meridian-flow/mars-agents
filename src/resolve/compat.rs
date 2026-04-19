@@ -94,8 +94,7 @@ mod tests {
     #[test]
     fn latest_with_ref_pin_is_potentially_conflicting() {
         assert_eq!(
-            VersionConstraint::Latest
-                .compatible_with(&VersionConstraint::RefPin("main".into())),
+            VersionConstraint::Latest.compatible_with(&VersionConstraint::RefPin("main".into())),
             CompatibilityResult::PotentiallyConflicting
         );
     }

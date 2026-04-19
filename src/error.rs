@@ -45,7 +45,7 @@ pub enum ResolutionError {
     VersionConflict { name: String, message: String },
 
     #[error(
-        "version conflict for item `{item}` from package `{package}`: {existing} vs {requested}"
+        "version conflict for item `{item}` from package `{package}`: {existing} vs {requested} (requester chain: {chain})"
     )]
     ItemVersionConflict {
         item: String,
@@ -55,7 +55,9 @@ pub enum ResolutionError {
         chain: String,
     },
 
-    #[error("package version conflict for `{package}`: {existing} vs {requested}")]
+    #[error(
+        "package version conflict for `{package}`: {existing} vs {requested} (requester chain: {chain})"
+    )]
     PackageVersionConflict {
         package: String,
         existing: String,
@@ -63,7 +65,9 @@ pub enum ResolutionError {
         chain: String,
     },
 
-    #[error("skill `{skill}` not found (required by {required_by})")]
+    #[error(
+        "skill `{skill}` not found (required by {required_by}; searched packages: {searched:?})"
+    )]
     SkillNotFound {
         skill: String,
         required_by: String,
@@ -87,9 +91,6 @@ pub enum ResolutionError {
         existing: String,
         incoming: String,
     },
-
-    #[error("cycle detected: {chain}")]
-    Cycle { chain: String },
 
     #[error("source not found: {name}")]
     SourceNotFound { name: String },
