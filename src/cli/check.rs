@@ -24,10 +24,10 @@ pub struct CheckArgs {
 }
 
 #[derive(Debug, Serialize)]
-struct CheckReport {
+pub(crate) struct CheckReport {
     agents: usize,
     skills: usize,
-    errors: Vec<String>,
+    pub(crate) errors: Vec<String>,
     warnings: Vec<String>,
 }
 
@@ -81,7 +81,7 @@ pub fn run(args: &CheckArgs, json: bool) -> Result<i32, MarsError> {
     }
 }
 
-fn check_dir(base: &Path) -> Result<CheckReport, MarsError> {
+pub(crate) fn check_dir(base: &Path) -> Result<CheckReport, MarsError> {
     let skills_dir = base.join("skills");
 
     let mut errors: Vec<String> = Vec::new();

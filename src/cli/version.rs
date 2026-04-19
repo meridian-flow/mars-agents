@@ -8,7 +8,7 @@ use semver::{BuildMetadata, Prerelease, Version};
 
 use crate::error::{ConfigError, MarsError};
 
-use super::output;
+use super::{check, output};
 
 /// Arguments for `mars version`.
 #[derive(Debug, clap::Args)]
@@ -23,6 +23,7 @@ pub struct VersionArgs {
 /// Run `mars version`.
 pub fn run(args: &VersionArgs, ctx: &super::MarsContext, json: bool) -> Result<i32, MarsError> {
     require_clean_working_tree(&ctx.project_root)?;
+    require_package_check(&ctx.project_root)?;
 
     let mut config = crate::config::load(&ctx.project_root)?;
     let package = config
@@ -118,6 +119,26 @@ fn require_clean_working_tree(project_root: &Path) -> Result<(), MarsError> {
         .into());
     }
 
+    Ok(())
+}
+
+fn require_package_check(project_root: &Path) -> Result<(), MarsError> {
+    // Skip check if this isn't a source package (no agents/, skills/, or SKILL.md)
+    let has_agents = project_root.join("agents").is_dir();
+    let has_skills = project_root.join("skills").is_dir();
+    let has_root_skill = project_root.join("SKILL.md").is_file();
+    if !has_agents && !has_skills && !has_root_skill {
+        return Ok(());
+    }
+
+    let report = check::check_dir(project_root)?;
+    if !report.errors.is_empty() {
+        let mut message = "package check failed:".to_string();
+        for error in &report.errors {
+            message.push_str(&format!("\n  - {error}"));
+        }
+        return Err(ConfigError::Invalid { message }.into());
+    }
     Ok(())
 }
 
@@ -288,8 +309,14 @@ mod tests {
         run_git_test(repo.path(), ["config", "user.email", "mars@example.com"]);
 
         std::fs::create_dir_all(repo.path().join(".agents")).unwrap();
+        std::fs::create_dir_all(repo.path().join("agents")).unwrap();
+        std::fs::write(
+            repo.path().join("agents/test-agent.md"),
+            "---\nname: test-agent\ndescription: test\n---\n# Test",
+        )
+        .unwrap();
         std::fs::write(repo.path().join("mars.toml"), mars_toml).unwrap();
-        run_git_test(repo.path(), ["add", "mars.toml"]);
+        run_git_test(repo.path(), ["add", "."]);
         run_git_test(repo.path(), ["commit", "-m", "init"]);
 
         let ctx = super::super::MarsContext::for_test(
