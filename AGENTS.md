@@ -165,16 +165,20 @@ Integration tests under `tests/`. Prefer keeping changes localized to one module
 
 ## Releasing
 
-Two ways to release:
+**Always use the release script** — it runs fmt, clippy, tests, and release build before tagging:
 
-1. **CLI** (recommended):
-   ```bash
-   mars version patch --push    # bump, commit, tag, push → triggers CI
-   ```
+```bash
+scripts/release.sh patch --push    # bump, commit, tag, push → triggers CI
+scripts/release.sh 1.2.3 --push    # explicit version
+scripts/release.sh patch           # dry run (no push)
+```
 
-2. **Shell script** (runs full checks):
-   ```bash
-   scripts/release.sh patch --push    # fmt, clippy, tests, build, release
-   ```
+The script handles:
+- Pre-release checks (fmt, clippy, tests, release build)
+- Version bump in Cargo.toml
+- Commit and annotated tag creation
+- Optional push to origin
 
 The `v*` tag triggers GitHub Actions to build and publish to PyPI, npm, and crates.io.
+
+**Note:** `mars version` is for prompt packages only (repos with agents/skills). For mars-agents itself, use the shell script.
