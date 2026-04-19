@@ -1,18 +1,17 @@
 //! Dependency resolution with semver constraints.
 //!
 //! Algorithm:
-//! 1. Fetch dependencies from `EffectiveConfig`
-//! 2. Read `mars.toml` manifests → discover transitive deps
-//! 3. Intersect version constraints across dependents
-//! 4. Select concrete versions (MVS: minimum version selection)
-//! 5. Topological sort (Kahn's algorithm)
+//! 1. Resolve package refs/versions (MVS for git sources)
+//! 2. Resolve package manifests bottom-up (deps before item seeds)
+//! 3. Traverse items with DFS from seeded requests and frontmatter skill deps
+//! 4. Emit deterministic alphabetical package order
 //!
 //! Uses `semver` crate for all version parsing. No custom version logic.
 
 pub mod compat;
 
 use std::collections::hash_map::Entry;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use indexmap::IndexMap;
@@ -21,15 +20,17 @@ use semver::{Version, VersionReq};
 use self::compat::CompatibilityResult;
 use crate::config::{EffectiveConfig, FilterMode, GitSpec, Manifest, SourceSpec};
 use crate::diagnostic::DiagnosticCollector;
+use crate::discover;
 use crate::error::{MarsError, ResolutionError};
 use crate::lock::{ItemKind, LockFile};
 use crate::source::{AvailableVersion, ResolvedRef};
 use crate::types::{ItemName, SourceId, SourceName, SourceSubpath, SourceUrl};
+use crate::validate;
 
 /// The resolved dependency graph — all sources with concrete versions.
 ///
 /// Produced by the resolver after fetching sources, reading manifests,
-/// intersecting version constraints, and topological sorting.
+/// intersecting version constraints, and deterministic ordering.
 #[derive(Debug, Clone)]
 pub struct ResolvedGraph {
     pub nodes: IndexMap<SourceName, ResolvedNode>,
@@ -384,17 +385,16 @@ pub fn resolve(
     options: &ResolveOptions,
     diag: &mut DiagnosticCollector,
 ) -> Result<ResolvedGraph, MarsError> {
-    let mut nodes: IndexMap<SourceName, ResolvedNode> = IndexMap::new();
     let mut id_index: HashMap<SourceId, SourceName> = HashMap::new();
     let mut filter_constraints: HashMap<SourceName, Vec<FilterMode>> = HashMap::new();
-
-    // Pending sources to process: (name, url_or_path, version_constraint, required_by)
-    let mut pending: VecDeque<PendingSource> = VecDeque::new();
-
-    // Track constraints per source name for intersection
     let mut constraints: HashMap<SourceName, Vec<(String, VersionConstraint)>> = HashMap::new();
+    let mut registry: IndexMap<SourceName, RegisteredPackage> = IndexMap::new();
+    let mut package_states: HashMap<SourceName, PackageResolutionState> = HashMap::new();
+    let mut stack: Vec<PendingItem> = Vec::new();
+    let mut visited = VisitedSet::new();
+    let mut package_versions = PackageVersions::new();
 
-    // Seed with direct dependencies from config
+    let mut direct_requests: Vec<PendingSource> = Vec::new();
     for (name, source) in &config.dependencies {
         let is_upgrade_target = options.maximize
             && (options.upgrade_targets.is_empty() || options.upgrade_targets.contains(name));
@@ -406,144 +406,140 @@ pub fn resolve(
                     parse_version_constraint(git.version.as_deref())
                 }
             }
-            SourceSpec::Path(_) => VersionConstraint::Latest, // Path sources: no version
+            SourceSpec::Path(_) => VersionConstraint::Latest,
         };
-        pending.push_back(PendingSource {
+        direct_requests.push(PendingSource {
             name: name.clone(),
             source_id: source.id.clone(),
             spec: source.spec.clone(),
             subpath: source.subpath.clone(),
             constraint,
             filter: source.filter.clone(),
-            required_by: "mars.toml".into(),
+            required_by: "mars.toml".to_string(),
         });
     }
 
-    // BFS: resolve each source, discover transitive deps
-    while let Some(pending_src) = pending.pop_front() {
-        if let Some(existing_name) = id_index.get(&pending_src.source_id)
-            && existing_name != &pending_src.name
-        {
-            return Err(ResolutionError::DuplicateSourceIdentity {
-                existing_name: existing_name.to_string(),
-                duplicate_name: pending_src.name.to_string(),
-                source_id: pending_src.source_id.to_string(),
+    for request in direct_requests
+        .iter()
+        .filter(|request| is_unfiltered_request(&request.filter))
+    {
+        resolve_package_bottom_up(
+            request,
+            true,
+            provider,
+            locked,
+            options,
+            diag,
+            &mut registry,
+            &mut package_states,
+            &mut id_index,
+            &mut constraints,
+            &mut filter_constraints,
+            &mut stack,
+        )?;
+    }
+    for request in direct_requests
+        .iter()
+        .filter(|request| !is_unfiltered_request(&request.filter))
+    {
+        resolve_package_bottom_up(
+            request,
+            true,
+            provider,
+            locked,
+            options,
+            diag,
+            &mut registry,
+            &mut package_states,
+            &mut id_index,
+            &mut constraints,
+            &mut filter_constraints,
+            &mut stack,
+        )?;
+    }
+
+    while let Some(pending_item) = stack.pop() {
+        let Some(package) = registry.get(&pending_item.package) else {
+            return Err(ResolutionError::SourceNotFound {
+                name: pending_item.package.to_string(),
             }
             .into());
-        }
+        };
 
-        // If already resolved, just record the additional constraint
-        if let Some(existing) = nodes.get(&pending_src.name) {
-            if existing.source_id != pending_src.source_id {
-                return Err(ResolutionError::SourceIdentityMismatch {
-                    name: pending_src.name.to_string(),
-                    existing: existing.source_id.to_string(),
-                    incoming: pending_src.source_id.to_string(),
-                }
-                .into());
-            }
-            constraints
-                .entry(pending_src.name.clone())
-                .or_default()
-                .push((pending_src.required_by.clone(), pending_src.constraint));
-            push_filter_constraint(
-                &mut filter_constraints,
-                &pending_src.name,
-                &pending_src.filter,
-            );
+        if package
+            .item(pending_item.kind, &pending_item.item)
+            .is_none()
+        {
             continue;
         }
 
-        // Record constraint
-        constraints
-            .entry(pending_src.name.clone())
-            .or_default()
-            .push((
-                pending_src.required_by.clone(),
-                pending_src.constraint.clone(),
-            ));
-        push_filter_constraint(
-            &mut filter_constraints,
-            &pending_src.name,
-            &pending_src.filter,
-        );
-
-        // Resolve and fetch the source
-        let (resolved_ref, latest_version) =
-            resolve_single_source(&pending_src, provider, locked, options, &constraints, diag)?;
-        let rooted_ref = apply_subpath(
-            &pending_src.name,
-            &resolved_ref.tree_path,
-            pending_src.subpath.as_ref(),
-        )?;
-
-        // Read manifest for transitive deps
-        let manifest = provider.read_manifest(&rooted_ref.package_root, diag)?;
-
-        // Discover transitive dependencies
-        let mut deps = Vec::new();
-        if let Some(ref manifest) = manifest {
-            for (dep_name, dep_spec) in &manifest.dependencies {
-                deps.push(SourceName::from(dep_name.clone()));
-
-                // ManifestDep always has a URL (path-only deps filtered at load_manifest)
-                let dep_url = dep_spec.url.clone();
-
-                // Only add as pending if not already resolved
-                if !nodes.contains_key(dep_name.as_str()) {
-                    let dep_constraint = parse_version_constraint(dep_spec.version.as_deref());
-                    let dep_name_typed = SourceName::from(dep_name.clone());
-                    pending.push_back(PendingSource {
-                        name: dep_name_typed,
-                        source_id: SourceId::git_with_subpath(
-                            dep_url.clone(),
-                            dep_spec.subpath.clone(),
-                        ),
-                        spec: SourceSpec::Git(GitSpec {
-                            url: dep_url,
-                            version: dep_spec.version.clone(),
-                        }),
-                        subpath: dep_spec.subpath.clone(),
-                        constraint: dep_constraint,
-                        filter: dep_spec.filter.to_mode(),
-                        required_by: pending_src.name.to_string(),
-                    });
-                } else {
-                    // Already resolved — record additional constraint for later validation
-                    let dep_constraint = parse_version_constraint(dep_spec.version.as_deref());
-                    constraints
-                        .entry(SourceName::from(dep_name.clone()))
-                        .or_default()
-                        .push((pending_src.name.to_string(), dep_constraint));
-                    push_filter_constraint(
-                        &mut filter_constraints,
-                        &SourceName::from(dep_name.clone()),
-                        &dep_spec.filter.to_mode(),
-                    );
+        match visited.check_version(
+            &pending_item.package,
+            &pending_item.item,
+            &pending_item.constraint,
+        ) {
+            VersionCheckResult::NotSeen => {}
+            VersionCheckResult::SameVersion => continue,
+            VersionCheckResult::DifferentVersion {
+                existing,
+                requested,
+            } => {
+                if pending_item.is_local {
+                    continue;
                 }
+                return Err(ResolutionError::ItemVersionConflict {
+                    item: pending_item.item.to_string(),
+                    package: pending_item.package.to_string(),
+                    existing: format!("{existing:?}"),
+                    requested: format!("{requested:?}"),
+                    chain: pending_item.required_by.clone(),
+                }
+                .into());
             }
         }
 
-        nodes.insert(
-            pending_src.name.clone(),
-            ResolvedNode {
-                source_name: pending_src.name.clone(),
-                source_id: pending_src.source_id.clone(),
-                rooted_ref,
-                resolved_ref,
-                latest_version,
-                manifest,
-                deps,
-            },
+        if let Err(err) = package_versions.check_or_insert(
+            &pending_item.package,
+            &package.node.resolved_ref,
+            &pending_item.required_by,
+        ) {
+            if pending_item.is_local {
+                continue;
+            }
+            return Err(err.into());
+        }
+
+        visited.insert(
+            pending_item.package.clone(),
+            pending_item.item.clone(),
+            pending_item.constraint.clone(),
+            package.node.resolved_ref.clone(),
         );
-        id_index.insert(pending_src.source_id, pending_src.name);
+
+        let skill_deps = parse_pending_item_skill_deps(&pending_item, package)?;
+        for skill_dep in skill_deps {
+            let resolved_skill =
+                resolve_skill_ref(&skill_dep, &pending_item, &registry, &constraints)?;
+            push_filter_constraint(
+                &mut filter_constraints,
+                &resolved_skill.package,
+                &FilterMode::Include {
+                    agents: Vec::new(),
+                    skills: vec![resolved_skill.item.clone()],
+                },
+            );
+            stack.push(resolved_skill);
+        }
     }
 
-    // Validate that all constraints are satisfied by resolved versions
+    let mut nodes: IndexMap<SourceName, ResolvedNode> = IndexMap::new();
+    for (name, package) in &registry {
+        nodes.insert(name.clone(), package.node.clone());
+    }
+
     validate_all_constraints(&nodes, &constraints)?;
 
-    // Topological sort
-    let order = topological_sort(&nodes)?;
+    let order = alphabetical_order(&nodes);
 
     Ok(ResolvedGraph {
         nodes,
@@ -554,6 +550,7 @@ pub fn resolve(
 }
 
 /// Internal: a source waiting to be resolved.
+#[derive(Debug, Clone)]
 struct PendingSource {
     name: SourceName,
     source_id: SourceId,
@@ -562,6 +559,403 @@ struct PendingSource {
     constraint: VersionConstraint,
     filter: FilterMode,
     required_by: String,
+}
+
+#[derive(Debug, Default)]
+enum PackageResolutionState {
+    #[default]
+    Resolved,
+    Resolving {
+        deferred_seed_requests: Vec<PendingSource>,
+    },
+}
+
+#[derive(Debug, Clone)]
+struct RegisteredPackage {
+    node: ResolvedNode,
+    discovered: Vec<discover::DiscoveredItem>,
+    discovered_index: HashMap<(ItemKind, ItemName), discover::DiscoveredItem>,
+    skill_names: HashSet<ItemName>,
+    constraint: VersionConstraint,
+    spec: SourceSpec,
+    is_local: bool,
+}
+
+impl RegisteredPackage {
+    fn item(&self, kind: ItemKind, name: &ItemName) -> Option<&discover::DiscoveredItem> {
+        self.discovered_index.get(&(kind, name.clone()))
+    }
+
+    fn has_skill(&self, skill: &ItemName) -> bool {
+        self.skill_names.contains(skill)
+    }
+}
+
+fn resolve_package_bottom_up(
+    pending_src: &PendingSource,
+    seed_items: bool,
+    provider: &dyn SourceProvider,
+    locked: Option<&LockFile>,
+    options: &ResolveOptions,
+    diag: &mut DiagnosticCollector,
+    registry: &mut IndexMap<SourceName, RegisteredPackage>,
+    package_states: &mut HashMap<SourceName, PackageResolutionState>,
+    id_index: &mut HashMap<SourceId, SourceName>,
+    constraints: &mut HashMap<SourceName, Vec<(String, VersionConstraint)>>,
+    filter_constraints: &mut HashMap<SourceName, Vec<FilterMode>>,
+    stack: &mut Vec<PendingItem>,
+) -> Result<(), MarsError> {
+    if let Some(existing_name) = id_index.get(&pending_src.source_id)
+        && existing_name != &pending_src.name
+    {
+        return Err(ResolutionError::DuplicateSourceIdentity {
+            existing_name: existing_name.to_string(),
+            duplicate_name: pending_src.name.to_string(),
+            source_id: pending_src.source_id.to_string(),
+        }
+        .into());
+    }
+
+    if let Some(existing_package) = registry.get(&pending_src.name)
+        && existing_package.node.source_id != pending_src.source_id
+    {
+        return Err(ResolutionError::SourceIdentityMismatch {
+            name: pending_src.name.to_string(),
+            existing: existing_package.node.source_id.to_string(),
+            incoming: pending_src.source_id.to_string(),
+        }
+        .into());
+    }
+
+    constraints
+        .entry(pending_src.name.clone())
+        .or_default()
+        .push((
+            pending_src.required_by.clone(),
+            pending_src.constraint.clone(),
+        ));
+    push_filter_constraint(filter_constraints, &pending_src.name, &pending_src.filter);
+
+    if let Some(state) = package_states.get_mut(&pending_src.name) {
+        match state {
+            PackageResolutionState::Resolved => {
+                if seed_items {
+                    let package =
+                        registry
+                            .get(&pending_src.name)
+                            .ok_or_else(|| MarsError::Source {
+                                source_name: pending_src.name.to_string(),
+                                message: "resolved package missing from registry".to_string(),
+                            })?;
+                    seed_items_for_request(pending_src, package, stack);
+                }
+                return Ok(());
+            }
+            PackageResolutionState::Resolving {
+                deferred_seed_requests,
+            } => {
+                if seed_items {
+                    deferred_seed_requests.push(pending_src.clone());
+                }
+                return Ok(());
+            }
+        }
+    }
+
+    package_states.insert(
+        pending_src.name.clone(),
+        PackageResolutionState::Resolving {
+            deferred_seed_requests: Vec::new(),
+        },
+    );
+
+    let (resolved_ref, latest_version) =
+        resolve_single_source(pending_src, provider, locked, options, constraints, diag)?;
+    let rooted_ref = apply_subpath(
+        &pending_src.name,
+        &resolved_ref.tree_path,
+        pending_src.subpath.as_ref(),
+    )?;
+    let manifest = provider.read_manifest(&rooted_ref.package_root, diag)?;
+
+    let mut deps = Vec::new();
+    let mut manifest_requests: Vec<PendingSource> = Vec::new();
+    if let Some(manifest_data) = &manifest {
+        for (dep_name, dep_spec) in &manifest_data.dependencies {
+            let dep_name_typed = SourceName::from(dep_name.clone());
+            deps.push(dep_name_typed.clone());
+            manifest_requests.push(PendingSource {
+                name: dep_name_typed,
+                source_id: SourceId::git_with_subpath(
+                    dep_spec.url.clone(),
+                    dep_spec.subpath.clone(),
+                ),
+                spec: SourceSpec::Git(GitSpec {
+                    url: dep_spec.url.clone(),
+                    version: dep_spec.version.clone(),
+                }),
+                subpath: dep_spec.subpath.clone(),
+                constraint: parse_version_constraint(dep_spec.version.as_deref()),
+                filter: dep_spec.filter.to_mode(),
+                required_by: pending_src.name.to_string(),
+            });
+        }
+    }
+
+    let discovered = discover::discover_resolved_source(
+        &rooted_ref.package_root,
+        Some(pending_src.name.as_ref()),
+    )?;
+    let mut discovered_index: HashMap<(ItemKind, ItemName), discover::DiscoveredItem> =
+        HashMap::new();
+    let mut skill_names = HashSet::new();
+    for item in &discovered {
+        discovered_index.insert((item.id.kind, item.id.name.clone()), item.clone());
+        if item.id.kind == ItemKind::Skill {
+            skill_names.insert(item.id.name.clone());
+        }
+    }
+
+    registry.insert(
+        pending_src.name.clone(),
+        RegisteredPackage {
+            node: ResolvedNode {
+                source_name: pending_src.name.clone(),
+                source_id: pending_src.source_id.clone(),
+                rooted_ref,
+                resolved_ref,
+                latest_version,
+                manifest,
+                deps,
+            },
+            discovered,
+            discovered_index,
+            skill_names,
+            constraint: pending_src.constraint.clone(),
+            spec: pending_src.spec.clone(),
+            is_local: matches!(pending_src.spec, SourceSpec::Path(_)),
+        },
+    );
+    id_index.insert(pending_src.source_id.clone(), pending_src.name.clone());
+
+    for request in manifest_requests
+        .iter()
+        .filter(|request| is_unfiltered_request(&request.filter))
+    {
+        resolve_package_bottom_up(
+            request,
+            true,
+            provider,
+            locked,
+            options,
+            diag,
+            registry,
+            package_states,
+            id_index,
+            constraints,
+            filter_constraints,
+            stack,
+        )?;
+    }
+    for request in manifest_requests
+        .iter()
+        .filter(|request| !is_unfiltered_request(&request.filter))
+    {
+        resolve_package_bottom_up(
+            request,
+            false,
+            provider,
+            locked,
+            options,
+            diag,
+            registry,
+            package_states,
+            id_index,
+            constraints,
+            filter_constraints,
+            stack,
+        )?;
+    }
+
+    let mut deferred_seed_requests = Vec::new();
+    if let Some(PackageResolutionState::Resolving {
+        deferred_seed_requests: deferred,
+    }) = package_states.remove(&pending_src.name)
+    {
+        deferred_seed_requests = deferred;
+    }
+    package_states.insert(pending_src.name.clone(), PackageResolutionState::Resolved);
+
+    let package = registry
+        .get(&pending_src.name)
+        .ok_or_else(|| MarsError::Source {
+            source_name: pending_src.name.to_string(),
+            message: "resolved package missing from registry".to_string(),
+        })?;
+    if seed_items {
+        seed_items_for_request(pending_src, package, stack);
+    }
+    for deferred_request in deferred_seed_requests {
+        seed_items_for_request(&deferred_request, package, stack);
+    }
+
+    Ok(())
+}
+
+fn seed_items_for_request(
+    pending_src: &PendingSource,
+    package: &RegisteredPackage,
+    stack: &mut Vec<PendingItem>,
+) {
+    let mut selected: Vec<&discover::DiscoveredItem> = Vec::new();
+    match &pending_src.filter {
+        FilterMode::All => {
+            selected.extend(package.discovered.iter());
+        }
+        FilterMode::Include { agents, skills } => {
+            let wanted_agents: HashSet<ItemName> = agents.iter().cloned().collect();
+            let wanted_skills: HashSet<ItemName> = skills.iter().cloned().collect();
+            selected.extend(package.discovered.iter().filter(|item| match item.id.kind {
+                ItemKind::Agent => wanted_agents.contains(&item.id.name),
+                ItemKind::Skill => wanted_skills.contains(&item.id.name),
+            }));
+        }
+        FilterMode::Exclude(excluded) => {
+            selected.extend(package.discovered.iter().filter(|item| {
+                let source_path = item.source_path.to_string_lossy();
+                !excluded.iter().any(|excluded_item| {
+                    excluded_item == &item.id.name || excluded_item == source_path.as_ref()
+                })
+            }));
+        }
+        FilterMode::OnlySkills => {
+            selected.extend(
+                package
+                    .discovered
+                    .iter()
+                    .filter(|item| item.id.kind == ItemKind::Skill),
+            );
+        }
+        FilterMode::OnlyAgents => {
+            selected.extend(
+                package
+                    .discovered
+                    .iter()
+                    .filter(|item| item.id.kind == ItemKind::Agent),
+            );
+        }
+    }
+
+    for item in selected {
+        stack.push(PendingItem {
+            package: pending_src.name.clone(),
+            item: item.id.name.clone(),
+            kind: item.id.kind,
+            constraint: pending_src.constraint.clone(),
+            required_by: pending_src.required_by.clone(),
+            is_local: package.is_local,
+            is_filtered: !is_unfiltered_request(&pending_src.filter),
+            spec: pending_src.spec.clone(),
+        });
+    }
+}
+
+fn parse_pending_item_skill_deps(
+    pending_item: &PendingItem,
+    package: &RegisteredPackage,
+) -> Result<Vec<ItemName>, MarsError> {
+    let Some(discovered) = package.item(pending_item.kind, &pending_item.item) else {
+        return Ok(Vec::new());
+    };
+    let item_path =
+        discovered_item_markdown_path(&package.node.rooted_ref.package_root, discovered);
+    let skill_deps = validate::parse_item_skill_deps(&item_path)?;
+    Ok(skill_deps.into_iter().map(ItemName::from).collect())
+}
+
+fn discovered_item_markdown_path(package_root: &Path, item: &discover::DiscoveredItem) -> PathBuf {
+    match item.id.kind {
+        ItemKind::Agent => package_root.join(&item.source_path),
+        ItemKind::Skill => {
+            if item.source_path == Path::new(".") {
+                package_root.join("SKILL.md")
+            } else {
+                package_root.join(&item.source_path).join("SKILL.md")
+            }
+        }
+    }
+}
+
+fn resolve_skill_ref(
+    skill: &ItemName,
+    requester: &PendingItem,
+    registry: &IndexMap<SourceName, RegisteredPackage>,
+    constraints: &HashMap<SourceName, Vec<(String, VersionConstraint)>>,
+) -> Result<PendingItem, MarsError> {
+    let required_by = format!("{}/{}", requester.package, requester.item);
+
+    if let Some(requester_package) = registry.get(&requester.package)
+        && requester_package.has_skill(skill)
+    {
+        let constraint = primary_package_constraint(constraints, &requester.package)
+            .unwrap_or(&requester_package.constraint)
+            .clone();
+        return Ok(PendingItem {
+            package: requester.package.clone(),
+            item: skill.clone(),
+            kind: ItemKind::Skill,
+            constraint,
+            required_by,
+            is_local: requester_package.is_local,
+            is_filtered: true,
+            spec: requester_package.spec.clone(),
+        });
+    }
+
+    for (package_name, package) in registry {
+        if package_name == &requester.package {
+            continue;
+        }
+        if !package.has_skill(skill) {
+            continue;
+        }
+
+        let constraint = primary_package_constraint(constraints, package_name)
+            .unwrap_or(&package.constraint)
+            .clone();
+        return Ok(PendingItem {
+            package: package_name.clone(),
+            item: skill.clone(),
+            kind: ItemKind::Skill,
+            constraint,
+            required_by: required_by.clone(),
+            is_local: package.is_local,
+            is_filtered: true,
+            spec: package.spec.clone(),
+        });
+    }
+
+    let mut searched: Vec<String> = registry.keys().map(ToString::to_string).collect();
+    searched.sort();
+    Err(ResolutionError::SkillNotFound {
+        skill: skill.to_string(),
+        required_by,
+        searched,
+    }
+    .into())
+}
+
+fn primary_package_constraint<'a>(
+    constraints: &'a HashMap<SourceName, Vec<(String, VersionConstraint)>>,
+    package: &SourceName,
+) -> Option<&'a VersionConstraint> {
+    constraints
+        .get(package)
+        .and_then(|entries| entries.first().map(|(_, constraint)| constraint))
+}
+
+fn is_unfiltered_request(filter: &FilterMode) -> bool {
+    matches!(filter, FilterMode::All)
 }
 
 fn push_filter_constraint(
@@ -573,6 +967,12 @@ fn push_filter_constraint(
     if !entry.contains(filter) {
         entry.push(filter.clone());
     }
+}
+
+fn alphabetical_order(nodes: &IndexMap<SourceName, ResolvedNode>) -> Vec<SourceName> {
+    let mut order: Vec<SourceName> = nodes.keys().cloned().collect();
+    order.sort();
+    order
 }
 
 fn apply_subpath(
@@ -932,83 +1332,6 @@ fn validate_all_constraints(
         }
     }
     Ok(())
-}
-
-/// Topological sort using Kahn's algorithm (BFS-based).
-///
-/// Returns source names in dependency order (deps before dependents).
-/// Errors if a cycle is detected.
-fn topological_sort(
-    nodes: &IndexMap<SourceName, ResolvedNode>,
-) -> Result<Vec<SourceName>, MarsError> {
-    // Build in-degree map
-    let mut in_degree: HashMap<SourceName, usize> = HashMap::new();
-    let mut adjacency: HashMap<SourceName, Vec<SourceName>> = HashMap::new();
-
-    for (name, _) in nodes {
-        in_degree.entry(name.clone()).or_insert(0);
-        adjacency.entry(name.clone()).or_default();
-    }
-
-    for (name, node) in nodes {
-        for dep in &node.deps {
-            if nodes.contains_key(dep) {
-                adjacency.entry(name.clone()).or_default();
-                *in_degree.entry(dep.clone()).or_insert(0) += 0; // ensure dep exists
-                // dep → name edge means name depends on dep
-                // In Kahn's: in_degree[name] += 1 (name has an incoming dep edge)
-                *in_degree.entry(name.clone()).or_insert(0) += 1;
-                adjacency.entry(dep.clone()).or_default().push(name.clone());
-            }
-        }
-    }
-
-    // Start with nodes that have no dependencies (in_degree == 0)
-    let mut queue: VecDeque<SourceName> = VecDeque::new();
-    for (name, &degree) in &in_degree {
-        if degree == 0 {
-            queue.push_back(name.clone());
-        }
-    }
-
-    // Sort the initial queue for deterministic output
-    let mut sorted_queue: Vec<SourceName> = queue.drain(..).collect();
-    sorted_queue.sort();
-    queue.extend(sorted_queue);
-
-    let mut order: Vec<SourceName> = Vec::new();
-
-    while let Some(current) = queue.pop_front() {
-        order.push(current.clone());
-
-        // Collect and sort dependents for determinism
-        if let Some(dependents) = adjacency.get(&current) {
-            let mut sorted_dependents: Vec<SourceName> = dependents.clone();
-            sorted_dependents.sort();
-
-            for dependent in sorted_dependents {
-                if let Some(degree) = in_degree.get_mut(&dependent) {
-                    *degree -= 1;
-                    if *degree == 0 {
-                        queue.push_back(dependent);
-                    }
-                }
-            }
-        }
-    }
-
-    // If we haven't visited all nodes, there's a cycle
-    if order.len() != nodes.len() {
-        let unvisited: Vec<&str> = nodes
-            .keys()
-            .filter(|name| !order.contains(name))
-            .map(|s| s.as_str())
-            .collect();
-        let chain = unvisited.join(" → ");
-        return Err(ResolutionError::Cycle { chain }.into());
-    }
-
-    Ok(order)
 }
 
 #[cfg(test)]
@@ -1809,10 +2132,8 @@ mod tests {
         let dep_node = &graph.nodes["dep"];
         assert_eq!(dep_node.resolved_ref.version, Some(Version::new(0, 5, 0)));
 
-        // Topological order: dep before a
-        let dep_pos = graph.order.iter().position(|n| n == "dep").unwrap();
-        let a_pos = graph.order.iter().position(|n| n == "a").unwrap();
-        assert!(dep_pos < a_pos, "dep should come before a in topo order");
+        // Resolver output order is deterministic alphabetical.
+        assert_eq!(graph.order, vec!["a", "dep"]);
     }
 
     #[test]
@@ -2276,7 +2597,7 @@ mod tests {
     }
 
     #[test]
-    fn cycle_detected() {
+    fn cycle_does_not_error() {
         let dir = TempDir::new().unwrap();
         let tree_a = dir.path().join("a");
         let tree_b = dir.path().join("b");
@@ -2306,13 +2627,10 @@ mod tests {
             git_spec("https://example.com/a.git", Some("v1.0.0")),
         )]);
 
-        let result = resolve(&config, &provider, None, &default_options());
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert!(
-            err.contains("cycle") || err.contains("Cycle"),
-            "error should mention cycle: {err}"
-        );
+        let graph = resolve(&config, &provider, None, &default_options()).unwrap();
+        assert_eq!(graph.nodes.len(), 2);
+        assert!(graph.nodes.contains_key("a"));
+        assert!(graph.nodes.contains_key("b"));
     }
 
     #[test]
@@ -2917,10 +3235,10 @@ mod tests {
         );
     }
 
-    // ========== Topological sort tests ==========
+    // ========== Deterministic package order tests ==========
 
     #[test]
-    fn topo_sort_linear_chain() {
+    fn alphabetical_order_linear_chain() {
         let mut nodes = IndexMap::new();
         nodes.insert(
             "c".into(),
@@ -2959,12 +3277,12 @@ mod tests {
             },
         );
 
-        let order = topological_sort(&nodes).unwrap();
+        let order = alphabetical_order(&nodes);
         assert_eq!(order, vec!["a", "b", "c"]);
     }
 
     #[test]
-    fn topo_sort_diamond() {
+    fn alphabetical_order_ignores_dependency_shape() {
         // a depends on b and c, both depend on d
         let mut nodes = IndexMap::new();
         nodes.insert(
@@ -3016,20 +3334,12 @@ mod tests {
             },
         );
 
-        let order = topological_sort(&nodes).unwrap();
-        // d must come first, a must come last
-        assert_eq!(order[0], "d");
-        assert_eq!(*order.last().unwrap(), "a");
-        // b and c can be in either order, but both before a
-        let a_pos = order.iter().position(|n| n == "a").unwrap();
-        let b_pos = order.iter().position(|n| n == "b").unwrap();
-        let c_pos = order.iter().position(|n| n == "c").unwrap();
-        assert!(b_pos < a_pos);
-        assert!(c_pos < a_pos);
+        let order = alphabetical_order(&nodes);
+        assert_eq!(order, vec!["a", "b", "c", "d"]);
     }
 
     #[test]
-    fn topo_sort_no_deps() {
+    fn alphabetical_order_no_deps() {
         let mut nodes = IndexMap::new();
         nodes.insert(
             "a".into(),
@@ -3056,14 +3366,14 @@ mod tests {
             },
         );
 
-        let order = topological_sort(&nodes).unwrap();
+        let order = alphabetical_order(&nodes);
         assert_eq!(order.len(), 2);
         // Deterministic alphabetical order for independent nodes
         assert_eq!(order, vec!["a", "b"]);
     }
 
     #[test]
-    fn topo_sort_cycle_error() {
+    fn alphabetical_order_is_stable_for_cycles() {
         let mut nodes = IndexMap::new();
         nodes.insert(
             "a".into(),
@@ -3090,10 +3400,8 @@ mod tests {
             },
         );
 
-        let result = topological_sort(&nodes);
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert!(err.contains("cycle") || err.contains("Cycle"), "{err}");
+        let order = alphabetical_order(&nodes);
+        assert_eq!(order, vec!["a", "b"]);
     }
 
     fn dummy_ref(name: &str) -> ResolvedRef {
