@@ -21,14 +21,28 @@ pub enum ValidationWarning {
     },
 }
 
-/// Parse YAML frontmatter from an agent .md file.
+/// Generic: parse skill dependencies from any item's frontmatter.
 ///
 /// Returns the `skills` list, or empty vec if no frontmatter, no skills
 /// field, or malformed YAML. Only reads the frontmatter block between
 /// `---` delimiters, not the full markdown body.
-pub fn parse_agent_skills(agent_path: &Path) -> Result<Vec<String>, MarsError> {
-    let content = std::fs::read_to_string(agent_path)?;
+pub fn parse_item_skill_deps(item_path: &Path) -> Result<Vec<String>, MarsError> {
+    let content = std::fs::read_to_string(item_path)?;
     Ok(extract_skills_from_content(&content))
+}
+
+/// Parse skill dependencies from an agent's frontmatter.
+///
+/// Returns a list of skill names from the `skills:` YAML field.
+pub fn parse_agent_skills(agent_path: &Path) -> Result<Vec<String>, MarsError> {
+    parse_item_skill_deps(agent_path)
+}
+
+/// Parse skill dependencies from a skill's frontmatter.
+///
+/// Skills can also reference other skills via the `skills:` field.
+pub fn parse_skill_skills(skill_path: &Path) -> Result<Vec<String>, MarsError> {
+    parse_item_skill_deps(skill_path)
 }
 
 /// Extract skills list from markdown content with YAML frontmatter.
@@ -108,6 +122,38 @@ mod tests {
         let path = dir.join(format!("{name}.md"));
         fs::write(&path, content).unwrap();
         path
+    }
+
+    fn write_skill(dir: &Path, name: &str, content: &str) -> PathBuf {
+        let path = dir.join(format!("{name}.md"));
+        fs::write(&path, content).unwrap();
+        path
+    }
+
+    #[test]
+    fn parse_agent_skills_reads_frontmatter() {
+        let dir = TempDir::new().unwrap();
+        let path = write_agent(
+            dir.path(),
+            "coder",
+            "---\nskills:\n  - planning\n  - review\n---\n# Coder\n",
+        );
+
+        let skills = parse_agent_skills(&path).unwrap();
+        assert_eq!(skills, vec!["planning", "review"]);
+    }
+
+    #[test]
+    fn parse_skill_skills_reads_frontmatter() {
+        let dir = TempDir::new().unwrap();
+        let path = write_skill(
+            dir.path(),
+            "frontend",
+            "---\nskills:\n  - design-tokens\n  - motion\n---\n# Frontend Skill\n",
+        );
+
+        let skills = parse_skill_skills(&path).unwrap();
+        assert_eq!(skills, vec!["design-tokens", "motion"]);
     }
 
     #[test]

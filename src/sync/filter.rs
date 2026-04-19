@@ -111,7 +111,7 @@ fn resolve_agent_skill_deps(
             .find(|i| i.id.kind == ItemKind::Agent && i.id.name == *agent_name)
         {
             let agent_path = package_root.join(&agent_item.source_path);
-            let deps = validate::parse_agent_skills(&agent_path).unwrap_or_default();
+            let deps = validate::parse_item_skill_deps(&agent_path).unwrap_or_default();
             for skill in deps {
                 skill_deps.insert(ItemName::from(skill));
             }

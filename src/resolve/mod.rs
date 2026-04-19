@@ -22,7 +22,7 @@ use self::compat::CompatibilityResult;
 use crate::config::{EffectiveConfig, FilterMode, GitSpec, Manifest, SourceSpec};
 use crate::diagnostic::DiagnosticCollector;
 use crate::error::{MarsError, ResolutionError};
-use crate::lock::LockFile;
+use crate::lock::{ItemKind, LockFile};
 use crate::source::{AvailableVersion, ResolvedRef};
 use crate::types::{ItemName, SourceId, SourceName, SourceSubpath, SourceUrl};
 
@@ -70,6 +70,42 @@ pub enum VersionConstraint {
     Latest,
     /// Branch or commit pin — no semver resolution.
     RefPin(String),
+}
+
+/// An item waiting to be processed in DFS traversal.
+#[derive(Debug, Clone)]
+pub struct PendingItem {
+    /// Package containing this item.
+    pub package: SourceName,
+    /// Item name.
+    pub item: ItemName,
+    /// Agent or Skill.
+    pub kind: ItemKind,
+    /// Version constraint from config.
+    pub constraint: VersionConstraint,
+    /// Who requested this item (for error context).
+    pub required_by: String,
+    /// True if from a local path dependency (skip version checks).
+    pub is_local: bool,
+    /// True if this was a filtered request.
+    pub is_filtered: bool,
+    /// Source spec for fetching if not already in registry.
+    pub spec: SourceSpec,
+}
+
+/// A resolved item in the output graph.
+#[derive(Debug, Clone)]
+pub struct ResolvedItem {
+    /// Package this item belongs to.
+    pub package: SourceName,
+    /// Item name.
+    pub name: ItemName,
+    /// Agent or Skill.
+    pub kind: ItemKind,
+    /// Path to item source file(s).
+    pub source_path: PathBuf,
+    /// Skills this item depends on (from frontmatter).
+    pub skill_deps: Vec<ItemName>,
 }
 
 /// Result of checking whether an item was seen already.
@@ -131,8 +167,9 @@ impl VisitedSet {
         match self.index.get(&Self::index_key(package, item)) {
             None => VersionCheckResult::NotSeen,
             Some(existing) => match existing.constraint.compatible_with(constraint) {
-                CompatibilityResult::Compatible
-                | CompatibilityResult::PotentiallyConflicting => VersionCheckResult::SameVersion,
+                CompatibilityResult::Compatible | CompatibilityResult::PotentiallyConflicting => {
+                    VersionCheckResult::SameVersion
+                }
                 CompatibilityResult::Conflicting => VersionCheckResult::DifferentVersion {
                     existing: existing.constraint.clone(),
                     requested: constraint.clone(),
@@ -159,9 +196,7 @@ impl VisitedSet {
     }
 
     /// Iterate all visited items for graph/output assembly.
-    pub fn iter(
-        &self,
-    ) -> impl Iterator<Item = (&(SourceName, ItemName), &ResolvedVersion)> {
+    pub fn iter(&self) -> impl Iterator<Item = (&(SourceName, ItemName), &ResolvedVersion)> {
         self.index.iter()
     }
 }
@@ -979,6 +1014,8 @@ fn topological_sort(
 #[cfg(test)]
 mod tracker_tests {
     use super::*;
+    use crate::config::GitSpec;
+    use crate::lock::ItemKind;
     use semver::Version;
     use std::path::PathBuf;
 
@@ -1088,9 +1125,11 @@ mod tracker_tests {
             "/tmp/alpha",
         );
 
-        assert!(versions
-            .check_or_insert(&package, &resolved, "mars.toml")
-            .is_ok());
+        assert!(
+            versions
+                .check_or_insert(&package, &resolved, "mars.toml")
+                .is_ok()
+        );
     }
 
     #[test]
@@ -1108,7 +1147,11 @@ mod tracker_tests {
             .check_or_insert(&package, &resolved, "mars.toml")
             .expect("initial insert should succeed");
 
-        assert!(versions.check_or_insert(&package, &resolved, "agent:coder").is_ok());
+        assert!(
+            versions
+                .check_or_insert(&package, &resolved, "agent:coder")
+                .is_ok()
+        );
     }
 
     #[test]
@@ -1151,6 +1194,52 @@ mod tracker_tests {
             }
             other => panic!("expected PackageVersionConflict, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn pending_item_scaffolding_fields_roundtrip() {
+        let pending = PendingItem {
+            package: SourceName::from("alpha"),
+            item: ItemName::from("coder"),
+            kind: ItemKind::Agent,
+            constraint: VersionConstraint::Latest,
+            required_by: "mars.toml".to_string(),
+            is_local: false,
+            is_filtered: true,
+            spec: SourceSpec::Git(GitSpec {
+                url: SourceUrl::from("https://example.com/alpha.git"),
+                version: Some("v1.2.3".to_string()),
+            }),
+        };
+
+        assert_eq!(pending.package, "alpha");
+        assert_eq!(pending.item, "coder");
+        assert_eq!(pending.kind, ItemKind::Agent);
+        assert!(matches!(pending.constraint, VersionConstraint::Latest));
+        assert_eq!(pending.required_by, "mars.toml");
+        assert!(!pending.is_local);
+        assert!(pending.is_filtered);
+        assert!(matches!(pending.spec, SourceSpec::Git(_)));
+    }
+
+    #[test]
+    fn resolved_item_scaffolding_fields_roundtrip() {
+        let resolved = ResolvedItem {
+            package: SourceName::from("alpha"),
+            name: ItemName::from("coder"),
+            kind: ItemKind::Agent,
+            source_path: PathBuf::from("agents/coder.md"),
+            skill_deps: vec![ItemName::from("planning"), ItemName::from("review")],
+        };
+
+        assert_eq!(resolved.package, "alpha");
+        assert_eq!(resolved.name, "coder");
+        assert_eq!(resolved.kind, ItemKind::Agent);
+        assert_eq!(resolved.source_path, PathBuf::from("agents/coder.md"));
+        assert_eq!(
+            resolved.skill_deps,
+            vec![ItemName::from("planning"), ItemName::from("review")]
+        );
     }
 }
 
