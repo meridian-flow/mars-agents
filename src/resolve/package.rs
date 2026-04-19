@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::Path;
 
 use crate::config::{FilterMode, GitSpec, Manifest, SourceSpec};
@@ -7,6 +7,7 @@ use crate::discover;
 use crate::error::{ConfigError, MarsError, ResolutionError};
 use crate::lock::{ItemKind, LockFile};
 use crate::types::{ItemName, SourceId, SourceName, SourceSubpath};
+use indexmap::IndexMap;
 
 use super::SourceProvider;
 use super::constraint::parse_version_constraint;
@@ -40,25 +41,34 @@ pub(crate) enum PackageResolutionState {
 #[derive(Debug, Clone)]
 pub(crate) struct RegisteredPackage {
     pub(crate) node: ResolvedNode,
-    pub(crate) discovered: Vec<discover::DiscoveredItem>,
-    pub(crate) discovered_index: HashMap<(ItemKind, ItemName), discover::DiscoveredItem>,
-    pub(crate) skill_names: HashSet<ItemName>,
+    pub(crate) items: IndexMap<(ItemKind, ItemName), discover::DiscoveredItem>,
     pub(crate) constraint: VersionConstraint,
     pub(crate) spec: SourceSpec,
     pub(crate) is_local: bool,
 }
 
 impl RegisteredPackage {
+    pub(crate) fn items(&self) -> impl Iterator<Item = &discover::DiscoveredItem> {
+        self.items.values()
+    }
+
     pub(crate) fn item(
         &self,
         kind: ItemKind,
         name: &ItemName,
     ) -> Option<&discover::DiscoveredItem> {
-        self.discovered_index.get(&(kind, name.clone()))
+        self.items.get(&(kind, name.clone()))
     }
 
     pub(crate) fn has_skill(&self, skill: &ItemName) -> bool {
-        self.skill_names.contains(skill)
+        self.skill_names().any(|name| name == skill)
+    }
+
+    pub(crate) fn skill_names(&self) -> impl Iterator<Item = &ItemName> {
+        self.items
+            .keys()
+            .filter(|(kind, _)| *kind == ItemKind::Skill)
+            .map(|(_, name)| name)
     }
 }
 
@@ -165,14 +175,9 @@ pub(crate) fn resolve_package_bottom_up(
         &rooted_ref.package_root,
         Some(pending_src.name.as_ref()),
     )?;
-    let mut discovered_index: HashMap<(ItemKind, ItemName), discover::DiscoveredItem> =
-        HashMap::new();
-    let mut skill_names = HashSet::new();
+    let mut items: IndexMap<(ItemKind, ItemName), discover::DiscoveredItem> = IndexMap::new();
     for item in &discovered {
-        discovered_index.insert((item.id.kind, item.id.name.clone()), item.clone());
-        if item.id.kind == ItemKind::Skill {
-            skill_names.insert(item.id.name.clone());
-        }
+        items.insert((item.id.kind, item.id.name.clone()), item.clone());
     }
 
     ctx.registry_mut().insert(
@@ -187,9 +192,7 @@ pub(crate) fn resolve_package_bottom_up(
                 manifest,
                 deps,
             },
-            discovered,
-            discovered_index,
-            skill_names,
+            items,
             constraint: pending_src.constraint.clone(),
             spec: pending_src.spec.clone(),
             is_local: matches!(pending_src.spec, SourceSpec::Path(_)),
@@ -275,18 +278,18 @@ pub(crate) fn seed_items_for_request(
     let mut selected: Vec<&discover::DiscoveredItem> = Vec::new();
     match &pending_src.filter {
         FilterMode::All => {
-            selected.extend(package.discovered.iter());
+            selected.extend(package.items());
         }
         FilterMode::Include { agents, skills } => {
             let wanted_agents: HashSet<ItemName> = agents.iter().cloned().collect();
             let wanted_skills: HashSet<ItemName> = skills.iter().cloned().collect();
-            selected.extend(package.discovered.iter().filter(|item| match item.id.kind {
+            selected.extend(package.items().filter(|item| match item.id.kind {
                 ItemKind::Agent => wanted_agents.contains(&item.id.name),
                 ItemKind::Skill => wanted_skills.contains(&item.id.name),
             }));
         }
         FilterMode::Exclude(excluded) => {
-            selected.extend(package.discovered.iter().filter(|item| {
+            selected.extend(package.items().filter(|item| {
                 let source_path = item.source_path.to_string_lossy();
                 !excluded.iter().any(|excluded_item| {
                     excluded_item == &item.id.name || excluded_item == source_path.as_ref()
@@ -294,20 +297,10 @@ pub(crate) fn seed_items_for_request(
             }));
         }
         FilterMode::OnlySkills => {
-            selected.extend(
-                package
-                    .discovered
-                    .iter()
-                    .filter(|item| item.id.kind == ItemKind::Skill),
-            );
+            selected.extend(package.items().filter(|item| item.id.kind == ItemKind::Skill));
         }
         FilterMode::OnlyAgents => {
-            selected.extend(
-                package
-                    .discovered
-                    .iter()
-                    .filter(|item| item.id.kind == ItemKind::Agent),
-            );
+            selected.extend(package.items().filter(|item| item.id.kind == ItemKind::Agent));
         }
     }
 
