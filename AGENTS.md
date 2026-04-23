@@ -165,7 +165,9 @@ Integration tests under `tests/`. Prefer keeping changes localized to one module
 
 ## Releasing
 
-**Always use the release script** — it runs fmt, clippy, tests, and release build before tagging:
+**Always use the release script. Never manually `git tag` or edit version numbers.**
+
+The script gates on fmt, clippy (`-D warnings`), tests, and release build before tagging. Manual tagging bypasses all of these — clippy failures, test regressions, and version mismatches will ship and break CI.
 
 ```bash
 scripts/release.sh patch --push    # bump, commit, tag, push → triggers CI
