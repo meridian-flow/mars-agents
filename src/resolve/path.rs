@@ -58,16 +58,14 @@ pub(crate) fn apply_subpath(
         };
     }
 
-    let canonical_checkout = checkout_root
-        .canonicalize()
-        .map_err(|e| MarsError::Source {
-            source_name: source_name.to_string(),
-            message: format!(
-                "failed to canonicalize checkout root `{}`: {e}",
-                checkout_root.display()
-            ),
-        })?;
-    let canonical_package = package_root.canonicalize().map_err(|e| MarsError::Source {
+    let canonical_checkout = dunce::canonicalize(checkout_root).map_err(|e| MarsError::Source {
+        source_name: source_name.to_string(),
+        message: format!(
+            "failed to canonicalize checkout root `{}`: {e}",
+            checkout_root.display()
+        ),
+    })?;
+    let canonical_package = dunce::canonicalize(&package_root).map_err(|e| MarsError::Source {
         source_name: source_name.to_string(),
         message: format!(
             "failed to canonicalize package root `{}`: {e}",

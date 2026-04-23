@@ -268,9 +268,7 @@ fn build_target(
 
     let local_source_name: SourceName = SourceOrigin::LocalPackage.to_string().into();
     let local_source_id = SourceId::Path {
-        canonical: ctx
-            .project_root
-            .canonicalize()
+        canonical: dunce::canonicalize(&ctx.project_root)
             .unwrap_or_else(|_| ctx.project_root.clone()),
         subpath: None,
     };

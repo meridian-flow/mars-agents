@@ -499,15 +499,14 @@ fn collect_manifest_declared_paths(
                 package_root: package_root.to_path_buf(),
             });
         }
-        let canonical =
-            candidate
-                .canonicalize()
-                .map_err(|_| MarsError::ManifestDeclaredPathMissing {
-                    source_name: source_name.to_string(),
-                    manifest_path: raw.raw_path.display().to_string(),
-                    package_root: package_root.to_path_buf(),
-                })?;
-        let canonical_root = package_root.canonicalize().map_err(|e| MarsError::Source {
+        let canonical = dunce::canonicalize(&candidate).map_err(|_| {
+            MarsError::ManifestDeclaredPathMissing {
+                source_name: source_name.to_string(),
+                manifest_path: raw.raw_path.display().to_string(),
+                package_root: package_root.to_path_buf(),
+            }
+        })?;
+        let canonical_root = dunce::canonicalize(&package_root).map_err(|e| MarsError::Source {
             source_name: source_name.to_string(),
             message: format!(
                 "failed to canonicalize package root `{}`: {e}",

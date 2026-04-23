@@ -133,10 +133,10 @@ fn source_target_membership(
     config: &Config,
     source_abs: &Path,
 ) -> Result<(String, PathBuf), MarsError> {
-    let source_canon = source_abs.canonicalize()?;
+    let source_canon = dunce::canonicalize(source_abs)?;
     for target_name in config.settings.managed_targets() {
         let target_root = ctx.project_root.join(&target_name);
-        let Ok(target_canon) = target_root.canonicalize() else {
+        let Ok(target_canon) = dunce::canonicalize(&target_root) else {
             continue;
         };
         if let Ok(relative) = source_canon.strip_prefix(&target_canon) {

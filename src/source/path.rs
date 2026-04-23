@@ -55,7 +55,7 @@ pub fn fetch_path(
 
 /// Canonicalize a path, providing a helpful error on failure.
 fn canonicalize_path(path: &Path, source_name: &str) -> Result<PathBuf, MarsError> {
-    path.canonicalize().map_err(|e| MarsError::Source {
+    dunce::canonicalize(path).map_err(|e| MarsError::Source {
         source_name: source_name.to_string(),
         message: format!("failed to resolve path `{}`: {e}", path.display()),
     })
@@ -79,8 +79,8 @@ mod tests {
         assert!(resolved.version_tag.is_none());
         assert!(resolved.commit.is_none());
         assert_eq!(
-            resolved.tree_path.canonicalize().unwrap(),
-            source_dir.canonicalize().unwrap()
+            dunce::canonicalize(&resolved.tree_path).unwrap(),
+            dunce::canonicalize(&source_dir).unwrap()
         );
     }
 
@@ -95,8 +95,8 @@ mod tests {
         let resolved = fetch_path(Path::new("local-agents"), &project_root, "local").unwrap();
 
         assert_eq!(
-            resolved.tree_path.canonicalize().unwrap(),
-            source_dir.canonicalize().unwrap()
+            dunce::canonicalize(&resolved.tree_path).unwrap(),
+            dunce::canonicalize(&source_dir).unwrap()
         );
     }
 
@@ -112,8 +112,8 @@ mod tests {
             fetch_path(Path::new("../external-agents"), &project_root, "external").unwrap();
 
         assert_eq!(
-            resolved.tree_path.canonicalize().unwrap(),
-            source_dir.canonicalize().unwrap()
+            dunce::canonicalize(&resolved.tree_path).unwrap(),
+            dunce::canonicalize(&source_dir).unwrap()
         );
     }
 

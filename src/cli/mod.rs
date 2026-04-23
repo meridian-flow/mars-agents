@@ -334,7 +334,7 @@ pub fn find_agents_root(explicit: Option<&Path>) -> Result<MarsContext, MarsErro
 /// - Unix: `/` has no parent
 /// - Windows: `C:\` or UNC roots like `\\server\share` have no parent
 fn find_agents_root_from(start: &Path) -> Result<MarsContext, MarsError> {
-    let start_canon = start.canonicalize().unwrap_or_else(|_| start.to_path_buf());
+    let start_canon = dunce::canonicalize(start).unwrap_or_else(|_| start.to_path_buf());
     let mut dir = start_canon.as_path();
 
     // Walk up to filesystem root (Path::parent() returns None at root)
@@ -411,7 +411,7 @@ mod tests {
         let ctx = MarsContext::new(dir.path().to_path_buf()).unwrap();
         assert_eq!(
             ctx.managed_root,
-            dir.path().join(".claude").canonicalize().unwrap()
+            dunce::canonicalize(&dir.path().join(".claude")).unwrap()
         );
     }
 
@@ -424,7 +424,7 @@ mod tests {
         let ctx = MarsContext::new(dir.path().to_path_buf()).unwrap();
         assert_eq!(
             ctx.managed_root,
-            dir.path().join(".claude").canonicalize().unwrap()
+            dunce::canonicalize(&dir.path().join(".claude")).unwrap()
         );
     }
 
@@ -500,7 +500,7 @@ mod tests {
         let ctx = find_agents_root_from(&inner).unwrap();
         assert_eq!(
             ctx.project_root,
-            outer.canonicalize().unwrap(),
+            dunce::canonicalize(&outer).unwrap(),
             "should find outer config even when inner has .git"
         );
     }
@@ -516,7 +516,7 @@ mod tests {
         std::fs::create_dir_all(&subdir).unwrap();
 
         let ctx = find_agents_root_from(&subdir).unwrap();
-        assert_eq!(ctx.project_root, root.canonicalize().unwrap());
+        assert_eq!(ctx.project_root, dunce::canonicalize(&root).unwrap());
     }
 
     #[test]
@@ -536,7 +536,7 @@ mod tests {
         .unwrap();
 
         let ctx = find_agents_root_from(&child).unwrap();
-        assert_eq!(ctx.project_root, child.canonicalize().unwrap());
+        assert_eq!(ctx.project_root, dunce::canonicalize(&child).unwrap());
     }
 
     #[test]
@@ -550,7 +550,7 @@ mod tests {
         std::fs::create_dir_all(&deep).unwrap();
 
         let ctx = find_agents_root_from(&deep).unwrap();
-        assert_eq!(ctx.project_root, root.canonicalize().unwrap());
+        assert_eq!(ctx.project_root, dunce::canonicalize(&root).unwrap());
     }
 
     #[test]
@@ -574,7 +574,7 @@ mod tests {
         let ctx = find_agents_root_from(&submodule).unwrap();
         assert_eq!(
             ctx.project_root,
-            outer.canonicalize().unwrap(),
+            dunce::canonicalize(&outer).unwrap(),
             "should find outer config through submodule .git file boundary"
         );
     }
@@ -610,6 +610,6 @@ mod tests {
         std::fs::create_dir_all(&subdir).unwrap();
 
         let ctx = find_agents_root(Some(&subdir)).unwrap();
-        assert_eq!(ctx.project_root, project.canonicalize().unwrap());
+        assert_eq!(ctx.project_root, dunce::canonicalize(&project).unwrap());
     }
 }
