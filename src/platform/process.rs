@@ -69,6 +69,8 @@ pub fn display_command(args: &[&str]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::process::Command;
+
     use tempfile::TempDir;
 
     use super::*;
@@ -104,5 +106,48 @@ mod tests {
             display_command(&["log", "--oneline", "-5"]),
             "git log --oneline -5"
         );
+    }
+
+    #[test]
+    fn run_git_with_ref_passes_ref_without_shell_interpretation() {
+        let tmp = TempDir::new().unwrap();
+        Command::new("git")
+            .current_dir(tmp.path())
+            .args(["init", "."])
+            .output()
+            .expect("git init");
+        Command::new("git")
+            .current_dir(tmp.path())
+            .args(["config", "user.name", "Mars Test"])
+            .output()
+            .expect("git config user.name");
+        Command::new("git")
+            .current_dir(tmp.path())
+            .args(["config", "user.email", "mars@example.com"])
+            .output()
+            .expect("git config user.email");
+        std::fs::write(tmp.path().join("README.md"), "hello").unwrap();
+        Command::new("git")
+            .current_dir(tmp.path())
+            .args(["add", "README.md"])
+            .output()
+            .expect("git add");
+        Command::new("git")
+            .current_dir(tmp.path())
+            .args(["commit", "-m", "init"])
+            .output()
+            .expect("git commit");
+
+        let result = run_git_with_ref(
+            &["rev-parse", "--verify"],
+            "HEAD;echo shell-injected",
+            tmp.path(),
+            "verify ref",
+        );
+
+        let err = result.expect_err("metacharacter ref should be passed as one invalid git ref");
+        let message = err.to_string();
+        assert!(message.contains("HEAD;echo shell-injected"));
+        assert!(!message.contains("shell-injected\n"));
     }
 }

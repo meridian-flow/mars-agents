@@ -2460,6 +2460,25 @@ harness = "claude"
     }
 
     #[test]
+    fn read_cache_io_error_includes_operation_and_path() {
+        let mars = tempdir().unwrap();
+        let cache_path = mars.path().join(CACHE_FILE);
+        std::fs::create_dir(&cache_path).unwrap();
+
+        let err = read_cache(mars.path()).unwrap_err();
+        let msg = err.to_string();
+
+        assert!(
+            msg.contains("read models cache"),
+            "error should include operation context: {msg}"
+        );
+        assert!(
+            msg.contains(CACHE_FILE),
+            "error should include cache path: {msg}"
+        );
+    }
+
+    #[test]
     #[serial]
     fn ensure_fresh_12_ttl_zero_always_refetches() {
         let mars = tempdir().unwrap();

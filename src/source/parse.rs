@@ -656,6 +656,30 @@ mod tests {
     }
 
     #[test]
+    fn parse_windows_backslash_source_as_local_path() {
+        let parsed = parse("packages\\agents").unwrap();
+        assert_eq!(parsed.format, SourceFormat::LocalPath);
+        assert_eq!(parsed.path.as_deref(), Some(Path::new("packages\\agents")));
+        assert!(parsed.url.is_none());
+        assert_eq!(parsed.name, "packages\\agents");
+    }
+
+    #[test]
+    fn parse_windows_drive_relative_source_as_local_path() {
+        let parsed = parse("C:agents").unwrap();
+        assert_eq!(parsed.format, SourceFormat::LocalPath);
+        assert_eq!(parsed.path.as_deref(), Some(Path::new("C:agents")));
+        assert!(parsed.url.is_none());
+        assert_eq!(parsed.name, "C:agents");
+    }
+
+    #[test]
+    fn parse_windows_extended_path_remains_unsupported() {
+        let err = parse("\\\\?\\C:\\agents").unwrap_err();
+        assert!(matches!(err, ParseError::UnrecognizedFormat { .. }));
+    }
+
+    #[test]
     fn parse_github_shorthand_with_subpath() {
         let parsed = parse("owner/repo/plugins/foo").unwrap();
         assert_eq!(parsed.format, SourceFormat::GitHubShorthand);

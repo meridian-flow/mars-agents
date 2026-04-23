@@ -331,4 +331,29 @@ mod tests {
         assert!(out.path().join("agents/coder.md").exists());
         assert!(!out.path().join("agents/link.md").exists());
     }
+
+    #[test]
+    fn fetch_archive_uses_safe_cache_key_before_network() {
+        let cache_root = TempDir::new().unwrap();
+        let cache = GlobalCache {
+            root: cache_root.path().join("cache"),
+        };
+        fs::create_dir_all(cache.archives_dir()).unwrap();
+
+        let url = "https://github.com/group/pkg.git";
+        let sha = "abc123";
+        let expected_cache_path = cache
+            .archives_dir()
+            .join(archive_cache_component(url, sha).unwrap());
+        fs::create_dir_all(&expected_cache_path).unwrap();
+
+        let resolved = fetch_archive(url, sha, &cache).unwrap();
+
+        assert_eq!(resolved, expected_cache_path);
+        let file_name = resolved.file_name().unwrap().to_string_lossy();
+        assert!(
+            !file_name.contains(':'),
+            "archive cache key must be one Windows-safe component: {file_name}"
+        );
+    }
 }

@@ -209,4 +209,42 @@ mod tests {
 
         safe_remove(&path).unwrap();
     }
+
+    #[test]
+    fn safe_remove_removes_file_and_directory_tree() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("file.txt");
+        fs::write(&file, "content").unwrap();
+
+        safe_remove(&file).unwrap();
+        assert!(!file.exists());
+
+        let dir = tmp.path().join("dir");
+        fs::create_dir_all(dir.join("nested")).unwrap();
+        fs::write(dir.join("nested").join("file.txt"), "content").unwrap();
+
+        safe_remove(&dir).unwrap();
+        assert!(!dir.exists());
+    }
+
+    #[test]
+    fn replace_generated_dir_cleans_stale_backup_before_replace() {
+        let tmp = TempDir::new().unwrap();
+        let src = tmp.path().join("src");
+        let dest = tmp.path().join("dest");
+        let old = tmp.path().join(".dest.old");
+
+        fs::create_dir(&dest).unwrap();
+        fs::write(dest.join("old.txt"), "old").unwrap();
+        fs::create_dir(&old).unwrap();
+        fs::write(old.join("stale.txt"), "stale").unwrap();
+        fs::create_dir(&src).unwrap();
+        fs::write(src.join("new.txt"), "new").unwrap();
+
+        replace_generated_dir(&src, &dest).unwrap();
+
+        assert!(!old.exists());
+        assert!(!dest.join("old.txt").exists());
+        assert_eq!(fs::read_to_string(dest.join("new.txt")).unwrap(), "new");
+    }
 }

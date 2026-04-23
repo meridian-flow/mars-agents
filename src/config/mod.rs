@@ -999,6 +999,25 @@ skills = ["frontend-design"]
     }
 
     #[test]
+    fn load_manifest_io_error_includes_operation_and_path() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("mars.toml");
+        std::fs::create_dir(&config_path).unwrap();
+
+        let err = load_manifest(dir.path()).unwrap_err();
+        let msg = err.to_string();
+
+        assert!(
+            msg.contains("read manifest config"),
+            "error should include operation context: {msg}"
+        );
+        assert!(
+            msg.contains("mars.toml"),
+            "error should include config path: {msg}"
+        );
+    }
+
+    #[test]
     fn load_local_missing_returns_default() {
         let dir = TempDir::new().unwrap();
         let local = load_local(dir.path()).unwrap();
