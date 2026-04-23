@@ -506,7 +506,7 @@ fn collect_manifest_declared_paths(
                 package_root: package_root.to_path_buf(),
             }
         })?;
-        let canonical_root = dunce::canonicalize(&package_root).map_err(|e| MarsError::Source {
+        let canonical_root = dunce::canonicalize(package_root).map_err(|e| MarsError::Source {
             source_name: source_name.to_string(),
             message: format!(
                 "failed to canonicalize package root `{}`: {e}",

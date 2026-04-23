@@ -33,17 +33,8 @@ pub fn run(args: &WhyArgs, ctx: &super::MarsContext, json: bool) -> Result<i32, 
     // Find the item by name (try matching dest_path, name stem, or skill dir name)
     let mut found = None;
     for (dest_path, item) in &lock.items {
-        let name_matches = match item.kind {
-            ItemKind::Agent => {
-                let last = dest_path.as_str().rsplit('/').next().unwrap_or("");
-                let stem = last.strip_suffix(".md").unwrap_or(last);
-                stem == args.name || dest_path.to_string() == args.name
-            }
-            ItemKind::Skill => {
-                let dir_name = dest_path.as_str().rsplit('/').next().unwrap_or("");
-                dir_name == args.name || dest_path.to_string() == args.name
-            }
-        };
+        let name_matches =
+            dest_path.item_name(item.kind) == args.name || dest_path.as_str() == args.name;
 
         if name_matches {
             found = Some((dest_path.clone(), item.clone()));
@@ -64,7 +55,8 @@ pub fn run(args: &WhyArgs, ctx: &super::MarsContext, json: bool) -> Result<i32, 
     // Find which agents reference this item (if it's a skill)
     let mars_dir = ctx.project_root.join(".mars");
     let required_by = if item.kind == ItemKind::Skill {
-        find_referencing_agents(&mars_dir, &lock, &args.name)
+        let skill_name = dest_path.item_name(ItemKind::Skill);
+        find_referencing_agents(&mars_dir, &lock, &skill_name)
     } else {
         Vec::new()
     };

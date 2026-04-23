@@ -229,70 +229,68 @@ fn apply_item_rename(
     source_name: &SourceName,
 ) -> Result<(ItemName, DestPath), MarsError> {
     let default_dest = default_dest_path(kind, item_name);
-    let default_key = default_dest.to_string_lossy().replace("\\", "/");
+    let default_key = default_dest.as_str();
 
-    let rename_value = renames.get(&default_key).or_else(|| renames.get(item_name));
+    let rename_value = renames.get(default_key).or_else(|| renames.get(item_name));
 
     let dest_path = match rename_value {
-        Some(value) => parse_rename_dest(kind, value.as_str()),
+        Some(value) => parse_rename_dest(kind, value.as_str(), source_name)?,
         None => default_dest,
     };
-    let dest_name = dest_name_from_path(kind, &dest_path);
+    let dest_name = dest_name_from_dest(&dest_path, kind);
 
-    Ok((
-        ItemName::from(dest_name),
-        DestPath::new(dest_path.to_string_lossy().replace("\\", "/").as_str()).map_err(|e| {
-            MarsError::Source {
-                source_name: source_name.to_string(),
-                message: format!(
-                    "invalid rename destination `{}` for {} `{}`: {e}",
-                    dest_path.display(),
-                    kind,
-                    item_name
-                ),
-            }
-        })?,
-    ))
+    Ok((ItemName::from(dest_name), dest_path))
 }
 
-fn default_dest_path(kind: ItemKind, name: &str) -> PathBuf {
-    match kind {
-        ItemKind::Agent => PathBuf::from("agents").join(format!("{name}.md")),
-        ItemKind::Skill => PathBuf::from("skills").join(name),
-    }
+/// Construct the default destination path for an item.
+/// Uses string formatting to guarantee forward slashes on all platforms.
+fn default_dest_path(kind: ItemKind, name: &str) -> DestPath {
+    let path_str = match kind {
+        ItemKind::Agent => format!("agents/{name}.md"),
+        ItemKind::Skill => format!("skills/{name}"),
+    };
+    // Safe: internal paths constructed from validated item names
+    DestPath::new(path_str).expect("internal default path is always valid")
 }
 
-fn parse_rename_dest(kind: ItemKind, rename_value: &str) -> PathBuf {
-    let value = PathBuf::from(rename_value);
-    let has_prefix = value.starts_with("agents") || value.starts_with("skills");
-    let has_parent = value.parent().is_some_and(|p| p != Path::new(""));
+fn parse_rename_dest(
+    kind: ItemKind,
+    rename_value: &str,
+    source_name: &SourceName,
+) -> Result<DestPath, MarsError> {
+    // Normalize backslashes to forward slashes for cross-platform handling
+    let normalized = rename_value.replace('\\', "/");
+    let has_prefix = normalized.starts_with("agents/") || normalized.starts_with("skills/");
+    let has_parent = normalized.contains('/');
 
     if has_prefix || has_parent {
-        return value;
+        return DestPath::new(&normalized).map_err(|e| MarsError::Source {
+            source_name: source_name.to_string(),
+            message: format!("invalid rename destination `{rename_value}`: {e}"),
+        });
     }
 
-    match kind {
+    let path_str = match kind {
         ItemKind::Agent => {
-            if rename_value.ends_with(".md") {
-                PathBuf::from("agents").join(rename_value)
+            if normalized.ends_with(".md") {
+                format!("agents/{normalized}")
             } else {
-                PathBuf::from("agents").join(format!("{rename_value}.md"))
+                format!("agents/{normalized}.md")
             }
         }
-        ItemKind::Skill => PathBuf::from("skills").join(rename_value),
-    }
+        ItemKind::Skill => format!("skills/{normalized}"),
+    };
+    DestPath::new(path_str).map_err(|e| MarsError::Source {
+        source_name: source_name.to_string(),
+        message: format!("invalid rename destination `{rename_value}`: {e}"),
+    })
 }
 
-fn dest_name_from_path(kind: ItemKind, path: &Path) -> String {
+fn dest_name_from_dest(dest_path: &DestPath, kind: ItemKind) -> String {
+    let last = dest_path.as_str().rsplit('/').next().unwrap_or("");
     match kind {
-        ItemKind::Agent => path
-            .file_stem()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_default(),
-        ItemKind::Skill => path
-            .file_name()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_default(),
+        ItemKind::Agent => last.strip_suffix(".md").unwrap_or(last).to_string(),
+        ItemKind::Skill => last.to_string(),
     }
 }
 

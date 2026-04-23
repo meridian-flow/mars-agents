@@ -104,6 +104,35 @@ string_newtype!(SourceUrl);
 string_newtype!(CommitHash);
 string_newtype!(ContentHash);
 
+/// Shared path normalization result for relative path coordinates.
+enum NormalizeError {
+    Empty,
+    Absolute,
+    Escaping,
+}
+
+/// Normalize a relative path coordinate to forward-slash segments.
+/// Returns the normalized coordinate or a rejection reason.
+fn normalize_relative_coordinate(raw: &str) -> Result<String, NormalizeError> {
+    let normalized_separators = raw.replace('\\', "/");
+
+    let mut segments = Vec::new();
+    for component in Path::new(&normalized_separators).components() {
+        match component {
+            Component::Normal(seg) => segments.push(seg.to_string_lossy().into_owned()),
+            Component::CurDir => {}
+            Component::ParentDir => return Err(NormalizeError::Escaping),
+            Component::RootDir | Component::Prefix(_) => return Err(NormalizeError::Absolute),
+        }
+    }
+
+    if segments.is_empty() {
+        return Err(NormalizeError::Empty);
+    }
+
+    Ok(segments.join("/"))
+}
+
 /// Normalized relative package coordinate under a fetched source root.
 #[derive(Hash, Eq, PartialEq, Clone, Debug, Ord, PartialOrd)]
 pub struct SourceSubpath(String);
@@ -122,29 +151,17 @@ impl SourceSubpath {
             });
         }
 
-        let mut segments = Vec::new();
-        for component in Path::new(&normalized_separators).components() {
-            match component {
-                Component::Normal(seg) => segments.push(seg.to_string_lossy().into_owned()),
-                Component::CurDir => {}
-                Component::ParentDir => {
-                    return Err(SourceSubpathError::Escaping {
-                        input: raw.to_string(),
-                    });
-                }
-                Component::RootDir | Component::Prefix(_) => {
-                    return Err(SourceSubpathError::Absolute {
-                        input: raw.to_string(),
-                    });
-                }
-            }
-        }
+        let normalized = normalize_relative_coordinate(raw).map_err(|err| match err {
+            NormalizeError::Empty => SourceSubpathError::Empty,
+            NormalizeError::Absolute => SourceSubpathError::Absolute {
+                input: raw.to_string(),
+            },
+            NormalizeError::Escaping => SourceSubpathError::Escaping {
+                input: raw.to_string(),
+            },
+        })?;
 
-        if segments.is_empty() {
-            return Err(SourceSubpathError::Empty);
-        }
-
-        Ok(Self(segments.join("/")))
+        Ok(Self(normalized))
     }
 
     pub fn as_str(&self) -> &str {
@@ -333,29 +350,17 @@ impl DestPath {
             });
         }
 
-        let mut segments = Vec::new();
-        for component in Path::new(&normalized_separators).components() {
-            match component {
-                Component::Normal(seg) => segments.push(seg.to_string_lossy().into_owned()),
-                Component::CurDir => {}
-                Component::ParentDir => {
-                    return Err(DestPathError::Escaping {
-                        input: raw.to_string(),
-                    });
-                }
-                Component::RootDir | Component::Prefix(_) => {
-                    return Err(DestPathError::Absolute {
-                        input: raw.to_string(),
-                    });
-                }
-            }
-        }
+        let normalized = normalize_relative_coordinate(raw).map_err(|err| match err {
+            NormalizeError::Empty => DestPathError::Empty,
+            NormalizeError::Absolute => DestPathError::Absolute {
+                input: raw.to_string(),
+            },
+            NormalizeError::Escaping => DestPathError::Escaping {
+                input: raw.to_string(),
+            },
+        })?;
 
-        if segments.is_empty() {
-            return Err(DestPathError::Empty);
-        }
-
-        Ok(Self(segments.join("/")))
+        Ok(Self(normalized))
     }
 
     /// The normalized string representation.
@@ -380,6 +385,16 @@ impl DestPath {
     /// Split into path components (by forward slash).
     pub fn components(&self) -> impl Iterator<Item = &str> {
         self.0.split('/')
+    }
+
+    /// Extract the installed item name from this path.
+    /// Agents strip a trailing `.md`; skills use the leaf directory name.
+    pub fn item_name(&self, kind: ItemKind) -> String {
+        let last = self.0.rsplit('/').next().unwrap_or("");
+        match kind {
+            ItemKind::Agent => last.strip_suffix(".md").unwrap_or(last).to_string(),
+            ItemKind::Skill => last.to_string(),
+        }
     }
 
     /// Create from a host-relative path by stripping a root prefix.

@@ -411,7 +411,7 @@ mod tests {
         let ctx = MarsContext::new(dir.path().to_path_buf()).unwrap();
         assert_eq!(
             ctx.managed_root,
-            dunce::canonicalize(&dir.path().join(".claude")).unwrap()
+            dunce::canonicalize(dir.path().join(".claude")).unwrap()
         );
     }
 
@@ -424,7 +424,7 @@ mod tests {
         let ctx = MarsContext::new(dir.path().to_path_buf()).unwrap();
         assert_eq!(
             ctx.managed_root,
-            dunce::canonicalize(&dir.path().join(".claude")).unwrap()
+            dunce::canonicalize(dir.path().join(".claude")).unwrap()
         );
     }
 

@@ -1,8 +1,6 @@
 //! `mars version <bump|X.Y.Z> [--push]` — bump package version, commit, and tag.
 
-use std::ffi::OsStr;
 use std::path::Path;
-use std::process::{Command, Output};
 
 use semver::{BuildMetadata, Prerelease, Version};
 
@@ -61,33 +59,33 @@ pub fn run(args: &VersionArgs, ctx: &super::MarsContext, json: bool) -> Result<i
     package.version = next_version.clone();
     crate::config::save(&ctx.project_root, &config)?;
 
-    run_git(
+    crate::platform::process::run_git(
+        &["add", "mars.toml"],
         &ctx.project_root,
-        ["add", "mars.toml"],
-        "git add mars.toml".to_string(),
+        "git add mars.toml",
     )?;
-    run_git(
+    crate::platform::process::run_git(
+        &["commit", "-m", &tag],
         &ctx.project_root,
-        ["commit", "-m", &tag],
-        format!("git commit -m {tag}"),
+        &format!("git commit -m {tag}"),
     )?;
-    run_git(
+    crate::platform::process::run_git(
+        &["tag", "-a", &tag, "-m", &tag],
         &ctx.project_root,
-        ["tag", "-a", &tag, "-m", &tag],
-        format!("git tag -a {tag} -m {tag}"),
+        &format!("git tag -a {tag} -m {tag}"),
     )?;
 
     if args.push {
         let branch = current_branch(&ctx.project_root)?;
-        run_git(
+        crate::platform::process::run_git(
+            &["push", "origin", &branch],
             &ctx.project_root,
-            ["push", "origin", &branch],
-            format!("git push origin {branch}"),
+            &format!("git push origin {branch}"),
         )?;
-        run_git(
+        crate::platform::process::run_git(
+            &["push", "origin", &tag],
             &ctx.project_root,
-            ["push", "origin", &tag],
-            format!("git push origin {tag}"),
+            &format!("git push origin {tag}"),
         )?;
     }
 
@@ -106,13 +104,13 @@ pub fn run(args: &VersionArgs, ctx: &super::MarsContext, json: bool) -> Result<i
 }
 
 fn require_clean_working_tree(project_root: &Path) -> Result<(), MarsError> {
-    let output = run_git(
+    let output = crate::platform::process::run_git(
+        &["status", "--porcelain"],
         project_root,
-        ["status", "--porcelain"],
-        "git status --porcelain".to_string(),
+        "git status --porcelain",
     )?;
 
-    if !String::from_utf8_lossy(&output.stdout).trim().is_empty() {
+    if !output.is_empty() {
         return Err(ConfigError::Invalid {
             message: "working tree must be clean before running `mars version`".to_string(),
         }
@@ -200,15 +198,13 @@ fn resolve_next_version(bump: &str, current: &Version) -> Result<Version, MarsEr
 }
 
 fn ensure_tag_not_exists(project_root: &Path, tag: &str) -> Result<(), MarsError> {
-    let output = run_git(
+    let output = crate::platform::process::run_git(
+        &["tag", "--list", tag],
         project_root,
-        ["tag", "--list", tag],
-        format!("git tag --list {tag}"),
+        &format!("git tag --list {tag}"),
     )?;
 
-    let exists = String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .any(|line| line.trim() == tag);
+    let exists = output.lines().any(|line| line.trim() == tag);
 
     if exists {
         return Err(ConfigError::Invalid {
@@ -221,13 +217,11 @@ fn ensure_tag_not_exists(project_root: &Path, tag: &str) -> Result<(), MarsError
 }
 
 fn current_branch(project_root: &Path) -> Result<String, MarsError> {
-    let output = run_git(
+    let branch = crate::platform::process::run_git(
+        &["rev-parse", "--abbrev-ref", "HEAD"],
         project_root,
-        ["rev-parse", "--abbrev-ref", "HEAD"],
-        "git rev-parse --abbrev-ref HEAD".to_string(),
+        "git rev-parse --abbrev-ref HEAD",
     )?;
-
-    let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
     if branch.is_empty() || branch == "HEAD" {
         return Err(ConfigError::Invalid {
             message: "cannot push from detached HEAD".to_string(),
@@ -238,42 +232,9 @@ fn current_branch(project_root: &Path) -> Result<String, MarsError> {
     Ok(branch)
 }
 
-fn run_git<I, S>(project_root: &Path, args: I, display_command: String) -> Result<Output, MarsError>
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<OsStr>,
-{
-    let output = Command::new("git")
-        .current_dir(project_root)
-        .args(args)
-        .output()
-        .map_err(|err| MarsError::GitCli {
-            command: display_command.clone(),
-            message: err.to_string(),
-        })?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        let message = if !stderr.is_empty() {
-            stderr
-        } else if !stdout.is_empty() {
-            stdout
-        } else {
-            format!("command exited with status {}", output.status)
-        };
-
-        return Err(MarsError::GitCli {
-            command: display_command,
-            message,
-        });
-    }
-
-    Ok(output)
-}
-
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsStr;
     use std::path::Path;
     use std::process::Command;
 

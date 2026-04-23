@@ -519,8 +519,8 @@ fn sync_targets(
         .old_lock
         .items
         .keys()
-        .map(|dest_path| PathBuf::from(dest_path.as_str()))
-        .collect::<HashSet<PathBuf>>();
+        .map(|dest_path| dest_path.to_string())
+        .collect::<HashSet<String>>();
 
     let target_outcomes = crate::target_sync::sync_managed_targets(
         &ctx.project_root,

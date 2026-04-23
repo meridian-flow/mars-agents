@@ -10,7 +10,6 @@
 
 use std::io::Write;
 use std::path::Path;
-use std::process::Command;
 
 use crate::error::MarsError;
 
@@ -70,23 +69,26 @@ pub fn merge_content(
     //
     // Note: label order is local, base, theirs (matching file order).
     // The -p flag writes merged output to stdout instead of modifying the file.
-    let output = Command::new("git")
-        .arg("merge-file")
-        .arg("-p")
-        .arg("-L")
-        .arg(&labels.local)
-        .arg("-L")
-        .arg(&labels.base)
-        .arg("-L")
-        .arg(&labels.theirs)
-        .arg(&local_path)
-        .arg(&base_path)
-        .arg(&theirs_path)
-        .output()
-        .map_err(|e| MarsError::Source {
-            source_name: "merge".to_string(),
-            message: format!("failed to run `git merge-file`: {e} — is git installed and in PATH?"),
-        })?;
+    let local_path_str = local_path.to_string_lossy();
+    let base_path_str = base_path.to_string_lossy();
+    let theirs_path_str = theirs_path.to_string_lossy();
+    let output = crate::platform::process::run_git_raw(
+        &[
+            "merge-file",
+            "-p",
+            "-L",
+            &labels.local,
+            "-L",
+            &labels.base,
+            "-L",
+            &labels.theirs,
+            &local_path_str,
+            &base_path_str,
+            &theirs_path_str,
+        ],
+        dir.path(),
+        "three-way merge",
+    )?;
 
     let exit_code = output.status.code().unwrap_or(-1);
 

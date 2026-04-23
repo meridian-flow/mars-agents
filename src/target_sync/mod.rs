@@ -6,7 +6,7 @@
 //! All targets are managed outputs — they get copies (not symlinks) of .mars/ content.
 
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::diagnostic::DiagnosticCollector;
 use crate::error::MarsError;
@@ -47,7 +47,7 @@ pub fn sync_managed_targets(
     mars_dir: &Path,
     targets: &[String],
     outcomes: &[ActionOutcome],
-    previous_managed_paths: &HashSet<PathBuf>,
+    previous_managed_paths: &HashSet<String>,
     force: bool,
     diag: &mut DiagnosticCollector,
 ) -> Vec<TargetSyncOutcome> {
@@ -99,7 +99,7 @@ fn sync_one_target(
     target_root: &Path,
     target_name: &str,
     outcomes: &[ActionOutcome],
-    previous_managed_paths: &HashSet<PathBuf>,
+    previous_managed_paths: &HashSet<String>,
     force: bool,
     diag: &mut DiagnosticCollector,
 ) -> Result<TargetSyncOutcome, MarsError> {
@@ -111,7 +111,7 @@ fn sync_one_target(
     std::fs::create_dir_all(target_root)?;
 
     // Track expected paths for orphan cleanup
-    let mut expected_paths: HashSet<PathBuf> = HashSet::new();
+    let mut expected_paths: HashSet<String> = HashSet::new();
 
     for outcome in outcomes {
         let dest_rel = outcome.dest_path.as_str();
@@ -130,7 +130,7 @@ fn sync_one_target(
             }
             ActionTaken::Skipped => {
                 // Item is unchanged in .mars/ — still expected in target
-                expected_paths.insert(PathBuf::from(dest_rel));
+                expected_paths.insert(dest_rel.to_string());
                 let source = mars_dir.join(dest_rel);
                 let dest = target_root.join(dest_rel);
                 if source.exists() || source.symlink_metadata().is_ok() {
@@ -163,7 +163,7 @@ fn sync_one_target(
             _ => {
                 // Installed, Updated, Merged, Conflicted, Kept
                 // All of these mean content exists in .mars/ and should be copied to target
-                expected_paths.insert(PathBuf::from(dest_rel));
+                expected_paths.insert(dest_rel.to_string());
                 let source = mars_dir.join(dest_rel);
                 let dest = target_root.join(dest_rel);
                 if source.exists() || source.symlink_metadata().is_ok() {
@@ -223,8 +223,8 @@ fn copy_item_to_target(source: &Path, dest: &Path) -> Result<(), MarsError> {
 /// Returns the number of items removed.
 fn cleanup_orphans(
     target_root: &Path,
-    expected: &HashSet<PathBuf>,
-    previous_managed_paths: &HashSet<PathBuf>,
+    expected: &HashSet<String>,
+    previous_managed_paths: &HashSet<String>,
     errors: &mut Vec<String>,
 ) -> usize {
     let mut removed = 0;
@@ -259,14 +259,12 @@ fn cleanup_orphans(
                 continue;
             }
 
-            let rel_path = PathBuf::from(subdir).join(&file_name);
-            if previous_managed_paths.contains(&rel_path) && !expected.contains(&rel_path) {
+            // Build forward-slash relative path for consistent cross-platform comparison
+            let rel_path_str = format!("{}/{}", subdir, name_str);
+            if previous_managed_paths.contains(&rel_path_str) && !expected.contains(&rel_path_str) {
                 let full_path = entry.path();
                 if let Err(e) = fs_ops::safe_remove(&full_path) {
-                    errors.push(format!(
-                        "failed to remove orphan {}: {e}",
-                        rel_path.display()
-                    ));
+                    errors.push(format!("failed to remove orphan {}: {e}", rel_path_str));
                 } else {
                     removed += 1;
                 }
@@ -300,11 +298,11 @@ mod tests {
         }
     }
 
-    fn managed_paths(paths: &[&str]) -> HashSet<PathBuf> {
+    fn managed_paths(paths: &[&str]) -> HashSet<String> {
         paths
             .iter()
-            .map(|p| PathBuf::from(*p))
-            .collect::<HashSet<PathBuf>>()
+            .map(|p| (*p).to_string())
+            .collect::<HashSet<String>>()
     }
 
     fn make_skipped_with_checksum(dest: &str, checksum: &str) -> ActionOutcome {

@@ -67,6 +67,26 @@ pub fn display_command(args: &[&str]) -> String {
     }
 }
 
+/// Run a git command and return the raw `Output`, allowing caller to handle exit codes.
+///
+/// Unlike `run_git`, this does not treat non-zero exit codes as errors.
+/// Use this for commands like `git merge-file` where positive exit codes have meaning.
+pub fn run_git_raw(
+    args: &[&str],
+    cwd: &Path,
+    context: &str,
+) -> Result<std::process::Output, MarsError> {
+    let command_display = display_command(args);
+    Command::new("git")
+        .current_dir(cwd)
+        .args(args)
+        .output()
+        .map_err(|e| MarsError::GitCli {
+            command: command_display,
+            message: format!("{context}: failed to execute git: {e}"),
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use std::process::Command;
