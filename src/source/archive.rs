@@ -167,11 +167,12 @@ pub(crate) fn fetch_archive(
     }
 
     let archive_bytes = download_archive_bytes(&archive_url)?;
-    let temp_path = PathBuf::from(format!(
+    let temp_name = format!(
         "{}.tmp.{}",
-        cache_path.to_string_lossy(),
+        cache_path.file_name().unwrap_or_default().to_string_lossy(),
         std::process::id()
-    ));
+    );
+    let temp_path = cache_path.with_file_name(temp_name);
 
     if temp_path.exists() {
         let _ = safe_remove(&temp_path);

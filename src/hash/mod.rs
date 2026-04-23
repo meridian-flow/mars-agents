@@ -87,9 +87,12 @@ fn collect_file_hashes(
         if file_type.is_dir() {
             collect_file_hashes(root, &path, entries, excluded_top_level)?;
         } else {
-            let rel_path = rel_path.to_string_lossy().into_owned();
-            // Use forward slashes for cross-platform determinism
-            let rel_path = rel_path.replace('\\', "/");
+            // Build forward-slash relative path from components for cross-platform determinism
+            let rel_path: String = rel_path
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy())
+                .collect::<Vec<_>>()
+                .join("/");
             let content = fs::read(&path)?;
             let hash = hash_bytes(&content);
             entries.push((rel_path, hash));
