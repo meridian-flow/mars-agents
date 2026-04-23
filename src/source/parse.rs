@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+use crate::platform::path_syntax::classify_local_source;
 use crate::types::{SourceSubpath, SourceUrl};
 
 /// Classification of source input syntax.
@@ -72,8 +73,7 @@ pub fn parse(input: &str) -> Result<ParsedSourceSpec, ParseError> {
         });
     }
 
-    if is_local_path(trimmed) {
-        let path = PathBuf::from(trimmed);
+    if let Some(path) = classify_local_source(trimmed) {
         let name = derive_path_name(&path, None)?;
         return Ok(ParsedSourceSpec {
             format: SourceFormat::LocalPath,
@@ -620,24 +620,6 @@ fn collect_non_empty_segments(input: &str) -> Vec<String> {
         .filter(|segment| !segment.is_empty())
         .map(str::to_string)
         .collect()
-}
-
-fn is_local_path(input: &str) -> bool {
-    input == "."
-        || input == ".."
-        || input.starts_with("./")
-        || input.starts_with("../")
-        || input.starts_with('/')
-        || input.starts_with('~')
-        || is_windows_drive_path(input)
-}
-
-fn is_windows_drive_path(input: &str) -> bool {
-    let bytes = input.as_bytes();
-    bytes.len() >= 3
-        && bytes[0].is_ascii_alphabetic()
-        && bytes[1] == b':'
-        && matches!(bytes[2], b'\\' | b'/')
 }
 
 fn is_ssh_shorthand(input: &str) -> bool {
