@@ -4,6 +4,12 @@ Caveman style. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.16] - 2026-04-23
+
+### Fixed
+- Source name derivation splits on both `/` and `\` and strips drive prefixes — works cross-platform even when parsing Windows paths on Linux.
+- Test assertions for Windows path source names expect last component, not full path.
+
 ## [0.1.15] - 2026-04-23
 
 ### Fixed

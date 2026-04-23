@@ -569,7 +569,7 @@ fn derive_path_name(path: &Path, subpath: Option<&SourceSubpath>) -> Result<Stri
     // like `C:` that appear in drive-relative paths.
     let path_str = path.to_string_lossy();
     let base = path_str
-        .rsplit(|c| c == '/' || c == '\\')
+        .rsplit(['/', '\\'])
         .find(|s| !s.is_empty())
         .map(|s| {
             // Strip drive letter prefix (e.g. "C:agents" → "agents")
