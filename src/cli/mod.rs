@@ -363,8 +363,9 @@ mod tests {
     #[test]
     fn find_root_with_explicit_path() {
         let dir = TempDir::new().unwrap();
+        // Canonicalize once and use everywhere to avoid Windows 8.3 short-name mismatches
         let canonical_dir = dunce::canonicalize(dir.path()).unwrap();
-        std::fs::write(dir.path().join("mars.toml"), "[dependencies]\n").unwrap();
+        std::fs::write(canonical_dir.join("mars.toml"), "[dependencies]\n").unwrap();
 
         // --root points to a dir with mars.toml — should find it via walk-up
         let ctx = find_agents_root(Some(&canonical_dir)).unwrap();

@@ -1124,7 +1124,9 @@ path = "/home/dev/local-base"
     #[test]
     fn merge_override_retains_subpath_coordinate() {
         let temp = TempDir::new().unwrap();
-        let override_path = temp.path().join("local-base");
+        // Canonicalize temp root once to avoid Windows 8.3 short-name mismatches
+        let temp_root = dunce::canonicalize(temp.path()).unwrap();
+        let override_path = temp_root.join("local-base");
         std::fs::create_dir_all(&override_path).unwrap();
         let canonical_override = dunce::canonicalize(&override_path).unwrap();
 
@@ -1159,7 +1161,7 @@ path = "/home/dev/local-base"
             },
         };
 
-        let (effective, _) = merge_with_root(config, local, temp.path()).unwrap();
+        let (effective, _) = merge_with_root(config, local, &temp_root).unwrap();
         let source = &effective.dependencies["base"];
         assert!(source.is_overridden);
         assert_eq!(
