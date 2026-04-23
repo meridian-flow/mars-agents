@@ -4,6 +4,19 @@ Caveman style. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.14] - 2026-04-23
+
+### Changed
+- `default_dest_path` / `parse_rename_dest` return `DestPath` directly, not `PathBuf`.
+- `target_sync` uses `HashSet<String>` for cross-platform path comparison.
+- `SourceSubpath` and `DestPath` share `normalize_relative_coordinate()` helper.
+- `DestPath::item_name()` method added; `rsplit('/')` duplication removed.
+- All `std::fs::canonicalize` replaced with `dunce::canonicalize` project-wide.
+- Remaining `Command::new("git")` routed through `platform::process::run_git`.
+
+### Fixed
+- Windows 8.3 short-name path mismatches in `find_root` and `merge_override` tests.
+
 ## [0.1.13] - 2026-04-23
 
 ### Changed
