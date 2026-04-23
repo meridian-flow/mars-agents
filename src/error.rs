@@ -221,8 +221,13 @@ pub enum MarsError {
     )]
     ModelCacheUnavailable { reason: String },
 
-    #[error("I/O error: {0}")]
-    Io(#[from] std::io::Error),
+    #[error("{operation} failed for {}: {source}", path.display())]
+    Io {
+        operation: String,
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
 
     #[error("HTTP error: {url} — {status}: {message}")]
     Http {
@@ -262,9 +267,19 @@ impl MarsError {
             | MarsError::ManifestDeclaredPathMissing { .. }
             | MarsError::UnmanagedCollision { .. }
             | MarsError::ModelCacheUnavailable { .. }
-            | MarsError::Io(_)
+            | MarsError::Io { .. }
             | MarsError::Http { .. }
             | MarsError::GitCli { .. } => 3,
+        }
+    }
+}
+
+impl From<std::io::Error> for MarsError {
+    fn from(source: std::io::Error) -> Self {
+        MarsError::Io {
+            operation: "I/O operation".to_string(),
+            path: PathBuf::from("<unknown>"),
+            source,
         }
     }
 }
@@ -408,10 +423,11 @@ mod tests {
                 3,
             ),
             (
-                MarsError::Io(std::io::Error::new(
-                    std::io::ErrorKind::PermissionDenied,
-                    "denied",
-                )),
+                MarsError::Io {
+                    operation: "read file".to_string(),
+                    path: PathBuf::from("/tmp/file"),
+                    source: std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied"),
+                },
                 3,
             ),
             (

@@ -2,6 +2,7 @@ use std::fs;
 use std::path::Path;
 
 use crate::error::MarsError;
+use crate::platform::fs::{replace_generated_dir, safe_remove as platform_safe_remove};
 use crate::types::{ContentHash, ItemKind};
 
 /// Atomic file write via tmp+rename in the same directory.
@@ -33,74 +34,12 @@ pub fn atomic_copy_dir(source: &Path, dest: &Path) -> Result<(), MarsError> {
     copy_dir_following_symlinks(source, tmp_dir.path())?;
     let tmp_path = tmp_dir.keep();
 
-    if dest.exists() {
-        #[cfg(windows)]
-        crate::fs::clear_readonly(dest)?;
-        let old_path = parent.join(format!(
-            ".{}.old",
-            dest.file_name().unwrap_or_default().to_string_lossy()
-        ));
-        if old_path.symlink_metadata().is_ok() {
-            safe_remove(&old_path)?;
-        }
-
-        fs::rename(dest, &old_path)?;
-        if let Err(e) = fs::rename(&tmp_path, dest) {
-            let _ = fs::rename(&old_path, dest);
-            let _ = safe_remove(&tmp_path);
-            return Err(e.into());
-        }
-        let _ = safe_remove(&old_path);
-    } else {
-        fs::rename(&tmp_path, dest)?;
-    }
-
-    Ok(())
+    replace_generated_dir(&tmp_path, dest)
 }
 
 /// Remove a file or directory tree safely.
 pub fn safe_remove(path: &Path) -> Result<(), MarsError> {
-    let metadata = match path.symlink_metadata() {
-        Ok(metadata) => metadata,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(e) => return Err(e.into()),
-    };
-
-    #[cfg(windows)]
-    if metadata.is_dir() {
-        clear_readonly_recursive(path)?;
-    } else {
-        crate::fs::clear_readonly(path)?;
-    }
-
-    if metadata.is_dir() {
-        fs::remove_dir_all(path)?;
-    } else {
-        fs::remove_file(path)?;
-    }
-
-    Ok(())
-}
-
-#[cfg(windows)]
-fn clear_readonly_recursive(path: &Path) -> Result<(), MarsError> {
-    if let Ok(entries) = fs::read_dir(path) {
-        for entry in entries {
-            let entry = entry?;
-            let child_path = entry.path();
-            let child_meta = match fs::symlink_metadata(&child_path) {
-                Ok(meta) => meta,
-                Err(_) => continue,
-            };
-            if child_meta.is_dir() {
-                clear_readonly_recursive(&child_path)?;
-            } else {
-                crate::fs::clear_readonly(&child_path)?;
-            }
-        }
-    }
-    crate::fs::clear_readonly(path)?;
-    Ok(())
+    platform_safe_remove(path)
 }
 
 /// Compute hash of file or directory for comparison.

@@ -470,7 +470,11 @@ pub fn read_cache(mars_dir: &Path) -> Result<ModelsCache, MarsError> {
             models: Vec::new(),
             fetched_at: None,
         }),
-        Err(e) => Err(MarsError::Io(e)),
+        Err(source) => Err(MarsError::Io {
+            operation: "read models cache".to_string(),
+            path,
+            source,
+        }),
     }
 }
 

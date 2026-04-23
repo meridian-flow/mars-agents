@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use crate::error::MarsError;
 use crate::platform::cache::archive_cache_component;
+use crate::platform::fs::{publish_cache_dir_if_absent, safe_remove};
 use crate::source::GlobalCache;
 use flate2::read::GzDecoder;
 use tar::Archive;
@@ -173,29 +174,18 @@ pub(crate) fn fetch_archive(
     ));
 
     if temp_path.exists() {
-        let _ = fs::remove_dir_all(&temp_path);
+        let _ = safe_remove(&temp_path);
     }
     fs::create_dir_all(&temp_path)?;
 
     let extract_result = extract_and_strip_archive(&archive_bytes, &temp_path);
     if let Err(err) = extract_result {
-        let _ = fs::remove_dir_all(&temp_path);
+        let _ = safe_remove(&temp_path);
         return Err(err);
     }
 
-    match fs::rename(&temp_path, &cache_path) {
-        Ok(()) => Ok(cache_path),
-        Err(err) => {
-            // Another process may have won the race and already created the cache path.
-            if cache_path.exists() {
-                let _ = fs::remove_dir_all(&temp_path);
-                Ok(cache_path)
-            } else {
-                let _ = fs::remove_dir_all(&temp_path);
-                Err(err.into())
-            }
-        }
-    }
+    publish_cache_dir_if_absent(&temp_path, &cache_path)?;
+    Ok(cache_path)
 }
 
 #[cfg(test)]

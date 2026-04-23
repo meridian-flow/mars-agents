@@ -315,7 +315,11 @@ pub fn load_manifest(source_root: &Path) -> Result<(Option<Manifest>, Vec<Diagno
             ))
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok((None, diagnostics)),
-        Err(e) => Err(MarsError::Io(e)),
+        Err(source) => Err(MarsError::Io {
+            operation: "read manifest config".to_string(),
+            path,
+            source,
+        }),
     }
 }
 
