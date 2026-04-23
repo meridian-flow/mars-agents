@@ -146,6 +146,7 @@ pub fn remove_item(path: &Path, kind: ItemKind) -> Result<(), MarsError> {
 }
 
 #[cfg(windows)]
+#[allow(clippy::permissions_set_readonly_false)]
 pub fn clear_readonly(path: &Path) -> std::io::Result<()> {
     if let Ok(metadata) = std::fs::metadata(path) {
         let mut perms = metadata.permissions();
