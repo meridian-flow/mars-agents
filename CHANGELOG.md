@@ -4,6 +4,13 @@ Caveman style. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.15] - 2026-04-23
+
+### Fixed
+- Local path source name derivation uses `Path::file_name()` instead of string splitting — fixes `mars add`, `mars why`, `mars remove`, `mars override` on Windows.
+- Archive cache temp path uses `Path::with_file_name()` instead of string concat.
+- Content hash relative paths built from `Path::components()` instead of backslash replacement.
+
 ## [0.1.14] - 2026-04-23
 
 ### Changed
