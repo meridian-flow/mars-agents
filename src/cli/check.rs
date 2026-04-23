@@ -361,6 +361,7 @@ mod tests {
         crate::lock::write(path, &lock).unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn check_skips_symlinked_agent() {
         let dir = TempDir::new().unwrap();
@@ -386,6 +387,7 @@ mod tests {
         assert_eq!(code, 0);
     }
 
+    #[cfg(unix)]
     #[test]
     fn check_skips_symlinked_skill() {
         let dir = TempDir::new().unwrap();

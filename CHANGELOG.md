@@ -4,6 +4,11 @@ Caveman style. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.10] - 2026-04-23
+
+### Fixed
+- Windows test build no longer compiles POSIX-only symlink fixtures.
+
 ## [0.1.9] - 2026-04-23
 
 ### Added
