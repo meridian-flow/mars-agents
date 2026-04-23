@@ -4,6 +4,15 @@ Caveman style. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+- `DestPath` refactored from `PathBuf`-backed to `String`-backed normalized forward-slash coordinate. Lock keys and map keys now consistent across platforms. `resolve(root)` is the only path to native filesystem paths.
+
+### Fixed
+- Windows lock files with backslash paths now normalize to forward slashes on load.
+- `mars rename` validates destination path before storing mutation.
+- Invalid rename destinations in config return error instead of panic.
+- `mars adopt` handles invalid target-relative paths gracefully.
+
 ## [0.1.10] - 2026-04-23
 
 ### Fixed

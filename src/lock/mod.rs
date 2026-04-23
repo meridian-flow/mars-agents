@@ -188,7 +188,7 @@ pub fn build(
             | ActionTaken::Merged
             | ActionTaken::Conflicted => {
                 let dest_path = outcome.dest_path.clone();
-                if dest_path.as_path().as_os_str().is_empty() {
+                if dest_path.as_str().is_empty() {
                     continue;
                 }
 

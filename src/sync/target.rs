@@ -106,7 +106,8 @@ pub fn build_with_collisions(
                 ContentHash::from(hash::compute_hash(&source_content_path, item.id.kind)?)
             };
 
-            let (dest_name, dest_path) = apply_item_rename(item.id.kind, &item.id.name, &renames);
+            let (dest_name, dest_path) =
+                apply_item_rename(item.id.kind, &item.id.name, &renames, source_name)?;
             if item.id.kind == ItemKind::Skill && dest_name != item.id.name {
                 explicit_skill_renames.push(ExplicitSkillRename {
                     original_name: item.id.name.clone(),
@@ -200,7 +201,7 @@ pub fn check_unmanaged_collisions(
             continue;
         }
 
-        let disk_path = install_target.join(&target_item.dest_path);
+        let disk_path = target_item.dest_path.resolve(install_target);
         if disk_path.exists() {
             // Check if disk content matches what we'd install — if so,
             // this is a partial prior install (crash recovery), not an
@@ -221,7 +222,12 @@ pub fn check_unmanaged_collisions(
     collisions
 }
 
-fn apply_item_rename(kind: ItemKind, item_name: &str, renames: &RenameMap) -> (ItemName, DestPath) {
+fn apply_item_rename(
+    kind: ItemKind,
+    item_name: &str,
+    renames: &RenameMap,
+    source_name: &SourceName,
+) -> Result<(ItemName, DestPath), MarsError> {
     let default_dest = default_dest_path(kind, item_name);
     let default_key = default_dest.to_string_lossy().to_string();
 
@@ -233,7 +239,18 @@ fn apply_item_rename(kind: ItemKind, item_name: &str, renames: &RenameMap) -> (I
     };
     let dest_name = dest_name_from_path(kind, &dest_path);
 
-    (ItemName::from(dest_name), DestPath::from(dest_path))
+    Ok((
+        ItemName::from(dest_name),
+        DestPath::new(dest_path.to_string_lossy().as_ref()).map_err(|e| MarsError::Source {
+            source_name: source_name.to_string(),
+            message: format!(
+                "invalid rename destination `{}` for {} `{}`: {e}",
+                dest_path.display(),
+                kind,
+                item_name
+            ),
+        })?,
+    ))
 }
 
 fn default_dest_path(kind: ItemKind, name: &str) -> PathBuf {
@@ -440,6 +457,24 @@ mod tests {
         assert_eq!(target.items["agents/new-name.md"].id.name, "new-name");
     }
 
+    #[test]
+    fn build_with_invalid_rename_destination_returns_error() {
+        let tree = make_source_tree(&[("old-name.md", "# old")], &[]);
+
+        let (graph, mut config) =
+            make_graph_and_config(vec![("base", &tree, None, FilterMode::All)]);
+
+        config
+            .dependencies
+            .get_mut("base")
+            .unwrap()
+            .rename
+            .insert("agents/old-name.md".into(), "../escape.md".into());
+
+        let err = build_with_collisions(&graph, &config).unwrap_err();
+        assert!(matches!(err, MarsError::Source { .. }));
+    }
+
     // === Collision tests ===
 
     #[test]
@@ -608,10 +643,7 @@ mod tests {
             check_unmanaged_collisions(install_root.path(), &LockFile::empty(), &target);
         assert_eq!(collisions.len(), 1);
         assert_eq!(collisions[0].source_name.as_ref(), "base");
-        assert_eq!(
-            collisions[0].path.as_ref().to_string_lossy(),
-            "agents/coder.md"
-        );
+        assert_eq!(collisions[0].path.as_str(), "agents/coder.md");
     }
 
     #[test]
@@ -663,9 +695,6 @@ mod tests {
             check_unmanaged_collisions(install_root.path(), &LockFile::empty(), &target);
         assert_eq!(collisions.len(), 1);
         assert_eq!(collisions[0].source_name.as_ref(), "base");
-        assert_eq!(
-            collisions[0].path.as_ref().to_string_lossy(),
-            "agents/coder.md"
-        );
+        assert_eq!(collisions[0].path.as_str(), "agents/coder.md");
     }
 }

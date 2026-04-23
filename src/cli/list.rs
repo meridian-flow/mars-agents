@@ -58,7 +58,7 @@ pub fn run(args: &ListArgs, ctx: &super::MarsContext, json: bool) -> Result<i32,
         }
 
         // Read frontmatter for name + description from .mars/ canonical store
-        let disk_path = mars_dir.join(dest_path);
+        let disk_path = dest_path.resolve(&mars_dir);
         let content_path = match item.kind {
             ItemKind::Agent => disk_path.clone(),
             ItemKind::Skill => disk_path.join("SKILL.md"),
@@ -152,7 +152,7 @@ fn run_status(
             }
         }
 
-        let disk_path = root.join(dest_path);
+        let disk_path = dest_path.resolve(root);
         let status = if !disk_path.exists() {
             "missing".to_string()
         } else if crate::merge::file_has_conflict_markers(&disk_path) {

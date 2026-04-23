@@ -114,7 +114,7 @@ fn sync_one_target(
     let mut expected_paths: HashSet<PathBuf> = HashSet::new();
 
     for outcome in outcomes {
-        let dest_rel = outcome.dest_path.as_path();
+        let dest_rel = outcome.dest_path.as_str();
 
         match &outcome.action {
             ActionTaken::Removed => {
@@ -122,7 +122,7 @@ fn sync_one_target(
                 let target_path = target_root.join(dest_rel);
                 if target_path.exists() || target_path.symlink_metadata().is_ok() {
                     if let Err(e) = fs_ops::safe_remove(&target_path) {
-                        errors.push(format!("failed to remove {}: {e}", dest_rel.display()));
+                        errors.push(format!("failed to remove {dest_rel}: {e}"));
                     } else {
                         items_removed += 1;
                     }
@@ -130,16 +130,14 @@ fn sync_one_target(
             }
             ActionTaken::Skipped => {
                 // Item is unchanged in .mars/ — still expected in target
-                expected_paths.insert(dest_rel.to_path_buf());
+                expected_paths.insert(PathBuf::from(dest_rel));
                 let source = mars_dir.join(dest_rel);
                 let dest = target_root.join(dest_rel);
                 if source.exists() || source.symlink_metadata().is_ok() {
                     if force || !dest.exists() {
                         match copy_item_to_target(&source, &dest) {
                             Ok(()) => items_synced += 1,
-                            Err(e) => {
-                                errors.push(format!("failed to copy {}: {e}", dest_rel.display()))
-                            }
+                            Err(e) => errors.push(format!("failed to copy {dest_rel}: {e}")),
                         }
                     } else if let Some(expected_checksum) = &outcome.installed_checksum {
                         match crate::hash::compute_hash(&dest, outcome.item_id.kind) {
@@ -150,15 +148,14 @@ fn sync_one_target(
                                         "target-divergent",
                                         format!(
                                             "target `{target_name}` item `{}` diverged from `.mars` (preserved local content; run `mars sync --force` or `mars repair` to reset)",
-                                            dest_rel.display()
+                                            dest_rel
                                         ),
                                     );
                                 }
                             }
-                            Err(e) => errors.push(format!(
-                                "failed to verify {} checksum: {e}",
-                                dest_rel.display()
-                            )),
+                            Err(e) => {
+                                errors.push(format!("failed to verify {dest_rel} checksum: {e}"))
+                            }
                         }
                     }
                 }
@@ -166,15 +163,13 @@ fn sync_one_target(
             _ => {
                 // Installed, Updated, Merged, Conflicted, Kept
                 // All of these mean content exists in .mars/ and should be copied to target
-                expected_paths.insert(dest_rel.to_path_buf());
+                expected_paths.insert(PathBuf::from(dest_rel));
                 let source = mars_dir.join(dest_rel);
                 let dest = target_root.join(dest_rel);
                 if source.exists() || source.symlink_metadata().is_ok() {
                     match copy_item_to_target(&source, &dest) {
                         Ok(()) => items_synced += 1,
-                        Err(e) => {
-                            errors.push(format!("failed to copy {}: {e}", dest_rel.display()))
-                        }
+                        Err(e) => errors.push(format!("failed to copy {dest_rel}: {e}")),
                     }
                 }
             }

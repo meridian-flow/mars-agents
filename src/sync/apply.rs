@@ -81,7 +81,7 @@ fn execute_action(
 ) -> Result<ActionOutcome, MarsError> {
     match action {
         PlannedAction::Install { target } => {
-            let dest = root.join(&target.dest_path);
+            let dest = target.dest_path.resolve(root);
 
             // Read source content and install
             let installed_checksum = install_item(target, &dest)?;
@@ -100,7 +100,7 @@ fn execute_action(
         }
 
         PlannedAction::Overwrite { target } => {
-            let dest = root.join(&target.dest_path);
+            let dest = target.dest_path.resolve(root);
 
             // Install (overwrite) source content
             let installed_checksum = install_item(target, &dest)?;
@@ -123,7 +123,7 @@ fn execute_action(
             base_content,
             local_path,
         } => {
-            let dest = root.join(&target.dest_path);
+            let dest = target.dest_path.resolve(root);
             let full_local_path = root.join(local_path);
 
             // Read source (theirs) content
@@ -169,7 +169,7 @@ fn execute_action(
         }
 
         PlannedAction::Remove { locked } => {
-            let dest = root.join(&locked.dest_path);
+            let dest = locked.dest_path.resolve(root);
             if dest.exists() {
                 fs_ops::safe_remove(&dest)?;
             }
@@ -404,16 +404,10 @@ fn cache_base_content(
 
 /// Extract the item name from a destination path.
 fn extract_name_from_dest(dest_path: &DestPath, kind: ItemKind) -> String {
-    let path = dest_path.as_path();
+    let last = dest_path.as_str().rsplit('/').next().unwrap_or("");
     match kind {
-        ItemKind::Agent => path
-            .file_stem()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_default(),
-        ItemKind::Skill => path
-            .file_name()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_default(),
+        ItemKind::Agent => last.strip_suffix(".md").unwrap_or(last).to_string(),
+        ItemKind::Skill => last.to_string(),
     }
 }
 
@@ -430,7 +424,7 @@ pub fn prune_orphans(
 
     for (dest_path_str, locked_item) in &lock.items {
         if !target.items.contains_key(dest_path_str) {
-            let dest = root.join(dest_path_str);
+            let dest = dest_path_str.resolve(root);
             if dest.exists() {
                 fs_ops::safe_remove(&dest)?;
             }

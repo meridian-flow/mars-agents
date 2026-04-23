@@ -20,7 +20,14 @@ pub fn run(args: &RenameArgs, ctx: &super::MarsContext, json: bool) -> Result<i3
     let lock = crate::lock::load(&ctx.project_root)?;
 
     // Validate `from` is a managed item
-    let from_dest = DestPath::from(args.from.as_str());
+    let from_dest = DestPath::new(&args.from).map_err(|e| MarsError::Source {
+        source_name: "rename".to_string(),
+        message: format!("invalid path `{}`: {e}", args.from),
+    })?;
+    let _to_dest = DestPath::new(&args.to).map_err(|e| MarsError::Source {
+        source_name: "rename".to_string(),
+        message: format!("invalid destination path `{}`: {e}", args.to),
+    })?;
     if !lock.items.contains_key(&from_dest) {
         return Err(MarsError::Source {
             source_name: "rename".to_string(),

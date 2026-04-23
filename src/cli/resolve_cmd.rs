@@ -27,7 +27,18 @@ pub fn run(args: &ResolveArgs, ctx: &super::MarsContext, json: bool) -> Result<i
 
     let items_to_check: Vec<DestPath> = if let Some(file) = &args.file {
         // Check specific file
-        let rel = DestPath::from(file.as_path());
+        let rel_input = if file.is_absolute() {
+            file.strip_prefix(&mars_dir).map_or_else(
+                |_| file.to_string_lossy().to_string(),
+                |r| r.to_string_lossy().to_string(),
+            )
+        } else {
+            file.to_string_lossy().to_string()
+        };
+        let rel = DestPath::new(&rel_input).map_err(|e| MarsError::Source {
+            source_name: "resolve".to_string(),
+            message: format!("invalid managed item path `{}`: {e}", file.display()),
+        })?;
         if lock.items.contains_key(&rel) {
             vec![rel]
         } else {
@@ -42,7 +53,7 @@ pub fn run(args: &ResolveArgs, ctx: &super::MarsContext, json: bool) -> Result<i
     };
 
     for dest_path_str in &items_to_check {
-        let disk_path = mars_dir.join(dest_path_str);
+        let disk_path = dest_path_str.resolve(&mars_dir);
         if !disk_path.exists() {
             continue;
         }

@@ -80,7 +80,7 @@ fn link_target(ctx: &super::MarsContext, target_name: &str, json: bool) -> Resul
     let previous_managed_paths = lock
         .items
         .keys()
-        .map(|dest_path| dest_path.as_path().to_path_buf())
+        .map(|dest_path| PathBuf::from(dest_path.as_str()))
         .collect::<HashSet<PathBuf>>();
 
     let mut diag = DiagnosticCollector::new();
@@ -225,17 +225,10 @@ fn lock_items_as_sync_outcomes(lock: &LockFile) -> Vec<ActionOutcome> {
 }
 
 fn item_name_from_dest_path(dest_path: &crate::types::DestPath, kind: ItemKind) -> ItemName {
-    let path = dest_path.as_path();
-
+    let last = dest_path.as_str().rsplit('/').next().unwrap_or("");
     let name = match kind {
-        ItemKind::Agent => path
-            .file_stem()
-            .map(|stem| stem.to_string_lossy().to_string())
-            .unwrap_or_else(|| path.to_string_lossy().to_string()),
-        ItemKind::Skill => path
-            .file_name()
-            .map(|name| name.to_string_lossy().to_string())
-            .unwrap_or_else(|| path.to_string_lossy().to_string()),
+        ItemKind::Agent => last.strip_suffix(".md").unwrap_or(last).to_string(),
+        ItemKind::Skill => last.to_string(),
     };
 
     ItemName::from(name)

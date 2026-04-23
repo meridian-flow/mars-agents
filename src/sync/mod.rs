@@ -312,7 +312,7 @@ fn build_target(
             );
         }
 
-        let disk_path = managed_root.join(dest_path.as_path());
+        let disk_path = dest_path.resolve(managed_root);
         if !resolved.loaded.old_lock.items.contains_key(&dest_path)
             && disk_path.symlink_metadata().is_ok()
         {
@@ -521,7 +521,7 @@ fn sync_targets(
         .old_lock
         .items
         .keys()
-        .map(|dest_path| dest_path.as_path().to_path_buf())
+        .map(|dest_path| PathBuf::from(dest_path.as_str()))
         .collect::<HashSet<PathBuf>>();
 
     let target_outcomes = crate::target_sync::sync_managed_targets(
@@ -777,8 +777,8 @@ fn declaration_ordered_dep_models(
 
 fn default_dest_path(kind: ItemKind, name: &str) -> DestPath {
     match kind {
-        ItemKind::Agent => DestPath::from(PathBuf::from("agents").join(format!("{name}.md"))),
-        ItemKind::Skill => DestPath::from(PathBuf::from("skills").join(name)),
+        ItemKind::Agent => DestPath::from(format!("agents/{name}.md")),
+        ItemKind::Skill => DestPath::from(format!("skills/{name}")),
     }
 }
 
@@ -909,7 +909,7 @@ fn validate_skill_refs(
         .values()
         .filter(|item| item.id.kind == ItemKind::Agent)
         .map(|item| {
-            let disk_path = install_target.join(&item.dest_path);
+            let disk_path = item.dest_path.resolve(install_target);
             // If the file exists on disk, use that (may have local edits).
             // Otherwise, use the source path.
             let path = if disk_path.exists() {

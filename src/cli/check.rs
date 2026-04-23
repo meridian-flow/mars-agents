@@ -306,21 +306,18 @@ fn dependency_skills_from_lock(base: &Path) -> HashSet<String> {
     lock.items
         .values()
         .filter(|item| item.kind == crate::lock::ItemKind::Skill)
-        .filter_map(|item| skill_name_from_dest_path(item.dest_path.as_path()))
+        .filter_map(|item| skill_name_from_dest_path(item.dest_path.as_str()))
         .collect()
 }
 
-fn skill_name_from_dest_path(dest_path: &Path) -> Option<String> {
-    let mut components = dest_path.components();
-    let prefix = components.next()?.as_os_str().to_str()?;
+fn skill_name_from_dest_path(dest_path: &str) -> Option<String> {
+    let mut components = dest_path.split('/');
+    let prefix = components.next()?;
     if prefix != "skills" {
         return None;
     }
 
-    components
-        .next()
-        .and_then(|c| c.as_os_str().to_str())
-        .map(str::to_string)
+    components.next().map(str::to_string)
 }
 
 #[cfg(test)]

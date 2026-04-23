@@ -36,7 +36,7 @@ pub fn run(_args: &DoctorArgs, ctx: &super::MarsContext, json: bool) -> Result<i
     // Check each locked item against .mars/ canonical store
     let mars_dir = ctx.project_root.join(".mars");
     for (dest_path_str, item) in &lock.items {
-        let disk_path = mars_dir.join(dest_path_str);
+        let disk_path = dest_path_str.resolve(&mars_dir);
 
         // Check file exists
         if !disk_path.exists() {
@@ -214,7 +214,7 @@ fn check_target_divergence(
 
     for target_name in targets {
         for (dest_path, item) in &lock.items {
-            let relative_path = std::path::Path::new(target_name).join(dest_path.as_path());
+            let relative_path = std::path::Path::new(target_name).join(dest_path.as_str());
             let target_path = project_root.join(&relative_path);
 
             if !target_path.exists() && target_path.symlink_metadata().is_err() {

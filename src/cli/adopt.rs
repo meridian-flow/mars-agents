@@ -58,7 +58,16 @@ pub fn run(args: &AdoptArgs, ctx: &MarsContext, json: bool) -> Result<i32, MarsE
     }
 
     let (target_name, target_rel) = source_target_membership(ctx, &config, &source_abs)?;
-    if lock.items.contains_key(&DestPath::from(target_rel.clone())) {
+    let target_dest = DestPath::new(target_rel.to_string_lossy().as_ref()).map_err(|e| {
+        MarsError::InvalidRequest {
+            message: format!(
+                "{} resolves to invalid managed target item `{}`: {e}",
+                source_display,
+                target_rel.display()
+            ),
+        }
+    })?;
+    if lock.items.contains_key(&target_dest) {
         return Err(MarsError::InvalidRequest {
             message: format!(
                 "{source_display} is already managed by Mars (target `{target_name}` item `{}`)",

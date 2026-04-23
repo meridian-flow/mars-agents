@@ -232,6 +232,18 @@ pub enum SourceSubpathError {
     Escaping { input: String },
 }
 
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum DestPathError {
+    #[error("destination path cannot be empty")]
+    Empty,
+    #[error("destination path must be relative, got absolute value: {input:?}")]
+    Absolute { input: String },
+    #[error("destination path cannot escape target root: {input:?}")]
+    Escaping { input: String },
+    #[error("cannot convert path to DestPath: {reason}")]
+    ConversionFailed { reason: String },
+}
+
 fn is_windows_absolute(path: &str) -> bool {
     let bytes = path.as_bytes();
     if path.starts_with('/') {
@@ -241,6 +253,11 @@ fn is_windows_absolute(path: &str) -> bool {
         return true;
     }
     false
+}
+
+fn is_windows_drive_relative(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
 }
 
 /// Where an item came from — used for lock provenance and display.
@@ -294,100 +311,158 @@ impl fmt::Display for ItemId {
     }
 }
 
-/// Relative path under the install root (`.agents/` / project root).
+/// Normalized relative path coordinate (always forward-slash).
+/// Use `resolve(root)` to get a native filesystem path.
 #[derive(Eq, PartialEq, Clone, Debug, Ord, PartialOrd)]
-pub struct DestPath(PathBuf);
+pub struct DestPath(String);
 
 impl DestPath {
-    pub fn new(value: impl Into<PathBuf>) -> Self {
-        Self(value.into())
+    /// Create from any string, normalizing separators and rejecting invalid paths.
+    pub fn new(value: impl AsRef<str>) -> Result<Self, DestPathError> {
+        let raw = value.as_ref();
+        if raw.is_empty() {
+            return Err(DestPathError::Empty);
+        }
+
+        let normalized_separators = raw.replace('\\', "/");
+        if is_windows_absolute(&normalized_separators)
+            || is_windows_drive_relative(&normalized_separators)
+        {
+            return Err(DestPathError::Absolute {
+                input: raw.to_string(),
+            });
+        }
+
+        let mut segments = Vec::new();
+        for component in Path::new(&normalized_separators).components() {
+            match component {
+                Component::Normal(seg) => segments.push(seg.to_string_lossy().into_owned()),
+                Component::CurDir => {}
+                Component::ParentDir => {
+                    return Err(DestPathError::Escaping {
+                        input: raw.to_string(),
+                    });
+                }
+                Component::RootDir | Component::Prefix(_) => {
+                    return Err(DestPathError::Absolute {
+                        input: raw.to_string(),
+                    });
+                }
+            }
+        }
+
+        if segments.is_empty() {
+            return Err(DestPathError::Empty);
+        }
+
+        Ok(Self(segments.join("/")))
     }
 
-    pub fn as_path(&self) -> &Path {
+    /// The normalized string representation.
+    pub fn as_str(&self) -> &str {
         &self.0
     }
 
-    pub fn into_inner(self) -> PathBuf {
+    /// Consume and return the inner string.
+    pub fn into_inner(self) -> String {
         self.0
     }
 
-    /// Resolve this relative path under a root path.
+    /// Resolve to a native filesystem path under the given root.
     pub fn resolve(&self, root: &Path) -> PathBuf {
-        root.join(&self.0)
+        let mut result = root.to_path_buf();
+        for component in self.components() {
+            result.push(component);
+        }
+        result
     }
-}
 
-impl From<PathBuf> for DestPath {
-    fn from(value: PathBuf) -> Self {
-        Self(value)
+    /// Split into path components (by forward slash).
+    pub fn components(&self) -> impl Iterator<Item = &str> {
+        self.0.split('/')
     }
-}
 
-impl From<&Path> for DestPath {
-    fn from(value: &Path) -> Self {
-        Self(value.to_path_buf())
+    /// Create from a host-relative path by stripping a root prefix.
+    /// Used for CLI commands that accept filesystem paths.
+    pub fn from_host_relative(path: &Path, root: &Path) -> Result<Self, DestPathError> {
+        let relative = path
+            .strip_prefix(root)
+            .map_err(|_| DestPathError::ConversionFailed {
+                reason: format!("path {:?} is not under root {:?}", path, root),
+            })?;
+
+        let mut segments = Vec::new();
+        for component in relative.components() {
+            match component {
+                Component::Normal(seg) => segments.push(seg.to_string_lossy().into_owned()),
+                Component::CurDir => {}
+                Component::ParentDir => {
+                    return Err(DestPathError::Escaping {
+                        input: path.to_string_lossy().into_owned(),
+                    });
+                }
+                Component::RootDir | Component::Prefix(_) => {
+                    return Err(DestPathError::Absolute {
+                        input: path.to_string_lossy().into_owned(),
+                    });
+                }
+            }
+        }
+
+        if segments.is_empty() {
+            return Err(DestPathError::Empty);
+        }
+
+        Self::new(segments.join("/"))
     }
 }
 
 impl From<&str> for DestPath {
     fn from(value: &str) -> Self {
-        Self(PathBuf::from(value))
+        Self::new(value).expect("invalid destination path")
     }
 }
 
 impl From<String> for DestPath {
     fn from(value: String) -> Self {
-        Self(PathBuf::from(value))
+        Self::new(value).expect("invalid destination path")
     }
 }
 
-impl AsRef<Path> for DestPath {
-    fn as_ref(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Borrow<Path> for DestPath {
-    fn borrow(&self) -> &Path {
+impl AsRef<str> for DestPath {
+    fn as_ref(&self) -> &str {
         &self.0
     }
 }
 
 impl Borrow<str> for DestPath {
     fn borrow(&self) -> &str {
-        self.0.to_str().expect("DestPath must be valid UTF-8")
+        &self.0
     }
 }
 
 impl Hash for DestPath {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.0.to_string_lossy().hash(state);
-    }
-}
-
-impl Deref for DestPath {
-    type Target = Path;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
+        self.0.hash(state);
     }
 }
 
 impl fmt::Display for DestPath {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0.display())
+        f.write_str(&self.0)
     }
 }
 
 impl Serialize for DestPath {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        self.0.to_string_lossy().serialize(serializer)
+        self.0.serialize(serializer)
     }
 }
 
 impl<'de> Deserialize<'de> for DestPath {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        String::deserialize(deserializer).map(|s| Self(PathBuf::from(s)))
+        let value = String::deserialize(deserializer)?;
+        DestPath::new(value).map_err(serde::de::Error::custom)
     }
 }
 

@@ -75,7 +75,7 @@ pub fn compute(
                 &locked_item.installed_checksum
             };
 
-            let disk_path = root.join(&target_item.dest_path);
+            let disk_path = target_item.dest_path.resolve(root);
             let local_changed = if disk_path.exists() {
                 let disk_hash = hash::compute_hash(&disk_path, target_item.id.kind)?;
                 let disk_hash = ContentHash::from(disk_hash);
@@ -190,7 +190,7 @@ mod tests {
                 subpath: None,
             },
             source_path,
-            dest_path: dest_path.into(),
+            dest_path: dest_path.to_string_lossy().to_string().into(),
             source_hash: ContentHash::from(source_hash),
             is_flat_skill: false,
             rewritten_content: None,

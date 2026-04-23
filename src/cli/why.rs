@@ -35,19 +35,12 @@ pub fn run(args: &WhyArgs, ctx: &super::MarsContext, json: bool) -> Result<i32, 
     for (dest_path, item) in &lock.items {
         let name_matches = match item.kind {
             ItemKind::Agent => {
-                let stem = dest_path
-                    .as_path()
-                    .file_stem()
-                    .map(|s| s.to_string_lossy().to_string())
-                    .unwrap_or_default();
+                let last = dest_path.as_str().rsplit('/').next().unwrap_or("");
+                let stem = last.strip_suffix(".md").unwrap_or(last);
                 stem == args.name || dest_path.to_string() == args.name
             }
             ItemKind::Skill => {
-                let dir_name = dest_path
-                    .as_path()
-                    .file_name()
-                    .map(|s| s.to_string_lossy().to_string())
-                    .unwrap_or_default();
+                let dir_name = dest_path.as_str().rsplit('/').next().unwrap_or("");
                 dir_name == args.name || dest_path.to_string() == args.name
             }
         };
@@ -121,7 +114,7 @@ fn find_referencing_agents(
             continue;
         }
 
-        let agent_path = root.join(dest_path);
+        let agent_path = dest_path.resolve(root);
         if let Ok(skills) = crate::validate::parse_agent_skills(&agent_path)
             && skills.iter().any(|s| s == skill_name)
         {

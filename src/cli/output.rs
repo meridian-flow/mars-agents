@@ -302,12 +302,7 @@ fn print_action_line(
     let _ = stdout.set_color(ColorSpec::new().set_fg(Some(color)));
     let _ = write!(stdout, "  {prefix} ");
     let _ = stdout.reset();
-    let _ = writeln!(
-        stdout,
-        "{} ({})",
-        outcome.dest_path.display(),
-        outcome.item_id.kind
-    );
+    let _ = writeln!(stdout, "{} ({})", outcome.dest_path, outcome.item_id.kind);
 }
 
 /// Print a list of items as a table or JSON.
