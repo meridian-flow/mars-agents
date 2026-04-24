@@ -528,21 +528,27 @@ fn run_resolve(args: &ResolveAliasArgs, ctx: &MarsContext, json: bool) -> Result
     let mars = mars_dir(ctx);
     let ttl = models::load_models_cache_ttl(ctx);
     let mode = models::resolve_refresh_mode(args.no_refresh_models);
-    let Some((cache, outcome)) = ensure_fresh_or_json_error(&mars, ttl, mode, json)? else {
-        return Ok(1);
-    };
 
-    // Step 1: exact alias lookup
-    if let Some(alias) = merged.get(&args.name) {
-        return run_resolve_exact_alias(&args.name, alias, &merged, ctx, &cache, &outcome, json);
+    // Cache is enrichment, not a gate. If unavailable, skip to passthrough.
+    let cache_result = ensure_fresh_or_json_error(&mars, ttl, mode, json)?;
+
+    if let Some((cache, outcome)) = &cache_result {
+        // Step 1: exact alias lookup
+        if let Some(alias) = merged.get(&args.name) {
+            return run_resolve_exact_alias(&args.name, alias, &merged, ctx, cache, outcome, json);
+        }
+
+        // Step 2: alias-prefix resolution
+        if let Some(resolved) = models::resolve_with_alias_prefix(&args.name, &merged, cache) {
+            return run_output_resolved(&args.name, &resolved, "alias_prefix", outcome, json);
+        }
     }
 
-    // Step 2: alias-prefix resolution
-    if let Some(resolved) = models::resolve_with_alias_prefix(&args.name, &merged, &cache) {
-        return run_output_resolved(&args.name, &resolved, "alias_prefix", &outcome, json);
-    }
-
-    // Step 3: passthrough
+    // Step 3: passthrough — no cache needed
+    let outcome = cache_result
+        .as_ref()
+        .map(|(_, o)| o.clone())
+        .unwrap_or(models::RefreshOutcome::Offline);
     run_output_passthrough(&args.name, &outcome, json)
 }
 
