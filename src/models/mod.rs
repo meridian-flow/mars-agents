@@ -694,28 +694,24 @@ pub fn auto_resolve(
     candidates.first().map(|m| m.id.clone())
 }
 
-/// Alias-prefix resolution for inputs like `opus-4-6`.
+/// Resolve an input like `opus-4-6` by matching it against alias filter candidates.
 ///
 /// Algorithm:
-/// 1. For each auto-resolve alias whose name is a strict prefix of `input`:
-///    a. Extract suffix = input[alias_name.len()..]
-///    b. Resolve all candidates with alias filters
-///    c. Keep candidates whose model ID contains the suffix
-/// 2. Collect union across aliases, deduplicated by model ID
-/// 3. Sort candidates by newest release_date, then shortest ID
-/// 4. Return the best candidate
+/// 1. Build a glob pattern `*{input}*` from the user input
+/// 2. For each auto-resolve alias, run its filters against the cache
+/// 3. From those candidates, keep models matching the glob
+/// 4. Collect union across aliases, deduplicated by model ID
+/// 5. Sort by newest release_date, then shortest ID
+/// 6. Return the best candidate
 pub fn resolve_with_alias_prefix(
     input: &str,
     aliases: &IndexMap<String, ModelAlias>,
     cache: &ModelsCache,
 ) -> Option<ResolvedAlias> {
+    let pattern = format!("*{}*", input);
     let mut deduped: IndexMap<String, CachedModel> = IndexMap::new();
 
-    for (alias_name, alias) in aliases {
-        if !(input.starts_with(alias_name.as_str()) && input.len() > alias_name.len()) {
-            continue;
-        }
-
+    for (_alias_name, alias) in aliases {
         let ModelSpec::AutoResolve {
             provider,
             match_patterns,
@@ -725,9 +721,8 @@ pub fn resolve_with_alias_prefix(
             continue;
         };
 
-        let suffix = &input[alias_name.len()..];
         for candidate in auto_resolve_all(provider, match_patterns, exclude_patterns, cache) {
-            if candidate.id.contains(suffix) {
+            if glob_match(&pattern, &candidate.id) {
                 deduped
                     .entry(candidate.id.clone())
                     .or_insert_with(|| candidate.clone());
@@ -1429,12 +1424,17 @@ mod tests {
     }
 
     #[test]
-    fn resolve_with_alias_prefix_exact_name_skipped() {
+    fn resolve_with_alias_prefix_exact_name_matches() {
+        // When the input equals an alias name, this function still finds matches
+        // via glob *opus*. The caller (run_resolve) handles exact alias lookup
+        // before calling this function, so this path is only reached for
+        // non-alias inputs in practice.
         let aliases = builtin_aliases();
         let cache = make_cache(vec![("claude-opus-4-6", "Anthropic", Some("2026-02-05"))]);
 
         let resolved = resolve_with_alias_prefix("opus", &aliases, &cache);
-        assert!(resolved.is_none());
+        assert!(resolved.is_some());
+        assert_eq!(resolved.unwrap().model_id, "claude-opus-4-6");
     }
 
     #[test]
