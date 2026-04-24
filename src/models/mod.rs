@@ -708,7 +708,11 @@ pub fn resolve_with_alias_prefix(
     aliases: &IndexMap<String, ModelAlias>,
     cache: &ModelsCache,
 ) -> Option<ResolvedAlias> {
-    let pattern = format!("*{}*", input);
+    let pattern = if input.contains('*') {
+        input.to_string()
+    } else {
+        format!("*{}*", input)
+    };
     let mut deduped: IndexMap<String, CachedModel> = IndexMap::new();
 
     for (_alias_name, alias) in aliases {
