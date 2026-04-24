@@ -4,6 +4,18 @@ Caveman style. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- **Three-step model resolve**: `mars models resolve` now tries alias → glob match against alias candidates → passthrough. Older versions work: `opus-4-6` → `claude-opus-4-6`. Unknown models pass through to harness with warning instead of erroring. Exit 0 always (cache is enrichment, not gate).
+- **Three-tier `mars models list`**: default shows alias winners; `--all` shows all models matching any alias filter; `--catalog` dumps full models.dev cache. `--all`/`--catalog`/`--include`/`--exclude` conflict pairwise (clap-enforced).
+- `auto_resolve_all()` — returns all alias filter candidates, not just winner. Used by `--all` listing and glob resolve.
+- User-provided wildcards in resolve: `mars models resolve "*opus*"` uses pattern as-is; plain text auto-wraps as `*{input}*`.
+
+### Fixed
+- Passthrough resolve works when cache unavailable (offline + first run). Cache load failure skips to passthrough instead of erroring.
+
+### Changed
+- `--all` flag on `mars models list` redefined: was "show aliases with unavailable harnesses", now "show all alias-filter candidates across versions". No backwards compat needed.
+
 ## [0.1.16] - 2026-04-23
 
 ### Fixed
