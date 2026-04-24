@@ -393,7 +393,9 @@ fn collect_all_model_entries(
                     append_alias_match(&mut by_model_id, matched, &installed, alias_name);
                 }
             }
-            ModelSpec::Pinned { model, provider, .. } => {
+            ModelSpec::Pinned {
+                model, provider, ..
+            } => {
                 if let Some(matched) = cache
                     .models
                     .iter()

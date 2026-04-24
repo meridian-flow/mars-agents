@@ -1141,8 +1141,7 @@ pub fn resolve_all(
     let mut resolved = IndexMap::new();
 
     for (name, alias) in aliases {
-        let Some((model_id, provider)) = resolve_model_and_provider(alias, cache)
-        else {
+        let Some((model_id, provider)) = resolve_model_and_provider(alias, cache) else {
             continue; // unresolvable — omit
         };
 
@@ -1245,7 +1244,7 @@ fn format_alias_resolution_for_diag(
     alias: &ModelAlias,
     source_name: &str,
     cache: &ModelsCache,
-    ) -> (String, Option<String>) {
+) -> (String, Option<String>) {
     match &alias.spec {
         ModelSpec::Pinned { model, .. } => (
             format!("{source_name} → {model} (pinned)"),
@@ -1700,10 +1699,7 @@ mod tests {
         let mut alias = pinned_alias(Some("claude"), "claude-opus-4-6");
         alias.default_effort = Some("high".to_string());
         alias.autocompact = Some(42);
-        aliases.insert(
-            "opus".to_string(),
-            alias,
-        );
+        aliases.insert("opus".to_string(), alias);
         let cache = make_cache(vec![("claude-opus-4-7", "Anthropic", Some("2026-04-16"))]);
 
         let resolved = resolve_with_alias_prefix("opus-4-7", &aliases, &cache).unwrap();
@@ -1889,12 +1885,7 @@ mod tests {
                 let mut m = IndexMap::new();
                 m.insert(
                     "opus".to_string(),
-                    pinned_match_alias(
-                        "claude-opus-4-6",
-                        "Anthropic",
-                        &["claude-opus-*"],
-                        &[],
-                    ),
+                    pinned_match_alias("claude-opus-4-6", "Anthropic", &["claude-opus-*"], &[]),
                 );
                 m
             },
@@ -1905,12 +1896,7 @@ mod tests {
                 let mut m = IndexMap::new();
                 m.insert(
                     "opus".to_string(),
-                    pinned_match_alias(
-                        "claude-opus-4-7",
-                        "Anthropic",
-                        &["claude-opus-*"],
-                        &[],
-                    ),
+                    pinned_match_alias("claude-opus-4-7", "Anthropic", &["claude-opus-*"], &[]),
                 );
                 m
             },
@@ -1937,12 +1923,7 @@ mod tests {
                 let mut m = IndexMap::new();
                 m.insert(
                     "opus".to_string(),
-                    pinned_match_alias(
-                        "claude-opus-4-7",
-                        "Anthropic",
-                        &["claude-opus-*"],
-                        &[],
-                    ),
+                    pinned_match_alias("claude-opus-4-7", "Anthropic", &["claude-opus-*"], &[]),
                 );
                 m
             },
