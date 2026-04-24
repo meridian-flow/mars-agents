@@ -329,17 +329,23 @@ Use this before `models list`/`models resolve` when you want fresh auto-resolve 
 
 ### `mars models list`
 
-List aliases from dependencies + consumer config with resolved model IDs.
+List models from alias resolution (dependency + consumer config) and the local cache.
 
 ```bash
-mars models list [--all] [--include PATTERN,... | --exclude PATTERN,...]
+mars models list [--all] [--catalog] [--include PATTERN,... | --exclude PATTERN,...]
 ```
 
 | Flag | Description |
 |---|---|
-| `--all` | Include aliases whose harness is unavailable locally |
-| `--include` | Show only aliases matching glob patterns |
-| `--exclude` | Hide aliases matching glob patterns |
+| `--all` | Show all alias-filter candidates (can include multiple versions per alias) |
+| `--catalog` | Show all models from the cache, regardless of alias coverage |
+| `--include` | Show only entries matching glob patterns |
+| `--exclude` | Hide entries matching glob patterns |
+
+**List modes (three-tier):**
+- Default: resolved alias view (single best match per alias)
+- `--all`: expanded alias view (all alias-filter candidates, including multiple versions per alias)
+- `--catalog`: raw cache view (all cached models, even when no alias maps to them)
 
 **Rules:**
 - `--include` and `--exclude` are mutually exclusive
@@ -349,6 +355,7 @@ mars models list [--all] [--include PATTERN,... | --exclude PATTERN,...]
 ```bash
 mars models list
 mars models list --all
+mars models list --catalog
 mars models list --include "opus*,sonnet*"
 mars models list --exclude "experimental-*"
 ```
