@@ -653,3 +653,141 @@ fn scenario_j_ttl_zero_always_refreshes() {
     );
     assert_eq!(mock.hits(), 1, "ttl=0 should force one network fetch");
 }
+
+#[test]
+#[serial]
+fn resolve_alias_prefix_exits_zero() {
+    let server = MockServer::start();
+    let (temp, project_root) = setup_project(&server);
+    write_cache(&project_root, sample_cached_models(), &fresh_fetched_at());
+
+    let mut cmd = mars_cmd(&project_root, temp.path(), &server.url(API_PATH));
+    cmd.args(["--json", "models", "resolve", "opus-4-6"]);
+
+    let output = cmd.assert().success().get_output().clone();
+    let stdout: Value =
+        serde_json::from_slice(&output.stdout).expect("resolve --json should return JSON");
+
+    assert_eq!(stdout["source"].as_str(), Some("alias_prefix"));
+    assert_eq!(stdout["name"].as_str(), Some("opus-4-6"));
+    assert_eq!(stdout["resolved_model"].as_str(), Some("claude-opus-4-6"));
+}
+
+#[test]
+#[serial]
+fn resolve_unknown_exits_zero_with_passthrough() {
+    let server = MockServer::start();
+    let (temp, project_root) = setup_project(&server);
+    write_cache(&project_root, sample_cached_models(), &fresh_fetched_at());
+
+    let mut cmd = mars_cmd(&project_root, temp.path(), &server.url(API_PATH));
+    cmd.args(["--json", "models", "resolve", "unknown-xyz"]);
+
+    let output = cmd.assert().success().get_output().clone();
+    let stdout: Value =
+        serde_json::from_slice(&output.stdout).expect("resolve --json should return JSON");
+
+    assert_eq!(stdout["source"].as_str(), Some("passthrough"));
+    assert_eq!(stdout["model_id"].as_str(), Some("unknown-xyz"));
+    assert_eq!(stdout["resolved_model"].as_str(), Some("unknown-xyz"));
+    assert_eq!(stdout["provider"], Value::Null);
+    assert_eq!(stdout["harness"], Value::Null);
+    assert_eq!(stdout["harness_source"].as_str(), Some("unavailable"));
+    assert_eq!(stdout["harness_candidates"], json!([]));
+    assert!(
+        stdout["warning"]
+            .as_str()
+            .expect("passthrough warning should be present")
+            .contains("passing through to harness")
+    );
+}
+
+#[test]
+#[serial]
+fn resolve_prefix_no_match_exits_zero_with_passthrough() {
+    let server = MockServer::start();
+    let (temp, project_root) = setup_project(&server);
+    write_cache(&project_root, sample_cached_models(), &fresh_fetched_at());
+
+    let mut cmd = mars_cmd(&project_root, temp.path(), &server.url(API_PATH));
+    cmd.args(["--json", "models", "resolve", "opus-9-9"]);
+
+    let output = cmd.assert().success().get_output().clone();
+    let stdout: Value =
+        serde_json::from_slice(&output.stdout).expect("resolve --json should return JSON");
+
+    assert_eq!(stdout["source"].as_str(), Some("passthrough"));
+    assert_eq!(stdout["resolved_model"].as_str(), Some("opus-9-9"));
+}
+
+#[test]
+#[serial]
+fn resolve_passthrough_pattern_guesses_harness() {
+    let server = MockServer::start();
+    let (temp, project_root) = setup_project(&server);
+    write_cache(&project_root, sample_cached_models(), &fresh_fetched_at());
+
+    let mut cmd = mars_cmd(&project_root, temp.path(), &server.url(API_PATH));
+    cmd.args(["--json", "models", "resolve", "claude-brand-new"]);
+
+    let output = cmd.assert().success().get_output().clone();
+    let stdout: Value =
+        serde_json::from_slice(&output.stdout).expect("resolve --json should return JSON");
+
+    let expected_harness = ["claude", "opencode", "gemini"]
+        .iter()
+        .find(|bin| which::which(bin).is_ok())
+        .map(|bin| (*bin).to_string());
+    let expected_source = if expected_harness.is_some() {
+        "pattern_guess"
+    } else {
+        "unavailable"
+    };
+
+    assert_eq!(stdout["source"].as_str(), Some("passthrough"));
+    assert_eq!(stdout["provider"].as_str(), Some("anthropic"));
+    assert_eq!(
+        stdout["harness_candidates"],
+        json!(["claude", "opencode", "gemini"])
+    );
+    assert_eq!(stdout["harness_source"].as_str(), Some(expected_source));
+    assert_eq!(stdout["harness"].as_str(), expected_harness.as_deref());
+}
+
+#[test]
+#[serial]
+fn resolve_passthrough_unrecognized_pattern_harness_null() {
+    let server = MockServer::start();
+    let (temp, project_root) = setup_project(&server);
+    write_cache(&project_root, sample_cached_models(), &fresh_fetched_at());
+
+    let mut cmd = mars_cmd(&project_root, temp.path(), &server.url(API_PATH));
+    cmd.args(["--json", "models", "resolve", "xyz-unknown"]);
+
+    let output = cmd.assert().success().get_output().clone();
+    let stdout: Value =
+        serde_json::from_slice(&output.stdout).expect("resolve --json should return JSON");
+
+    assert_eq!(stdout["source"].as_str(), Some("passthrough"));
+    assert_eq!(stdout["provider"], Value::Null);
+    assert_eq!(stdout["harness"], Value::Null);
+    assert_eq!(stdout["harness_source"].as_str(), Some("unavailable"));
+    assert_eq!(stdout["harness_candidates"], json!([]));
+}
+
+#[test]
+#[serial]
+fn resolve_unknown_with_no_refresh_without_cache_is_non_zero() {
+    let server = MockServer::start();
+    let (temp, project_root) = setup_project(&server);
+
+    let mut cmd = mars_cmd(&project_root, temp.path(), &server.url(API_PATH));
+    cmd.args(["models", "resolve", "unknown-xyz", "--no-refresh-models"]);
+
+    let output = cmd.assert().code(3).get_output().clone();
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be utf-8");
+    assert!(
+        stderr.contains("--no-refresh-models"),
+        "expected no-refresh cache error, stderr:\n{stderr}"
+    );
+}

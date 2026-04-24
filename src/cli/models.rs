@@ -123,19 +123,8 @@ fn run_list(args: &ListArgs, ctx: &MarsContext, json: bool) -> Result<i32, MarsE
     let mars = mars_dir(ctx);
     let ttl = models::load_models_cache_ttl(ctx);
     let mode = models::resolve_refresh_mode(args.no_refresh_models);
-    let (cache, outcome) = match models::ensure_fresh(&mars, ttl, mode) {
-        Ok(ok) => ok,
-        Err(err @ MarsError::ModelCacheUnavailable { .. }) if json => {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&serde_json::json!({
-                    "error": format!("{err}"),
-                }))
-                .unwrap()
-            );
-            return Ok(1);
-        }
-        Err(err) => return Err(err),
+    let Some((cache, outcome)) = ensure_fresh_or_json_error(&mars, ttl, mode, json)? else {
+        return Ok(1);
     };
     let cache_warning = cache_warning(&outcome);
 
@@ -221,26 +210,71 @@ fn run_list(args: &ListArgs, ctx: &MarsContext, json: bool) -> Result<i32, MarsE
 
 fn run_resolve(args: &ResolveAliasArgs, ctx: &MarsContext, json: bool) -> Result<i32, MarsError> {
     let merged = load_merged_aliases(ctx)?;
-    let Some(alias) = merged.get(&args.name) else {
-        if json {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&serde_json::json!({
-                    "error": format!("unknown alias: {}", args.name),
-                }))
-                .unwrap()
-            );
-        } else {
-            eprintln!("error: unknown alias `{}`", args.name);
-        }
-        return Ok(1);
-    };
-
     let mars = mars_dir(ctx);
     let ttl = models::load_models_cache_ttl(ctx);
     let mode = models::resolve_refresh_mode(args.no_refresh_models);
-    let (cache, outcome) = match models::ensure_fresh(&mars, ttl, mode) {
-        Ok(ok) => ok,
+    let Some((cache, outcome)) = ensure_fresh_or_json_error(&mars, ttl, mode, json)? else {
+        return Ok(1);
+    };
+
+    // Step 1: exact alias lookup
+    if let Some(alias) = merged.get(&args.name) {
+        return run_resolve_exact_alias(&args.name, alias, &merged, ctx, &cache, &outcome, json);
+    }
+
+    // Step 2: alias-prefix resolution
+    if let Some(resolved) = models::resolve_with_alias_prefix(&args.name, &merged, &cache) {
+        return run_output_resolved(&args.name, &resolved, "alias_prefix", &outcome, json);
+    }
+
+    // Step 3: passthrough
+    run_output_passthrough(&args.name, &outcome, json)
+}
+
+fn run_alias(args: &AddAliasArgs, ctx: &MarsContext, json: bool) -> Result<i32, MarsError> {
+    let mut config = crate::config::load(&ctx.project_root)?;
+    config.models.insert(
+        args.name.clone(),
+        ModelAlias {
+            harness: Some(args.harness.clone()),
+            description: args.description.clone(),
+            spec: ModelSpec::Pinned {
+                model: args.model_id.clone(),
+                provider: None,
+            },
+        },
+    );
+    crate::config::save(&ctx.project_root, &config)?;
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "status": "ok",
+                "alias": args.name,
+                "model": args.model_id,
+                "harness": args.harness,
+            }))
+            .unwrap()
+        );
+    } else {
+        println!(
+            "Added alias `{}` → {} (harness: {})",
+            args.name, args.model_id, args.harness
+        );
+    }
+
+    Ok(0)
+}
+
+fn ensure_fresh_or_json_error(
+    mars: &std::path::Path,
+    ttl: u32,
+    mode: models::RefreshMode,
+    json: bool,
+) -> Result<Option<(models::ModelsCache, models::RefreshOutcome)>, MarsError> {
+    match models::ensure_fresh(mars, ttl, mode) {
+        Ok(ok) => Ok(Some(ok)),
         Err(err @ MarsError::ModelCacheUnavailable { .. }) if json => {
             println!(
                 "{}",
@@ -249,22 +283,31 @@ fn run_resolve(args: &ResolveAliasArgs, ctx: &MarsContext, json: bool) -> Result
                 }))
                 .unwrap()
             );
-            return Ok(1);
+            Ok(None)
         }
-        Err(err) => return Err(err),
-    };
-    let cache_warning = cache_warning(&outcome);
+        Err(err) => Err(err),
+    }
+}
 
+fn run_resolve_exact_alias(
+    name: &str,
+    alias: &ModelAlias,
+    merged: &IndexMap<String, ModelAlias>,
+    ctx: &MarsContext,
+    cache: &models::ModelsCache,
+    outcome: &models::RefreshOutcome,
+    json: bool,
+) -> Result<i32, MarsError> {
+    let cache_warning = cache_warning(outcome);
     if let Some(warning) = cache_warning.as_deref()
         && !json
     {
         eprintln!("warning: {warning}");
     }
 
-    // Determine source layer
-    let source = determine_source(&args.name, ctx)?;
-    let resolved_map = models::resolve_all(&merged, &cache);
-    let resolved_entry = resolved_map.get(&args.name);
+    let source = determine_source(name, ctx)?;
+    let resolved_map = models::resolve_all(merged, cache);
+    let resolved_entry = resolved_map.get(name);
 
     if json {
         if let Some(r) = resolved_entry {
@@ -289,7 +332,7 @@ fn run_resolve(args: &ResolveAliasArgs, ctx: &MarsContext, json: bool) -> Result
             println!("{}", serde_json::to_string_pretty(&out).unwrap());
         } else {
             let mut out = serde_json::json!({
-                "error": format!("alias `{}` did not resolve to a model ID", args.name),
+                "error": format!("alias `{}` did not resolve to a model ID", name),
             });
             if let Some(warning) = cache_warning.as_deref() {
                 out["cache_warning"] = serde_json::json!(warning);
@@ -299,11 +342,11 @@ fn run_resolve(args: &ResolveAliasArgs, ctx: &MarsContext, json: bool) -> Result
         }
     } else {
         let Some(r) = resolved_entry else {
-            eprintln!("error: alias `{}` did not resolve to a model ID", args.name);
+            eprintln!("error: alias `{}` did not resolve to a model ID", name);
             return Ok(1);
         };
         let harness = r.harness.as_deref().unwrap_or("—");
-        println!("Alias:    {}", args.name);
+        println!("Alias:    {}", name);
         println!("Source:   {}", source);
         println!(
             "Harness:  {} ({})",
@@ -340,37 +383,137 @@ fn run_resolve(args: &ResolveAliasArgs, ctx: &MarsContext, json: bool) -> Result
     Ok(0)
 }
 
-fn run_alias(args: &AddAliasArgs, ctx: &MarsContext, json: bool) -> Result<i32, MarsError> {
-    let mut config = crate::config::load(&ctx.project_root)?;
-    config.models.insert(
-        args.name.clone(),
-        ModelAlias {
-            harness: Some(args.harness.clone()),
-            description: args.description.clone(),
-            spec: ModelSpec::Pinned {
-                model: args.model_id.clone(),
-                provider: None,
-            },
-        },
-    );
-    crate::config::save(&ctx.project_root, &config)?;
+fn run_output_resolved(
+    name: &str,
+    resolved: &models::ResolvedAlias,
+    source: &str,
+    outcome: &models::RefreshOutcome,
+    json: bool,
+) -> Result<i32, MarsError> {
+    let cache_warning = cache_warning(outcome);
+    if let Some(warning) = cache_warning.as_deref()
+        && !json
+    {
+        eprintln!("warning: {warning}");
+    }
 
     if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "status": "ok",
-                "alias": args.name,
-                "model": args.model_id,
-                "harness": args.harness,
-            }))
-            .unwrap()
-        );
+        let mut out = serde_json::json!({
+            "name": name,
+            "source": source,
+            "provider": resolved.provider,
+            "harness": resolved.harness,
+            "harness_source": resolved.harness_source,
+            "harness_candidates": resolved.harness_candidates,
+            "model_id": resolved.model_id,
+            "resolved_model": resolved.model_id,
+            "description": resolved.description,
+        });
+        if let Some(error) = unavailable_harness_error(resolved) {
+            out["error"] = serde_json::json!(error);
+        }
+        if let Some(warning) = cache_warning.as_deref() {
+            out["cache_warning"] = serde_json::json!(warning);
+        }
+        println!("{}", serde_json::to_string_pretty(&out).unwrap());
     } else {
+        let harness = resolved.harness.as_deref().unwrap_or("—");
+        println!("Alias:    {}", name);
+        println!("Source:   {}", source);
         println!(
-            "Added alias `{}` → {} (harness: {})",
-            args.name, args.model_id, args.harness
+            "Harness:  {} ({})",
+            harness,
+            harness_source_label(&resolved.harness_source)
         );
+        println!("Provider: {}", resolved.provider);
+        println!("Resolved: {}", resolved.model_id);
+        if let Some(error) = unavailable_harness_error(resolved) {
+            println!("Error:    {}", error);
+        }
+        if let Some(desc) = &resolved.description {
+            println!("Desc:     {}", desc);
+        }
+    }
+
+    Ok(0)
+}
+
+fn run_output_passthrough(
+    name: &str,
+    outcome: &models::RefreshOutcome,
+    json: bool,
+) -> Result<i32, MarsError> {
+    if name.trim().is_empty() {
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "error": "model name cannot be empty"
+                }))
+                .unwrap()
+            );
+        } else {
+            eprintln!("error: model name cannot be empty");
+        }
+        return Ok(1);
+    }
+
+    let cache_warning = cache_warning(outcome);
+    if let Some(warning) = cache_warning.as_deref()
+        && !json
+    {
+        eprintln!("warning: {warning}");
+    }
+
+    let installed = models::harness::detect_installed_harnesses();
+    let guessed_provider = models::infer_provider_from_model_id(name).map(str::to_string);
+    let harness = guessed_provider
+        .as_deref()
+        .and_then(|p| models::harness::resolve_harness_for_provider(p, &installed));
+    let harness_source = if harness.is_some() {
+        "pattern_guess"
+    } else {
+        "unavailable"
+    };
+    let harness_candidates = guessed_provider
+        .as_deref()
+        .map(models::harness::harness_candidates_for_provider)
+        .unwrap_or_default();
+
+    let warning = format!(
+        "model '{}' not found in catalog, passing through to harness",
+        name
+    );
+
+    if json {
+        let mut out = serde_json::json!({
+            "name": name,
+            "source": "passthrough",
+            "model_id": name,
+            "resolved_model": name,
+            "provider": guessed_provider,
+            "harness": harness,
+            "harness_source": harness_source,
+            "harness_candidates": harness_candidates,
+            "description": serde_json::Value::Null,
+            "warning": warning,
+        });
+        if let Some(warning) = cache_warning.as_deref() {
+            out["cache_warning"] = serde_json::json!(warning);
+        }
+        println!("{}", serde_json::to_string_pretty(&out).unwrap());
+    } else {
+        eprintln!("warning: {}", warning);
+        let h = harness.as_deref().unwrap_or("—");
+        println!("Model:      {}", name);
+        println!("Source:     passthrough");
+        println!("Harness:    {} ({})", h, harness_source);
+        if let Some(provider) = guessed_provider {
+            println!("Provider:   {}", provider);
+        }
+        if !harness_candidates.is_empty() {
+            println!("Candidates: {}", harness_candidates.join(", "));
+        }
     }
 
     Ok(0)

@@ -764,7 +764,7 @@ pub fn resolve_with_alias_prefix(
         harness,
         harness_source,
         harness_candidates: harness::harness_candidates_for_provider(&provider),
-        description: None,
+        description: winner.description,
     })
 }
 
