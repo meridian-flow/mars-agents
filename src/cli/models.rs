@@ -3,6 +3,7 @@
 
 use clap::{Parser, Subcommand};
 use indexmap::IndexMap;
+use std::collections::HashSet;
 
 use crate::error::MarsError;
 use crate::models::{self, HarnessSource, ModelAlias, ModelSpec};
@@ -29,18 +30,43 @@ pub enum ModelsCommand {
 
 #[derive(Debug, Parser)]
 pub struct ListArgs {
-    /// Show all aliases including those without an available harness.
-    #[arg(long)]
+    /// Show all alias-filter candidates (not just winners).
+    #[arg(
+        long,
+        conflicts_with = "catalog",
+        conflicts_with = "include",
+        conflicts_with = "exclude"
+    )]
     all: bool,
     /// Skip automatic models-cache refresh; use whatever's on disk (equivalent to MARS_OFFLINE=1).
     #[arg(long)]
     no_refresh_models: bool,
     /// Only show aliases matching these patterns (overrides config).
-    #[arg(long, value_delimiter = ',', conflicts_with = "exclude")]
+    #[arg(
+        long,
+        value_delimiter = ',',
+        conflicts_with = "exclude",
+        conflicts_with = "catalog",
+        conflicts_with = "all"
+    )]
     include: Option<Vec<String>>,
     /// Hide aliases matching these patterns (overrides config).
-    #[arg(long, value_delimiter = ',', conflicts_with = "include")]
+    #[arg(
+        long,
+        value_delimiter = ',',
+        conflicts_with = "include",
+        conflicts_with = "catalog",
+        conflicts_with = "all"
+    )]
     exclude: Option<Vec<String>>,
+    /// Show all models from the cache (not just alias-covered models).
+    #[arg(
+        long,
+        conflicts_with = "include",
+        conflicts_with = "exclude",
+        conflicts_with = "all"
+    )]
+    catalog: bool,
 }
 
 #[derive(Debug, Parser)]
@@ -126,10 +152,19 @@ fn run_list(args: &ListArgs, ctx: &MarsContext, json: bool) -> Result<i32, MarsE
     let Some((cache, outcome)) = ensure_fresh_or_json_error(&mars, ttl, mode, json)? else {
         return Ok(1);
     };
-    let cache_warning = cache_warning(&outcome);
+
+    if args.catalog {
+        return run_list_catalog(&cache, &outcome, json);
+    }
 
     // Load config to get consumer models + trigger merge
     let merged = load_merged_aliases(ctx)?;
+    if args.all {
+        return run_list_all(&merged, &cache, &outcome, json);
+    }
+
+    let cache_warning = cache_warning(&outcome);
+
     let resolved = models::resolve_all(&merged, &cache);
 
     // Build effective visibility: CLI overrides config entirely.
@@ -188,16 +223,12 @@ fn run_list(args: &ListArgs, ctx: &MarsContext, json: bool) -> Result<i32, MarsE
             "ALIAS", "HARNESS", "MODE", "RESOLVED", "DESCRIPTION"
         );
         for r in resolved.values() {
-            if !args.all && r.harness_source == HarnessSource::Unavailable {
+            if r.harness_source == HarnessSource::Unavailable {
                 continue;
             }
             let harness = r.harness.as_deref().unwrap_or("—");
             let mode = mode_for_alias(merged.get(&r.name).map(|a| &a.spec));
-            let desc = if r.harness_source == HarnessSource::Unavailable {
-                format!("(install: {})", r.harness_candidates.join(", "))
-            } else {
-                r.description.clone().unwrap_or_default()
-            };
+            let desc = r.description.clone().unwrap_or_default();
             println!(
                 "{:<12} {:<10} {:<14} {:<30} {}",
                 r.name, harness, mode, r.model_id, desc
@@ -206,6 +237,290 @@ fn run_list(args: &ListArgs, ctx: &MarsContext, json: bool) -> Result<i32, MarsE
     }
 
     Ok(0)
+}
+
+#[derive(Debug, Clone)]
+struct ListModelEntry {
+    id: String,
+    provider: String,
+    release_date: Option<String>,
+    harness: Option<String>,
+    harness_source: HarnessSource,
+    harness_candidates: Vec<String>,
+    description: Option<String>,
+    matched_aliases: Vec<String>,
+}
+
+fn run_list_all(
+    merged: &IndexMap<String, ModelAlias>,
+    cache: &models::ModelsCache,
+    outcome: &models::RefreshOutcome,
+    json: bool,
+) -> Result<i32, MarsError> {
+    let cache_warning = cache_warning(outcome);
+    let models = collect_all_model_entries(merged, cache);
+
+    if json {
+        let entries: Vec<serde_json::Value> = models
+            .into_iter()
+            .map(|model| {
+                serde_json::json!({
+                    "id": model.id,
+                    "provider": model.provider,
+                    "release_date": model.release_date,
+                    "harness": model.harness,
+                    "harness_source": model.harness_source,
+                    "harness_candidates": model.harness_candidates,
+                    "description": model.description,
+                    "matched_aliases": model.matched_aliases,
+                })
+            })
+            .collect();
+        let mut out = serde_json::json!({
+            "models": entries,
+            "cache_available": cache.fetched_at.is_some(),
+        });
+        if let Some(warning) = cache_warning.as_deref() {
+            out["cache_warning"] = serde_json::json!(warning);
+        }
+        println!("{}", serde_json::to_string_pretty(&out).unwrap());
+    } else {
+        if let Some(warning) = cache_warning.as_deref() {
+            eprintln!("warning: {warning}");
+        }
+        println!(
+            "{:<10} {:<34} {:<12} {:<10} {}",
+            "PROVIDER", "MODEL ID", "RELEASE", "HARNESS", "ALIASES"
+        );
+        for model in models {
+            let release = model.release_date.as_deref().unwrap_or("—");
+            let harness = model.harness.as_deref().unwrap_or("—");
+            println!(
+                "{:<10} {:<34} {:<12} {:<10} {}",
+                model.provider,
+                model.id,
+                release,
+                harness,
+                model.matched_aliases.join(",")
+            );
+        }
+    }
+
+    Ok(0)
+}
+
+fn run_list_catalog(
+    cache: &models::ModelsCache,
+    outcome: &models::RefreshOutcome,
+    json: bool,
+) -> Result<i32, MarsError> {
+    let cache_warning = cache_warning(outcome);
+    let models = collect_catalog_model_entries(cache);
+
+    if json {
+        let entries: Vec<serde_json::Value> = models
+            .into_iter()
+            .map(|model| {
+                serde_json::json!({
+                    "id": model.id,
+                    "provider": model.provider,
+                    "release_date": model.release_date,
+                    "harness": model.harness,
+                    "harness_source": model.harness_source,
+                    "harness_candidates": model.harness_candidates,
+                    "description": model.description,
+                })
+            })
+            .collect();
+        let mut out = serde_json::json!({
+            "models": entries,
+            "cache_available": cache.fetched_at.is_some(),
+        });
+        if let Some(warning) = cache_warning.as_deref() {
+            out["cache_warning"] = serde_json::json!(warning);
+        }
+        println!("{}", serde_json::to_string_pretty(&out).unwrap());
+    } else {
+        if let Some(warning) = cache_warning.as_deref() {
+            eprintln!("warning: {warning}");
+        }
+        println!(
+            "{:<10} {:<34} {:<12} {:<10}",
+            "PROVIDER", "MODEL ID", "RELEASE", "HARNESS"
+        );
+        for model in models {
+            let release = model.release_date.as_deref().unwrap_or("—");
+            let harness = model.harness.as_deref().unwrap_or("—");
+            println!(
+                "{:<10} {:<34} {:<12} {:<10}",
+                model.provider, model.id, release, harness
+            );
+        }
+    }
+
+    Ok(0)
+}
+
+fn collect_all_model_entries(
+    merged: &IndexMap<String, ModelAlias>,
+    cache: &models::ModelsCache,
+) -> Vec<ListModelEntry> {
+    let installed = models::harness::detect_installed_harnesses();
+    let mut by_model_id: IndexMap<String, ListModelEntry> = IndexMap::new();
+
+    for (alias_name, alias) in merged {
+        match &alias.spec {
+            ModelSpec::AutoResolve {
+                provider,
+                match_patterns,
+                exclude_patterns,
+            } => {
+                for matched in
+                    models::auto_resolve_all(provider, match_patterns, exclude_patterns, cache)
+                {
+                    append_alias_match(&mut by_model_id, matched, &installed, alias_name);
+                }
+            }
+            ModelSpec::Pinned { model, provider } => {
+                if let Some(matched) = cache
+                    .models
+                    .iter()
+                    .find(|cache_model| cache_model.id == *model)
+                {
+                    append_alias_match(&mut by_model_id, matched, &installed, alias_name);
+                } else {
+                    append_pinned_alias_match(
+                        &mut by_model_id,
+                        model,
+                        provider.as_deref(),
+                        alias.description.as_deref(),
+                        &installed,
+                        alias_name,
+                    );
+                }
+            }
+        }
+    }
+
+    let mut out: Vec<ListModelEntry> = by_model_id.into_values().collect();
+    sort_list_model_entries(&mut out);
+    out
+}
+
+fn collect_catalog_model_entries(cache: &models::ModelsCache) -> Vec<ListModelEntry> {
+    let installed = models::harness::detect_installed_harnesses();
+    let mut out: Vec<ListModelEntry> = cache
+        .models
+        .iter()
+        .map(|model| model_entry_for_cached(model, &installed))
+        .collect();
+    sort_list_model_entries(&mut out);
+    out
+}
+
+fn append_alias_match(
+    by_model_id: &mut IndexMap<String, ListModelEntry>,
+    model: &models::CachedModel,
+    installed: &HashSet<String>,
+    alias_name: &str,
+) {
+    let entry = by_model_id
+        .entry(model.id.clone())
+        .or_insert_with(|| model_entry_for_cached(model, installed));
+
+    append_alias_name(entry, alias_name);
+}
+
+fn append_pinned_alias_match(
+    by_model_id: &mut IndexMap<String, ListModelEntry>,
+    model_id: &str,
+    provider: Option<&str>,
+    description: Option<&str>,
+    installed: &HashSet<String>,
+    alias_name: &str,
+) {
+    let entry = by_model_id
+        .entry(model_id.to_string())
+        .or_insert_with(|| model_entry_for_pinned(model_id, provider, description, installed));
+
+    append_alias_name(entry, alias_name);
+}
+
+fn append_alias_name(entry: &mut ListModelEntry, alias_name: &str) {
+    if !entry
+        .matched_aliases
+        .iter()
+        .any(|existing| existing == alias_name)
+    {
+        entry.matched_aliases.push(alias_name.to_string());
+    }
+}
+
+fn model_entry_for_cached(
+    model: &models::CachedModel,
+    installed: &HashSet<String>,
+) -> ListModelEntry {
+    let harness = models::harness::resolve_harness_for_provider(&model.provider, installed);
+    let harness_source = if harness.is_some() {
+        HarnessSource::AutoDetected
+    } else {
+        HarnessSource::Unavailable
+    };
+
+    ListModelEntry {
+        id: model.id.clone(),
+        provider: model.provider.clone(),
+        release_date: model.release_date.clone(),
+        harness,
+        harness_source,
+        harness_candidates: models::harness::harness_candidates_for_provider(&model.provider),
+        description: model.description.clone(),
+        matched_aliases: Vec::new(),
+    }
+}
+
+fn model_entry_for_pinned(
+    model_id: &str,
+    provider: Option<&str>,
+    description: Option<&str>,
+    installed: &HashSet<String>,
+) -> ListModelEntry {
+    let provider = provider
+        .map(str::to_string)
+        .or_else(|| models::infer_provider_from_model_id(model_id).map(str::to_string))
+        .unwrap_or_else(|| "unknown".to_string());
+    let harness = models::harness::resolve_harness_for_provider(&provider, installed);
+    let harness_source = if harness.is_some() {
+        HarnessSource::AutoDetected
+    } else {
+        HarnessSource::Unavailable
+    };
+
+    ListModelEntry {
+        id: model_id.to_string(),
+        provider: provider.clone(),
+        release_date: None,
+        harness,
+        harness_source,
+        harness_candidates: models::harness::harness_candidates_for_provider(&provider),
+        description: description.map(str::to_string),
+        matched_aliases: Vec::new(),
+    }
+}
+
+fn sort_list_model_entries(entries: &mut [ListModelEntry]) {
+    entries.sort_by(|a, b| {
+        a.provider
+            .to_ascii_lowercase()
+            .cmp(&b.provider.to_ascii_lowercase())
+            .then_with(|| {
+                b.release_date
+                    .as_deref()
+                    .unwrap_or("")
+                    .cmp(a.release_date.as_deref().unwrap_or(""))
+            })
+            .then_with(|| a.id.cmp(&b.id))
+    });
 }
 
 fn run_resolve(args: &ResolveAliasArgs, ctx: &MarsContext, json: bool) -> Result<i32, MarsError> {
@@ -633,6 +948,7 @@ fn cache_warning(outcome: &models::RefreshOutcome) -> Option<String> {
 mod tests {
     use super::*;
     use clap::Parser;
+    use indexmap::IndexMap;
     use tempfile::TempDir;
 
     fn write_mars_toml(temp: &TempDir, contents: &str) {
@@ -650,6 +966,30 @@ mod tests {
     fn list_args_parses_no_refresh_models() {
         let args = ListArgs::try_parse_from(["mars", "--no-refresh-models"]).unwrap();
         assert!(args.no_refresh_models);
+    }
+
+    #[test]
+    fn list_args_parses_catalog() {
+        let args = ListArgs::try_parse_from(["mars", "--catalog"]).unwrap();
+        assert!(args.catalog);
+    }
+
+    #[test]
+    fn list_all_and_catalog_conflict() {
+        let parsed = ModelsArgs::try_parse_from(["mars", "list", "--all", "--catalog"]);
+        assert!(parsed.is_err());
+    }
+
+    #[test]
+    fn list_all_and_include_conflict() {
+        let parsed = ModelsArgs::try_parse_from(["mars", "list", "--all", "--include", "opus"]);
+        assert!(parsed.is_err());
+    }
+
+    #[test]
+    fn list_catalog_and_include_conflict() {
+        let parsed = ModelsArgs::try_parse_from(["mars", "list", "--catalog", "--include", "opus"]);
+        assert!(parsed.is_err());
     }
 
     #[test]
@@ -728,5 +1068,179 @@ description = "Old alias"
             }
             _ => panic!("expected pinned alias"),
         }
+    }
+
+    fn auto_alias(
+        provider: &str,
+        match_patterns: &[&str],
+        exclude_patterns: &[&str],
+    ) -> ModelAlias {
+        ModelAlias {
+            harness: None,
+            description: None,
+            spec: ModelSpec::AutoResolve {
+                provider: provider.to_string(),
+                match_patterns: match_patterns.iter().map(|v| (*v).to_string()).collect(),
+                exclude_patterns: exclude_patterns.iter().map(|v| (*v).to_string()).collect(),
+            },
+        }
+    }
+
+    fn pinned_alias(model: &str) -> ModelAlias {
+        ModelAlias {
+            harness: None,
+            description: None,
+            spec: ModelSpec::Pinned {
+                model: model.to_string(),
+                provider: None,
+            },
+        }
+    }
+
+    fn pinned_alias_with_provider(model: &str, provider: &str) -> ModelAlias {
+        ModelAlias {
+            harness: None,
+            description: None,
+            spec: ModelSpec::Pinned {
+                model: model.to_string(),
+                provider: Some(provider.to_string()),
+            },
+        }
+    }
+
+    fn cached_model(id: &str, provider: &str, release_date: Option<&str>) -> models::CachedModel {
+        models::CachedModel {
+            id: id.to_string(),
+            provider: provider.to_string(),
+            release_date: release_date.map(|value| value.to_string()),
+            description: Some(format!("desc-{id}")),
+            context_window: None,
+            max_output: None,
+        }
+    }
+
+    fn cache(models: Vec<models::CachedModel>) -> models::ModelsCache {
+        models::ModelsCache {
+            models,
+            fetched_at: Some("123".to_string()),
+        }
+    }
+
+    #[test]
+    fn list_all_shows_multiple_per_alias() {
+        let mut merged = IndexMap::new();
+        merged.insert(
+            "opus".to_string(),
+            auto_alias("Anthropic", &["claude-opus-*"], &[]),
+        );
+
+        let models_cache = cache(vec![
+            cached_model("claude-opus-4-6", "Anthropic", Some("2026-02-05")),
+            cached_model("claude-opus-4-7", "Anthropic", Some("2026-04-01")),
+        ]);
+
+        let rows = collect_all_model_entries(&merged, &models_cache);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].id, "claude-opus-4-7");
+        assert_eq!(rows[1].id, "claude-opus-4-6");
+    }
+
+    #[test]
+    fn list_all_includes_matched_aliases_with_dedup() {
+        let mut merged = IndexMap::new();
+        merged.insert(
+            "opus".to_string(),
+            auto_alias("Anthropic", &["claude-opus-*"], &[]),
+        );
+        merged.insert(
+            "legacy".to_string(),
+            auto_alias("Anthropic", &["*4-6"], &[]),
+        );
+
+        let models_cache = cache(vec![cached_model(
+            "claude-opus-4-6",
+            "Anthropic",
+            Some("2026-02-05"),
+        )]);
+
+        let rows = collect_all_model_entries(&merged, &models_cache);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "claude-opus-4-6");
+        assert_eq!(rows[0].matched_aliases, vec!["opus", "legacy"]);
+    }
+
+    #[test]
+    fn list_all_includes_pinned_cache_entries() {
+        let mut merged = IndexMap::new();
+        merged.insert("fixed".to_string(), pinned_alias("gpt-5.3-codex"));
+
+        let models_cache = cache(vec![cached_model(
+            "gpt-5.3-codex",
+            "OpenAI",
+            Some("2026-01-01"),
+        )]);
+        let rows = collect_all_model_entries(&merged, &models_cache);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "gpt-5.3-codex");
+        assert_eq!(rows[0].matched_aliases, vec!["fixed"]);
+    }
+
+    #[test]
+    fn list_all_includes_pinned_cache_miss_entries() {
+        let mut merged = IndexMap::new();
+        merged.insert("fixed".to_string(), pinned_alias("gpt-5.3-codex"));
+
+        let models_cache = cache(Vec::new());
+        let rows = collect_all_model_entries(&merged, &models_cache);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "gpt-5.3-codex");
+        assert!(rows[0].provider.eq_ignore_ascii_case("openai"));
+        assert_eq!(rows[0].release_date, None);
+        assert_eq!(rows[0].matched_aliases, vec!["fixed"]);
+    }
+
+    #[test]
+    fn list_all_uses_declared_provider_for_pinned_cache_miss_entries() {
+        let mut merged = IndexMap::new();
+        merged.insert(
+            "custom".to_string(),
+            pinned_alias_with_provider("custom-model-id", "Anthropic"),
+        );
+
+        let models_cache = cache(Vec::new());
+        let rows = collect_all_model_entries(&merged, &models_cache);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "custom-model-id");
+        assert_eq!(rows[0].provider, "Anthropic");
+        assert_eq!(rows[0].release_date, None);
+        assert_eq!(rows[0].matched_aliases, vec!["custom"]);
+    }
+
+    #[test]
+    fn list_all_includes_unavailable_harness_entries() {
+        let mut merged = IndexMap::new();
+        merged.insert("x".to_string(), auto_alias("Unknown", &["x-*"], &[]));
+        let models_cache = cache(vec![cached_model("x-1", "Unknown", Some("2026-01-01"))]);
+
+        let rows = collect_all_model_entries(&merged, &models_cache);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].harness, None);
+        assert_eq!(rows[0].harness_source, HarnessSource::Unavailable);
+        assert!(rows[0].harness_candidates.is_empty());
+    }
+
+    #[test]
+    fn list_catalog_shows_all_cache_sorted() {
+        let models_cache = cache(vec![
+            cached_model("gpt-5", "OpenAI", Some("2025-06-01")),
+            cached_model("claude-opus-4-6", "Anthropic", Some("2026-02-05")),
+            cached_model("claude-sonnet-4-5", "Anthropic", Some("2025-08-01")),
+        ]);
+
+        let rows = collect_catalog_model_entries(&models_cache);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].id, "claude-opus-4-6");
+        assert_eq!(rows[1].id, "claude-sonnet-4-5");
+        assert_eq!(rows[2].id, "gpt-5");
     }
 }
