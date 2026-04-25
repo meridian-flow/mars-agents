@@ -19,7 +19,10 @@ use crate::diagnostic::DiagnosticCollector;
 use crate::error::MarsError;
 use crate::types::MarsContext;
 
+pub mod availability;
 pub mod harness;
+
+pub use availability::ModelAvailability;
 
 mod tracing {
     macro_rules! debug {
@@ -100,6 +103,8 @@ pub struct ResolvedAlias {
     pub default_effort: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub autocompact: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub availability: Option<ModelAvailability>,
 }
 
 // Custom Serialize for ModelSpec to flatten into parent
@@ -901,6 +906,7 @@ pub fn resolve_with_alias_prefix(
         description: winner.description,
         default_effort,
         autocompact,
+        availability: None,
     })
 }
 
@@ -1160,6 +1166,7 @@ pub fn resolve_all(
                 description: alias.description.clone(),
                 default_effort: alias.default_effort.clone(),
                 autocompact: alias.autocompact,
+                availability: None,
             },
         );
     }
@@ -1190,6 +1197,7 @@ pub fn resolve_one(
         description: alias.description.clone(),
         default_effort: alias.default_effort.clone(),
         autocompact: alias.autocompact,
+        availability: None,
     })
 }
 
@@ -2363,6 +2371,7 @@ mod tests {
             description: None,
             default_effort: None,
             autocompact: None,
+            availability: None,
         }
     }
 

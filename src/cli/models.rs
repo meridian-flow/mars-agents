@@ -270,7 +270,8 @@ fn run_list_all(
     json: bool,
 ) -> Result<i32, MarsError> {
     let cache_warning = cache_warning(outcome);
-    let models = collect_all_model_entries(merged, cache);
+    let installed = models::harness::detect_installed_harnesses();
+    let models = collect_all_model_entries(merged, cache, &installed);
 
     if json {
         let entries: Vec<serde_json::Value> = models
@@ -327,7 +328,8 @@ fn run_list_catalog(
     json: bool,
 ) -> Result<i32, MarsError> {
     let cache_warning = cache_warning(outcome);
-    let models = collect_catalog_model_entries(cache);
+    let installed = models::harness::detect_installed_harnesses();
+    let models = collect_catalog_model_entries(cache, &installed);
 
     if json {
         let entries: Vec<serde_json::Value> = models
@@ -376,8 +378,8 @@ fn run_list_catalog(
 fn collect_all_model_entries(
     merged: &IndexMap<String, ModelAlias>,
     cache: &models::ModelsCache,
+    installed: &HashSet<String>,
 ) -> Vec<ListModelEntry> {
-    let installed = models::harness::detect_installed_harnesses();
     let mut by_model_id: IndexMap<String, ListModelEntry> = IndexMap::new();
 
     for (alias_name, alias) in merged {
@@ -458,12 +460,14 @@ fn collect_all_model_entries(
     out
 }
 
-fn collect_catalog_model_entries(cache: &models::ModelsCache) -> Vec<ListModelEntry> {
-    let installed = models::harness::detect_installed_harnesses();
+fn collect_catalog_model_entries(
+    cache: &models::ModelsCache,
+    installed: &HashSet<String>,
+) -> Vec<ListModelEntry> {
     let mut out: Vec<ListModelEntry> = cache
         .models
         .iter()
-        .map(|model| model_entry_for_cached(model, &installed))
+        .map(|model| model_entry_for_cached(model, installed))
         .collect();
     sort_list_model_entries(&mut out);
     out
@@ -1306,6 +1310,10 @@ description = "Old alias"
         }
     }
 
+    fn installed(names: &[&str]) -> HashSet<String> {
+        names.iter().map(|name| (*name).to_string()).collect()
+    }
+
     #[test]
     fn list_all_shows_multiple_per_alias() {
         let mut merged = IndexMap::new();
@@ -1319,7 +1327,8 @@ description = "Old alias"
             cached_model("claude-opus-4-7", "Anthropic", Some("2026-04-01")),
         ]);
 
-        let rows = collect_all_model_entries(&merged, &models_cache);
+        let installed = installed(&[]);
+        let rows = collect_all_model_entries(&merged, &models_cache, &installed);
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].id, "claude-opus-4-7");
         assert_eq!(rows[1].id, "claude-opus-4-6");
@@ -1343,7 +1352,8 @@ description = "Old alias"
             Some("2026-02-05"),
         )]);
 
-        let rows = collect_all_model_entries(&merged, &models_cache);
+        let installed = installed(&[]);
+        let rows = collect_all_model_entries(&merged, &models_cache, &installed);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].id, "claude-opus-4-6");
         assert_eq!(rows[0].matched_aliases, vec!["opus", "legacy"]);
@@ -1359,7 +1369,8 @@ description = "Old alias"
             "OpenAI",
             Some("2026-01-01"),
         )]);
-        let rows = collect_all_model_entries(&merged, &models_cache);
+        let installed = installed(&[]);
+        let rows = collect_all_model_entries(&merged, &models_cache, &installed);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].id, "gpt-5.3-codex");
         assert_eq!(rows[0].matched_aliases, vec!["fixed"]);
@@ -1371,7 +1382,8 @@ description = "Old alias"
         merged.insert("fixed".to_string(), pinned_alias("gpt-5.3-codex"));
 
         let models_cache = cache(Vec::new());
-        let rows = collect_all_model_entries(&merged, &models_cache);
+        let installed = installed(&[]);
+        let rows = collect_all_model_entries(&merged, &models_cache, &installed);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].id, "gpt-5.3-codex");
         assert!(rows[0].provider.eq_ignore_ascii_case("openai"));
@@ -1388,7 +1400,8 @@ description = "Old alias"
         );
 
         let models_cache = cache(Vec::new());
-        let rows = collect_all_model_entries(&merged, &models_cache);
+        let installed = installed(&[]);
+        let rows = collect_all_model_entries(&merged, &models_cache, &installed);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].id, "custom-model-id");
         assert_eq!(rows[0].provider, "Anthropic");
@@ -1402,7 +1415,8 @@ description = "Old alias"
         merged.insert("x".to_string(), auto_alias("Unknown", &["x-*"], &[]));
         let models_cache = cache(vec![cached_model("x-1", "Unknown", Some("2026-01-01"))]);
 
-        let rows = collect_all_model_entries(&merged, &models_cache);
+        let installed = installed(&[]);
+        let rows = collect_all_model_entries(&merged, &models_cache, &installed);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].harness, None);
         assert_eq!(rows[0].harness_source, HarnessSource::Unavailable);
@@ -1417,7 +1431,8 @@ description = "Old alias"
             cached_model("claude-sonnet-4-5", "Anthropic", Some("2025-08-01")),
         ]);
 
-        let rows = collect_catalog_model_entries(&models_cache);
+        let installed = installed(&[]);
+        let rows = collect_catalog_model_entries(&models_cache, &installed);
         assert_eq!(rows.len(), 3);
         assert_eq!(rows[0].id, "claude-opus-4-6");
         assert_eq!(rows[1].id, "claude-sonnet-4-5");
@@ -1436,7 +1451,8 @@ description = "Old alias"
             cached_model("claude-opus-4-6", "Anthropic", Some("2026-02-05")),
         ]);
 
-        let rows = collect_all_model_entries(&merged, &models_cache);
+        let installed = installed(&[]);
+        let rows = collect_all_model_entries(&merged, &models_cache, &installed);
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].id, "claude-opus-4-7");
         assert_eq!(rows[1].id, "claude-opus-4-6");
