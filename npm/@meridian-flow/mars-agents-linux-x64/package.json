@@ -1,6 +1,6 @@
 {
   "name": "@meridian-flow/mars-agents-linux-x64",
-  "version": "0.1.18",
+  "version": "0.1.19",
   "description": "mars binary for Linux x64",
   "license": "MIT",
   "repository": {

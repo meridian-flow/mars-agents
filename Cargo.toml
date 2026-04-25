@@ -1,6 +1,6 @@
 [package]
 name = "mars-agents"
-version = "0.1.18"
+version = "0.1.19"
 edition = "2024"
 description = "Agent package manager for .agents/ directories"
 license = "MIT"
