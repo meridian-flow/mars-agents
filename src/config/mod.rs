@@ -113,13 +113,6 @@ pub struct ModelVisibility {
 
 impl ModelVisibility {
     pub fn validate(&self) -> Result<(), MarsError> {
-        if self.include.is_some() && self.exclude.is_some() {
-            return Err(ConfigError::Invalid {
-                message: "[settings.model_visibility] cannot have both 'include' and 'exclude'"
-                    .into(),
-            }
-            .into());
-        }
         Ok(())
     }
 
@@ -1780,16 +1773,12 @@ models_cache_ttl_hours = 48
     }
 
     #[test]
-    fn model_visibility_validate_rejects_include_and_exclude() {
+    fn model_visibility_validate_allows_include_and_exclude() {
         let visibility = ModelVisibility {
             include: Some(vec!["opus*".into()]),
             exclude: Some(vec!["test*".into()]),
         };
-        let err = visibility.validate().unwrap_err();
-        assert!(
-            err.to_string().contains("[settings.model_visibility]"),
-            "unexpected error: {err}"
-        );
+        visibility.validate().unwrap();
     }
 
     #[test]
@@ -1829,7 +1818,7 @@ models_cache_ttl_hours = 48
     }
 
     #[test]
-    fn load_rejects_model_visibility_with_include_and_exclude() {
+    fn load_accepts_model_visibility_with_include_and_exclude() {
         let dir = TempDir::new().unwrap();
         std::fs::write(
             dir.path().join("mars.toml"),
@@ -1841,10 +1830,14 @@ exclude = ["test*"]
         )
         .unwrap();
 
-        let err = load(dir.path()).unwrap_err();
-        assert!(
-            err.to_string().contains("[settings.model_visibility]"),
-            "unexpected error: {err}"
+        let config = load(dir.path()).unwrap();
+        assert_eq!(
+            config.settings.model_visibility.include,
+            Some(vec!["opus*".into()])
+        );
+        assert_eq!(
+            config.settings.model_visibility.exclude,
+            Some(vec!["test*".into()])
         );
     }
 

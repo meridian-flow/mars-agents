@@ -983,6 +983,68 @@ pub fn glob_match(pattern: &str, text: &str) -> bool {
     pos <= end
 }
 
+/// Match a visibility pattern against a resolved model identity.
+///
+/// Pattern forms:
+/// - 0 slashes: bare model ID, e.g. `gpt-5*`
+/// - 1 slash: provider/model, e.g. `anthropic/*`
+/// - 2 slashes: OpenCode runnable slug, e.g. `openrouter/anthropic/*`
+pub fn matches_visibility_pattern(
+    pattern: &str,
+    model_id: &str,
+    provider: &str,
+    runnable_paths: &[availability::RunnablePath],
+) -> bool {
+    let pattern = pattern.to_ascii_lowercase();
+    let slash_count = pattern.chars().filter(|c| *c == '/').count();
+
+    match slash_count {
+        0 => glob_match_no_slash(&pattern, &model_id.to_ascii_lowercase()),
+        1 => {
+            let candidate = format!(
+                "{}/{}",
+                provider.to_ascii_lowercase(),
+                model_id.to_ascii_lowercase()
+            );
+            glob_match_no_slash(&pattern, &candidate)
+        }
+        2 => runnable_paths
+            .iter()
+            .any(|path| glob_match_no_slash(&pattern, &path.harness_model_id.to_ascii_lowercase())),
+        _ => false,
+    }
+}
+
+fn glob_match_no_slash(pattern: &str, text: &str) -> bool {
+    let pattern_parts: Vec<&str> = pattern.split('*').collect();
+    if pattern_parts.len() == 1 {
+        return pattern == text;
+    }
+
+    let mut pos = 0;
+    for (i, part) in pattern_parts.iter().enumerate() {
+        if part.is_empty() {
+            continue;
+        }
+        let Some(found) = text[pos..].find(part) else {
+            return false;
+        };
+        if i == 0 && found != 0 {
+            return false;
+        }
+        if text[pos..pos + found].contains('/') {
+            return false;
+        }
+        pos += found + part.len();
+    }
+
+    if pattern.ends_with('*') {
+        !text[pos..].contains('/')
+    } else {
+        pos == text.len()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Builtin aliases — bare convenience mappings, no descriptions
 // ---------------------------------------------------------------------------
@@ -1210,10 +1272,34 @@ pub fn filter_by_visibility(
     mut aliases: IndexMap<String, ResolvedAlias>,
     visibility: &crate::config::ModelVisibility,
 ) -> IndexMap<String, ResolvedAlias> {
+    if visibility.include.is_none() && visibility.exclude.is_none() {
+        return aliases;
+    }
+
     if let Some(includes) = &visibility.include {
-        aliases.retain(|name, _| includes.iter().any(|p| glob_match(p, name)));
-    } else if let Some(excludes) = &visibility.exclude {
-        aliases.retain(|name, _| !excludes.iter().any(|p| glob_match(p, name)));
+        aliases.retain(|_, alias| {
+            let paths = alias
+                .availability
+                .as_ref()
+                .map(|availability| availability.runnable_paths.as_slice())
+                .unwrap_or(&[]);
+            includes.iter().any(|pattern| {
+                matches_visibility_pattern(pattern, &alias.model_id, &alias.provider, paths)
+            })
+        });
+    }
+
+    if let Some(excludes) = &visibility.exclude {
+        aliases.retain(|_, alias| {
+            let paths = alias
+                .availability
+                .as_ref()
+                .map(|availability| availability.runnable_paths.as_slice())
+                .unwrap_or(&[]);
+            !excludes.iter().any(|pattern| {
+                matches_visibility_pattern(pattern, &alias.model_id, &alias.provider, paths)
+            })
+        });
     }
     aliases
 }
@@ -2386,7 +2472,7 @@ mod tests {
         let filtered = filter_by_visibility(
             aliases,
             &crate::config::ModelVisibility {
-                include: Some(vec!["opus*".to_string(), "gpt-*".to_string()]),
+                include: Some(vec!["model-opus*".to_string(), "model-gpt-*".to_string()]),
                 exclude: None,
             },
         );
@@ -2411,7 +2497,10 @@ mod tests {
             aliases,
             &crate::config::ModelVisibility {
                 include: None,
-                exclude: Some(vec!["test-*".to_string(), "deprecated-*".to_string()]),
+                exclude: Some(vec![
+                    "model-test-*".to_string(),
+                    "model-deprecated-*".to_string(),
+                ]),
             },
         );
 
@@ -2430,6 +2519,61 @@ mod tests {
         assert_eq!(filtered.len(), 2);
         assert!(filtered.contains_key("opus"));
         assert!(filtered.contains_key("sonnet"));
+    }
+
+    #[test]
+    fn visibility_pattern_matches_bare_provider_and_opencode_slug_forms() {
+        let paths = vec![availability::RunnablePath {
+            harness: "opencode".to_string(),
+            mars_provider: "Anthropic".to_string(),
+            harness_model_id: "openrouter/anthropic/claude-opus-4.7".to_string(),
+        }];
+
+        assert!(matches_visibility_pattern(
+            "claude-opus-*",
+            "claude-opus-4-7",
+            "Anthropic",
+            &paths
+        ));
+        assert!(matches_visibility_pattern(
+            "anthropic/claude-opus-*",
+            "claude-opus-4-7",
+            "Anthropic",
+            &paths
+        ));
+        assert!(matches_visibility_pattern(
+            "openrouter/anthropic/*",
+            "claude-opus-4-7",
+            "Anthropic",
+            &paths
+        ));
+        assert!(!matches_visibility_pattern(
+            "anthropic/*/opus",
+            "claude-opus-4-7",
+            "Anthropic",
+            &paths
+        ));
+    }
+
+    #[test]
+    fn filter_by_visibility_applies_include_then_exclude() {
+        let mut aliases = IndexMap::new();
+        aliases.insert("opus".to_string(), make_resolved_alias("opus"));
+        aliases.insert("gpt-5".to_string(), make_resolved_alias("gpt-5"));
+        aliases.insert("gpt-4".to_string(), make_resolved_alias("gpt-4"));
+
+        let filtered = filter_by_visibility(
+            aliases,
+            &crate::config::ModelVisibility {
+                include: Some(vec!["openai/model-*".to_string()]),
+                exclude: Some(vec!["model-gpt-4".to_string()]),
+            },
+        );
+
+        assert_eq!(filtered.len(), 2);
+        assert!(filtered.contains_key("opus"));
+        assert!(filtered.contains_key("gpt-5"));
+        assert!(!filtered.contains_key("gpt-4"));
     }
 
     #[test]
