@@ -4,6 +4,9 @@ Caveman style. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- `mars version` CHANGELOG.md integration. Automatically promotes `[Unreleased]` → `[X.Y.Z] - YYYY-MM-DD`, inserts fresh empty `[Unreleased]`, stages alongside `mars.toml`. Warns when `[Unreleased]` section is empty. Silent skip when no CHANGELOG.md exists.
+
 ## [0.1.19] - 2026-04-25
 
 ### Added
