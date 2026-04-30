@@ -123,7 +123,9 @@ pub(crate) fn discovered_item_markdown_path(
     item: &discover::DiscoveredItem,
 ) -> PathBuf {
     match item.id.kind {
-        ItemKind::Agent => package_root.join(&item.source_path),
+        ItemKind::Agent | ItemKind::Hook | ItemKind::McpServer | ItemKind::BootstrapDoc => {
+            package_root.join(&item.source_path)
+        }
         ItemKind::Skill => {
             if item.source_path == Path::new(".") {
                 package_root.join("SKILL.md")

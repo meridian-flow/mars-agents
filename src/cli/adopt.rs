@@ -277,6 +277,9 @@ fn kind_name(kind: ItemKind) -> &'static str {
     match kind {
         ItemKind::Agent => "agent",
         ItemKind::Skill => "skill",
+        ItemKind::Hook => "hook",
+        ItemKind::McpServer => "mcp-server",
+        ItemKind::BootstrapDoc => "bootstrap-doc",
     }
 }
 

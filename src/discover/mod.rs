@@ -206,6 +206,8 @@ fn scan_manifest_declared_path(
                 )?;
             }
         }
+        // New kinds not yet handled by source discovery.
+        ItemKind::Hook | ItemKind::McpServer | ItemKind::BootstrapDoc => {}
     }
 
     Ok(())
@@ -674,11 +676,15 @@ fn logical_layer(kind: ItemKind, relative_path: &Path) -> Result<usize, MarsErro
     let segments = split_segments(relative_path);
     let default_layer = match kind {
         ItemKind::Skill => segments.len(),
-        ItemKind::Agent => usize::MAX,
+        ItemKind::Agent | ItemKind::Hook | ItemKind::McpServer | ItemKind::BootstrapDoc => {
+            usize::MAX
+        }
     };
     let container_roots = match kind {
         ItemKind::Skill => SKILL_CONTAINER_ROOTS,
-        ItemKind::Agent => AGENT_CONTAINER_ROOTS,
+        ItemKind::Agent | ItemKind::Hook | ItemKind::McpServer | ItemKind::BootstrapDoc => {
+            AGENT_CONTAINER_ROOTS
+        }
     };
 
     let mut layer = default_layer;
@@ -744,19 +750,21 @@ impl LayeredCandidate {
                 },
                 source_path: normalize_relative_path(&source_path),
             },
-            ItemKind::Agent => DiscoveredItem {
-                id: ItemId {
-                    kind,
-                    name: ItemName::from(
-                        source_path
-                            .file_stem()
-                            .and_then(|name| name.to_str())
-                            .unwrap_or_default()
-                            .to_string(),
-                    ),
-                },
-                source_path: normalize_relative_path(&source_path),
-            },
+            ItemKind::Agent | ItemKind::Hook | ItemKind::McpServer | ItemKind::BootstrapDoc => {
+                DiscoveredItem {
+                    id: ItemId {
+                        kind,
+                        name: ItemName::from(
+                            source_path
+                                .file_stem()
+                                .and_then(|name| name.to_str())
+                                .unwrap_or_default()
+                                .to_string(),
+                        ),
+                    },
+                    source_path: normalize_relative_path(&source_path),
+                }
+            }
         };
 
         Ok(Self {

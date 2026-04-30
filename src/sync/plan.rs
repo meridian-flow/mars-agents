@@ -154,6 +154,18 @@ mod tests {
                 PathBuf::from(format!("/tmp/source/skills/{name}")),
                 format!("skills/{name}"),
             ),
+            ItemKind::Hook => (
+                PathBuf::from(format!("/tmp/source/hooks/{name}")),
+                format!("hooks/{name}"),
+            ),
+            ItemKind::McpServer => (
+                PathBuf::from(format!("/tmp/source/mcp/{name}")),
+                format!("mcp/{name}"),
+            ),
+            ItemKind::BootstrapDoc => (
+                PathBuf::from(format!("/tmp/source/bootstrap/{name}")),
+                format!("bootstrap/{name}"),
+            ),
         };
 
         TargetItem {
@@ -187,6 +199,9 @@ mod tests {
         let dest_path = match kind {
             ItemKind::Agent => format!("agents/{name}.md"),
             ItemKind::Skill => format!("skills/{name}"),
+            ItemKind::Hook => format!("hooks/{name}"),
+            ItemKind::McpServer => format!("mcp/{name}"),
+            ItemKind::BootstrapDoc => format!("bootstrap/{name}"),
         };
 
         LockedItem {

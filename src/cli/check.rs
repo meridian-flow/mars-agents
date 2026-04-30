@@ -231,6 +231,10 @@ pub(crate) fn check_dir(base: &Path) -> Result<CheckReport, MarsError> {
                     }
                 }
             }
+            // New kinds not yet subject to source-package checks.
+            crate::lock::ItemKind::Hook
+            | crate::lock::ItemKind::McpServer
+            | crate::lock::ItemKind::BootstrapDoc => {}
         }
     }
 

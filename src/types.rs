@@ -301,6 +301,9 @@ impl fmt::Display for SourceOrigin {
 pub enum ItemKind {
     Agent,
     Skill,
+    Hook,
+    McpServer,
+    BootstrapDoc,
 }
 
 impl fmt::Display for ItemKind {
@@ -308,6 +311,9 @@ impl fmt::Display for ItemKind {
         match self {
             ItemKind::Agent => write!(f, "agent"),
             ItemKind::Skill => write!(f, "skill"),
+            ItemKind::Hook => write!(f, "hook"),
+            ItemKind::McpServer => write!(f, "mcp-server"),
+            ItemKind::BootstrapDoc => write!(f, "bootstrap-doc"),
         }
     }
 }
@@ -388,12 +394,14 @@ impl DestPath {
     }
 
     /// Extract the installed item name from this path.
-    /// Agents strip a trailing `.md`; skills use the leaf directory name.
+    /// Agents strip a trailing `.md`; all directory-based kinds use the leaf name.
     pub fn item_name(&self, kind: ItemKind) -> String {
         let last = self.0.rsplit('/').next().unwrap_or("");
         match kind {
             ItemKind::Agent => last.strip_suffix(".md").unwrap_or(last).to_string(),
-            ItemKind::Skill => last.to_string(),
+            ItemKind::Skill | ItemKind::Hook | ItemKind::McpServer | ItemKind::BootstrapDoc => {
+                last.to_string()
+            }
         }
     }
 

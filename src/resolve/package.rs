@@ -288,6 +288,8 @@ pub(crate) fn seed_items_for_request(
             selected.extend(package.items().filter(|item| match item.id.kind {
                 ItemKind::Agent => wanted_agents.contains(&item.id.name),
                 ItemKind::Skill => wanted_skills.contains(&item.id.name),
+                // New kinds not yet selectable via Include filter.
+                ItemKind::Hook | ItemKind::McpServer | ItemKind::BootstrapDoc => false,
             }));
         }
         FilterMode::Exclude(excluded) => {

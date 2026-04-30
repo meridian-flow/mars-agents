@@ -229,7 +229,7 @@ fn cleanup_orphans(
 ) -> usize {
     let mut removed = 0;
 
-    for subdir in ["agents", "skills"] {
+    for subdir in ["agents", "skills", "hooks", "mcp", "bootstrap"] {
         let scan_dir = target_root.join(subdir);
         if !scan_dir.exists() {
             continue;

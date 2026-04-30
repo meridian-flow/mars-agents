@@ -177,6 +177,9 @@ mod tests {
         let dest_path = match kind {
             ItemKind::Agent => PathBuf::from("agents").join(format!("{name}.md")),
             ItemKind::Skill => PathBuf::from("skills").join(name),
+            ItemKind::Hook => PathBuf::from("hooks").join(name),
+            ItemKind::McpServer => PathBuf::from("mcp").join(name),
+            ItemKind::BootstrapDoc => PathBuf::from("bootstrap").join(name),
         };
         TargetItem {
             id: ItemId {
@@ -206,6 +209,9 @@ mod tests {
         let dest_path = match kind {
             ItemKind::Agent => format!("agents/{name}.md"),
             ItemKind::Skill => format!("skills/{name}"),
+            ItemKind::Hook => format!("hooks/{name}"),
+            ItemKind::McpServer => format!("mcp/{name}"),
+            ItemKind::BootstrapDoc => format!("bootstrap/{name}"),
         };
         LockedItem {
             source: SourceName::from("test-source"),

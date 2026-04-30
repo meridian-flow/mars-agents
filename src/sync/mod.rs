@@ -771,6 +771,9 @@ fn default_dest_path(kind: ItemKind, name: &str) -> DestPath {
     match kind {
         ItemKind::Agent => DestPath::from(format!("agents/{name}.md")),
         ItemKind::Skill => DestPath::from(format!("skills/{name}")),
+        ItemKind::Hook => DestPath::from(format!("hooks/{name}")),
+        ItemKind::McpServer => DestPath::from(format!("mcp/{name}")),
+        ItemKind::BootstrapDoc => DestPath::from(format!("bootstrap/{name}")),
     }
 }
 

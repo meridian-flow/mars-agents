@@ -294,7 +294,7 @@ fn dry_run_action(action: &PlannedAction) -> ActionOutcome {
 /// Returns the installed checksum (hash of what was written to disk).
 fn install_item(target: &TargetItem, dest: &Path) -> Result<ContentHash, MarsError> {
     match target.id.kind {
-        ItemKind::Agent => {
+        ItemKind::Agent | ItemKind::Hook | ItemKind::McpServer | ItemKind::BootstrapDoc => {
             let content = content_to_install(target)?;
             write_file_and_verify(dest, &content)
         }
@@ -342,7 +342,9 @@ fn content_to_install(target: &TargetItem) -> Result<Vec<u8>, MarsError> {
 /// Read source content for merge operations.
 fn read_target_content_for_merge(target: &TargetItem) -> Result<Vec<u8>, MarsError> {
     match target.id.kind {
-        ItemKind::Agent => content_to_install(target),
+        ItemKind::Agent | ItemKind::Hook | ItemKind::McpServer | ItemKind::BootstrapDoc => {
+            content_to_install(target)
+        }
         ItemKind::Skill => read_item_content(&target.source_path, target.id.kind),
     }
 }
@@ -353,7 +355,9 @@ fn read_target_content_for_merge(target: &TargetItem) -> Result<Vec<u8>, MarsErr
 /// For now, read the primary file content.
 fn read_item_content(path: &Path, kind: ItemKind) -> Result<Vec<u8>, MarsError> {
     match kind {
-        ItemKind::Agent => Ok(std::fs::read(path)?),
+        ItemKind::Agent | ItemKind::Hook | ItemKind::McpServer | ItemKind::BootstrapDoc => {
+            Ok(std::fs::read(path)?)
+        }
         ItemKind::Skill => {
             // For skills (directories), read the SKILL.md as the merge target
             let skill_md = path.join("SKILL.md");
@@ -387,7 +391,7 @@ fn cache_base_content(
     }
 
     match kind {
-        ItemKind::Agent => {
+        ItemKind::Agent | ItemKind::Hook | ItemKind::McpServer | ItemKind::BootstrapDoc => {
             let content = std::fs::read(dest)?;
             fs_ops::atomic_write_file(&cache_path, &content)?;
         }
@@ -409,7 +413,9 @@ fn extract_name_from_dest(dest_path: &DestPath, kind: ItemKind) -> String {
     let last = dest_path.as_str().rsplit('/').next().unwrap_or("");
     match kind {
         ItemKind::Agent => last.strip_suffix(".md").unwrap_or(last).to_string(),
-        ItemKind::Skill => last.to_string(),
+        ItemKind::Skill | ItemKind::Hook | ItemKind::McpServer | ItemKind::BootstrapDoc => {
+            last.to_string()
+        }
     }
 }
 

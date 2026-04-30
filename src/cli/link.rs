@@ -227,7 +227,9 @@ fn item_name_from_dest_path(dest_path: &crate::types::DestPath, kind: ItemKind) 
     let last = dest_path.as_str().rsplit('/').next().unwrap_or("");
     let name = match kind {
         ItemKind::Agent => last.strip_suffix(".md").unwrap_or(last).to_string(),
-        ItemKind::Skill => last.to_string(),
+        ItemKind::Skill | ItemKind::Hook | ItemKind::McpServer | ItemKind::BootstrapDoc => {
+            last.to_string()
+        }
     };
 
     ItemName::from(name)

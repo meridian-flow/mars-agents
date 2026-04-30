@@ -248,6 +248,9 @@ fn default_dest_path(kind: ItemKind, name: &str) -> DestPath {
     let path_str = match kind {
         ItemKind::Agent => format!("agents/{name}.md"),
         ItemKind::Skill => format!("skills/{name}"),
+        ItemKind::Hook => format!("hooks/{name}"),
+        ItemKind::McpServer => format!("mcp/{name}"),
+        ItemKind::BootstrapDoc => format!("bootstrap/{name}"),
     };
     // Safe: internal paths constructed from validated item names
     DestPath::new(path_str).expect("internal default path is always valid")
@@ -260,7 +263,11 @@ fn parse_rename_dest(
 ) -> Result<DestPath, MarsError> {
     // Normalize backslashes to forward slashes for cross-platform handling
     let normalized = rename_value.replace('\\', "/");
-    let has_prefix = normalized.starts_with("agents/") || normalized.starts_with("skills/");
+    let has_prefix = normalized.starts_with("agents/")
+        || normalized.starts_with("skills/")
+        || normalized.starts_with("hooks/")
+        || normalized.starts_with("mcp/")
+        || normalized.starts_with("bootstrap/");
     let has_parent = normalized.contains('/');
 
     if has_prefix || has_parent {
@@ -279,6 +286,9 @@ fn parse_rename_dest(
             }
         }
         ItemKind::Skill => format!("skills/{normalized}"),
+        ItemKind::Hook => format!("hooks/{normalized}"),
+        ItemKind::McpServer => format!("mcp/{normalized}"),
+        ItemKind::BootstrapDoc => format!("bootstrap/{normalized}"),
     };
     DestPath::new(path_str).map_err(|e| MarsError::Source {
         source_name: source_name.to_string(),
@@ -290,7 +300,9 @@ fn dest_name_from_dest(dest_path: &DestPath, kind: ItemKind) -> String {
     let last = dest_path.as_str().rsplit('/').next().unwrap_or("");
     match kind {
         ItemKind::Agent => last.strip_suffix(".md").unwrap_or(last).to_string(),
-        ItemKind::Skill => last.to_string(),
+        ItemKind::Skill | ItemKind::Hook | ItemKind::McpServer | ItemKind::BootstrapDoc => {
+            last.to_string()
+        }
     }
 }
 

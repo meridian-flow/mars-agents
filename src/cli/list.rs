@@ -51,6 +51,9 @@ pub fn run(args: &ListArgs, ctx: &super::MarsContext, json: bool) -> Result<i32,
             let kind_str = match item.kind {
                 ItemKind::Agent => "agents",
                 ItemKind::Skill => "skills",
+                ItemKind::Hook => "hooks",
+                ItemKind::McpServer => "mcp",
+                ItemKind::BootstrapDoc => "bootstrap",
             };
             if kind_str != filter_kind && &item.kind.to_string() != filter_kind {
                 continue;
@@ -60,7 +63,9 @@ pub fn run(args: &ListArgs, ctx: &super::MarsContext, json: bool) -> Result<i32,
         // Read frontmatter for name + description from .mars/ canonical store
         let disk_path = dest_path.resolve(&mars_dir);
         let content_path = match item.kind {
-            ItemKind::Agent => disk_path.clone(),
+            ItemKind::Agent | ItemKind::Hook | ItemKind::McpServer | ItemKind::BootstrapDoc => {
+                disk_path.clone()
+            }
             ItemKind::Skill => disk_path.join("SKILL.md"),
         };
 
@@ -76,6 +81,8 @@ pub fn run(args: &ListArgs, ctx: &super::MarsContext, json: bool) -> Result<i32,
         match item.kind {
             ItemKind::Agent => agents.push(entry),
             ItemKind::Skill => skills.push(entry),
+            // New kinds not yet shown in the default catalog view — no-op for now.
+            ItemKind::Hook | ItemKind::McpServer | ItemKind::BootstrapDoc => {}
         }
     }
 
@@ -146,6 +153,9 @@ fn run_status(
             let kind_str = match item.kind {
                 ItemKind::Agent => "agents",
                 ItemKind::Skill => "skills",
+                ItemKind::Hook => "hooks",
+                ItemKind::McpServer => "mcp",
+                ItemKind::BootstrapDoc => "bootstrap",
             };
             if kind_str != filter_kind && &item.kind.to_string() != filter_kind {
                 continue;
