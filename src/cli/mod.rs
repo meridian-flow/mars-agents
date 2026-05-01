@@ -12,6 +12,7 @@ pub mod adopt;
 pub mod cache;
 pub mod check;
 pub mod doctor;
+pub mod export;
 pub mod init;
 pub mod link;
 pub mod list;
@@ -152,6 +153,9 @@ pub enum Command {
     /// Dry-run the compiler pipeline and report diagnostics without writing.
     Validate(validate::ValidateArgs),
 
+    /// Export the compile plan as JSON (dry-run, no writes).
+    Export(export::ExportArgs),
+
     /// Validate a source package before publishing (structure, frontmatter, deps).
     Check(check::CheckArgs),
 
@@ -224,6 +228,7 @@ fn should_auto_init_project(cmd: &Command, err: &MarsError) -> bool {
 fn dispatch_with_root(cmd: &Command, ctx: &MarsContext, json: bool) -> Result<i32, MarsError> {
     match cmd {
         Command::Validate(args) => validate::run(args, ctx, json),
+        Command::Export(args) => export::run(args, ctx, json),
         Command::Add(args) => add::run(args, ctx, json),
         Command::Adopt(args) => adopt::run(args, ctx, json),
         Command::Remove(args) => remove::run(args, ctx, json),
