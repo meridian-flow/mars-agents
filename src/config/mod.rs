@@ -155,6 +155,11 @@ pub struct Settings {
     pub model_visibility: ModelVisibility,
     #[serde(default = "default_models_cache_ttl_hours")]
     pub models_cache_ttl_hours: u32,
+    /// Minimum mars binary version required to use this project.
+    /// Old binary + new package with this set → compatibility error.
+    /// New binary + old package without this set → succeeds with defaults.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_mars_version: Option<String>,
 }
 
 impl Default for Settings {
@@ -164,6 +169,7 @@ impl Default for Settings {
             targets: None,
             model_visibility: ModelVisibility::default(),
             models_cache_ttl_hours: default_models_cache_ttl_hours(),
+            min_mars_version: None,
         }
     }
 }
@@ -445,6 +451,7 @@ pub fn merge_with_root(
                     "override `{override_name}` references a dependency not in mars.toml"
                 ),
                 context: None,
+                category: None,
             });
         }
     }

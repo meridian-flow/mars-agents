@@ -269,6 +269,7 @@ fn print_sync_report_human(report: &SyncReport, no_upgrade_hint: bool) {
     let mut stderr = StandardStream::stderr(color_choice());
     for diag in &report.diagnostics {
         let color = match diag.level {
+            crate::diagnostic::DiagnosticLevel::Error => Color::Red,
             crate::diagnostic::DiagnosticLevel::Warning => Color::Yellow,
             crate::diagnostic::DiagnosticLevel::Info => Color::Cyan,
         };
