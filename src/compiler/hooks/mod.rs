@@ -22,7 +22,7 @@ use crate::error::{ConfigError, MarsError};
 /// V0 universal hook events.
 ///
 /// Any event string not in this list is rejected by the compiler.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum UniversalEvent {
     SessionStart,
     SessionEnd,

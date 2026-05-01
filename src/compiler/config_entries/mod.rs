@@ -31,19 +31,21 @@ pub(crate) fn compile_config_entries(
     dry_run: bool,
     diag: &mut DiagnosticCollector,
 ) {
-    use crate::compiler::hooks::{discover_hook_items, order_hooks, translate_hooks_for_target};
-    use crate::compiler::mcp::{
-        check_env_refs, detect_mcp_collisions, discover_mcp_items, lower_for_target,
+    use crate::compiler::config_entries::resolve::{
+        resolve_hook_collisions_for_target, resolve_mcp_collisions_for_target,
     };
+    use crate::compiler::hooks::{discover_hook_items, order_hooks, translate_hooks_for_target};
+    use crate::compiler::mcp::{TargetMcpEntry, check_env_refs, discover_mcp_items};
     use crate::target::{ConfigEntry, HookEntry, McpServerEntry, TargetRegistry};
 
     let graph = &applied.planned.targeted.resolved.graph;
     let effective = &applied.planned.targeted.resolved.loaded.effective;
     let target_roots: Vec<String> = effective.settings.managed_targets();
-    let target_root_strs: Vec<&str> = target_roots.iter().map(|s| s.as_str()).collect();
 
     // Compute package depths via BFS from direct deps (depth 1; local = 0).
     let depths = compute_depths(graph);
+    // Compute declaration-order precedence from mars.toml insertion order.
+    let decl_orders = compute_decl_orders(graph, &effective.dependencies);
 
     // Collect all MCP and hook items across all packages.
     let mut all_mcp: Vec<crate::compiler::mcp::ParsedMcpItem> = Vec::new();
@@ -75,13 +77,17 @@ pub(crate) fn compile_config_entries(
     all_hooks.extend(local_hooks);
 
     // Dependency packages.
-    for (decl_order, source_name) in graph.order.iter().enumerate() {
+    for source_name in &graph.order {
         let Some(node) = graph.nodes.get(source_name) else {
             continue;
         };
         let package_root = &node.rooted_ref.package_root;
+        let decl_order = decl_orders
+            .get(source_name)
+            .copied()
+            .unwrap_or(effective.dependencies.len() + graph.order.len() + 1);
 
-        match discover_mcp_items(package_root, source_name.as_str(), decl_order + 1) {
+        match discover_mcp_items(package_root, source_name.as_str(), decl_order) {
             Ok(items) => all_mcp.extend(items),
             Err(e) => {
                 diag.warn(
@@ -92,7 +98,7 @@ pub(crate) fn compile_config_entries(
         }
 
         let depth = depths.get(source_name).copied().unwrap_or(1);
-        match discover_hook_items(package_root, source_name.as_str(), depth, decl_order + 1) {
+        match discover_hook_items(package_root, source_name.as_str(), depth, decl_order) {
             Ok(items) => all_hooks.extend(items),
             Err(e) => {
                 diag.warn(
@@ -148,15 +154,6 @@ pub(crate) fn compile_config_entries(
         diag.warn("mcp-env", format!("MCP env check failed: {e}"));
     }
 
-    // Collision detection — hard error (MEDIUM-1).
-    if let Err(e) = detect_mcp_collisions(&all_mcp, &target_root_strs) {
-        diag.warn("mcp-collision", format!("{e}"));
-        return; // Hard error: stop config-entry compilation.
-    }
-
-    // Order hooks deterministically.
-    let ordered_hooks = order_hooks(all_hooks);
-
     // Get the target registry.
     let registry = TargetRegistry::new();
 
@@ -169,20 +166,27 @@ pub(crate) fn compile_config_entries(
         }
 
         // Lower MCP items for this target.
-        let mcp_entries: Vec<ConfigEntry> = lower_for_target(&all_mcp, target_root)
-            .into_iter()
-            .map(|e| {
-                ConfigEntry::McpServer(McpServerEntry {
-                    name: e.name,
-                    command: e.command,
-                    args: e.args,
-                    env: e.env.into_iter().collect(),
+        let mcp_entries: Vec<ConfigEntry> =
+            resolve_mcp_collisions_for_target(&all_mcp, target_root, diag)
+                .into_iter()
+                .map(TargetMcpEntry::from_parsed)
+                .map(|e| {
+                    ConfigEntry::McpServer(McpServerEntry {
+                        name: e.name,
+                        command: e.command,
+                        args: e.args,
+                        env: e.env.into_iter().collect(),
+                    })
                 })
-            })
-            .collect();
+                .collect();
 
-        // Translate hooks for this target, filtering dropped ones.
-        let translated_hooks = translate_hooks_for_target(ordered_hooks.clone(), target_root);
+        // Resolve and translate hooks for this target, filtering dropped ones.
+        let target_hooks: Vec<_> =
+            resolve_hook_collisions_for_target(&all_hooks, target_root, diag)
+                .into_iter()
+                .cloned()
+                .collect();
+        let translated_hooks = translate_hooks_for_target(order_hooks(target_hooks), target_root);
 
         // Emit lossiness diagnostics for dropped and approximate hooks.
         for th in &translated_hooks {
@@ -341,4 +345,50 @@ fn compute_depths(graph: &crate::resolve::ResolvedGraph) -> HashMap<SourceName, 
     }
 
     depths
+}
+
+/// Compute declaration-order precedence for dependency config entries.
+///
+/// Direct dependencies use the insertion order from `effective.dependencies`.
+/// Transitive dependencies inherit the minimum declaration order of any direct
+/// sponsor that reaches them.
+fn compute_decl_orders(
+    graph: &crate::resolve::ResolvedGraph,
+    dependencies: &indexmap::IndexMap<SourceName, crate::config::EffectiveDependency>,
+) -> HashMap<SourceName, usize> {
+    let mut orders: HashMap<SourceName, usize> = HashMap::new();
+    let mut queue: VecDeque<SourceName> = VecDeque::new();
+
+    for (idx, source_name) in dependencies.keys().enumerate() {
+        if graph.nodes.contains_key(source_name) {
+            orders.insert(source_name.clone(), idx + 1);
+            queue.push_back(source_name.clone());
+        }
+    }
+
+    while let Some(current) = queue.pop_front() {
+        let current_order = orders[&current];
+        let Some(node) = graph.nodes.get(&current) else {
+            continue;
+        };
+
+        for dep in &node.deps {
+            if !graph.nodes.contains_key(dep) {
+                continue;
+            }
+            match orders.get_mut(dep) {
+                Some(existing) if current_order < *existing => {
+                    *existing = current_order;
+                    queue.push_back(dep.clone());
+                }
+                Some(_) => {}
+                None => {
+                    orders.insert(dep.clone(), current_order);
+                    queue.push_back(dep.clone());
+                }
+            }
+        }
+    }
+
+    orders
 }

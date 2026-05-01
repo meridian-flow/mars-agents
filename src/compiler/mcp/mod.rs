@@ -7,9 +7,8 @@
 /// - Parse `mcp/<name>/mcp.toml` from package roots
 /// - Preserve env references symbolically (mars never resolves secrets)
 /// - Warn (or error under `--strict`) when an env var is absent at sync time
-/// - Detect per-(target_root, mcp_name) collisions: same name in same target = hard error
+/// - Provide parsed MCP items for per-target collision resolution
 /// - Produce `MarsTargetMcpEntry` per target for adapter config writing
-use std::collections::HashMap;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -179,59 +178,6 @@ pub fn check_env_refs(
 }
 
 // ---------------------------------------------------------------------------
-// Collision detection
-// ---------------------------------------------------------------------------
-
-/// Check for per-target-root MCP name collisions.
-///
-/// Two packages declaring the same MCP server name for the same target root
-/// is a hard error. Cross-target duplicates are allowed.
-///
-/// `items` — all MCP items across all packages.
-/// `target_roots` — the set of target roots that will be configured.
-pub fn detect_mcp_collisions(
-    items: &[ParsedMcpItem],
-    target_roots: &[&str],
-) -> Result<(), MarsError> {
-    // For each target root, track (mcp_name -> source_name) seen so far.
-    let mut seen: HashMap<&str, HashMap<&str, &str>> = HashMap::new();
-
-    for target_root in target_roots {
-        seen.insert(target_root, HashMap::new());
-    }
-
-    for item in items {
-        // Determine which targets this item applies to.
-        let applicable: Vec<&str> = if item.def.targets.is_empty() {
-            target_roots.to_vec()
-        } else {
-            item.def
-                .targets
-                .iter()
-                .filter_map(|t| target_roots.iter().find(|&&tr| tr == t.as_str()).copied())
-                .collect()
-        };
-
-        for target_root in applicable {
-            if let Some(per_target) = seen.get_mut(target_root) {
-                if let Some(existing_source) = per_target.get(item.name.as_str()) {
-                    return Err(MarsError::Config(ConfigError::Invalid {
-                        message: format!(
-                            "MCP server name collision in target `{target_root}`: \
-                             `{}` declared by both `{existing_source}` and `{}`",
-                            item.name, item.source_name
-                        ),
-                    }));
-                }
-                per_target.insert(item.name.as_str(), item.source_name.as_str());
-            }
-        }
-    }
-
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
 // Target lowering
 // ---------------------------------------------------------------------------
 
@@ -269,6 +215,7 @@ impl TargetMcpEntry {
 /// Lower all MCP items for a specific target root.
 ///
 /// Filters to items that apply to the given target (empty target list = all targets).
+#[cfg(test)]
 pub fn lower_for_target<'a>(items: &'a [ParsedMcpItem], target_root: &str) -> Vec<TargetMcpEntry> {
     let mut applicable: Vec<(usize, &'a ParsedMcpItem)> = items
         .iter()
@@ -406,46 +353,6 @@ KEY = { from = "env", var = "MARS_TEST_DEFINITELY_NOT_SET_XYZ456" }
         let mut diag = DiagnosticCollector::new();
         let result = check_env_refs(&items, true, &mut diag);
         assert!(result.is_err());
-    }
-
-    #[test]
-    fn detect_collisions_same_name_same_target_errors() {
-        let tmp_a = TempDir::new().unwrap();
-        let tmp_b = TempDir::new().unwrap();
-        make_mcp_toml_dir(tmp_a.path(), "context7", "command = \"npx\"");
-        make_mcp_toml_dir(tmp_b.path(), "context7", "command = \"npx\"");
-
-        let items_a = discover_mcp_items(tmp_a.path(), "source-a", 0).unwrap();
-        let items_b = discover_mcp_items(tmp_b.path(), "source-b", 1).unwrap();
-        let all: Vec<_> = items_a.into_iter().chain(items_b).collect();
-
-        let result = detect_mcp_collisions(&all, &[".claude"]);
-        assert!(result.is_err());
-        let msg = result.unwrap_err().to_string();
-        assert!(msg.contains("context7"));
-    }
-
-    #[test]
-    fn detect_collisions_same_name_different_targets_allowed() {
-        let tmp_a = TempDir::new().unwrap();
-        let tmp_b = TempDir::new().unwrap();
-        make_mcp_toml_dir(
-            tmp_a.path(),
-            "context7",
-            "command = \"npx\"\ntargets = [\".claude\"]",
-        );
-        make_mcp_toml_dir(
-            tmp_b.path(),
-            "context7",
-            "command = \"npx\"\ntargets = [\".codex\"]",
-        );
-
-        let items_a = discover_mcp_items(tmp_a.path(), "source-a", 0).unwrap();
-        let items_b = discover_mcp_items(tmp_b.path(), "source-b", 1).unwrap();
-        let all: Vec<_> = items_a.into_iter().chain(items_b).collect();
-
-        // .claude and .codex are different targets — no collision.
-        detect_mcp_collisions(&all, &[".claude", ".codex"]).unwrap();
     }
 
     #[test]
