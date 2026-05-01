@@ -212,15 +212,17 @@ fn remove_opencode_entries(entry_keys: &[String], target_dir: &Path) -> Result<(
         .collect();
 
     if !hook_names.is_empty() {
-        if let Some(hooks_map) = root_obj
-            .get_mut("hooks")
-            .and_then(|v| v.as_object_mut())
-        {
+        if let Some(hooks_map) = root_obj.get_mut("hooks").and_then(|v| v.as_object_mut()) {
             for event_hooks in hooks_map.values_mut() {
                 if let Some(arr) = event_hooks.as_array_mut() {
                     arr.retain(|cmd| {
                         let cmd_str = cmd.as_str().unwrap_or("");
-                        !hook_names.iter().any(|name| cmd_str.contains(name))
+                        !hook_names.iter().any(|name| {
+                            // Exact path-segment match to avoid partial name collisions.
+                            let seg_fwd = format!("/hooks/{name}/");
+                            let seg_bwd = format!("\\hooks\\{name}\\");
+                            cmd_str.contains(&seg_fwd) || cmd_str.contains(&seg_bwd)
+                        })
                     });
                 }
             }

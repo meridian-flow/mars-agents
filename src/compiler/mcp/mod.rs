@@ -133,11 +133,7 @@ pub fn discover_mcp_items(
         })?;
 
         // Resolved name: TOML override wins, else directory name.
-        let resolved_name = def
-            .name
-            .as_deref()
-            .unwrap_or(&server_name)
-            .to_string();
+        let resolved_name = def.name.as_deref().unwrap_or(&server_name).to_string();
 
         items.push(ParsedMcpItem {
             name: resolved_name,
@@ -273,10 +269,7 @@ impl TargetMcpEntry {
 /// Lower all MCP items for a specific target root.
 ///
 /// Filters to items that apply to the given target (empty target list = all targets).
-pub fn lower_for_target<'a>(
-    items: &'a [ParsedMcpItem],
-    target_root: &str,
-) -> Vec<TargetMcpEntry> {
+pub fn lower_for_target<'a>(items: &'a [ParsedMcpItem], target_root: &str) -> Vec<TargetMcpEntry> {
     items
         .iter()
         .filter(|item| {
@@ -385,7 +378,11 @@ KEY = { from = "env", var = "MARS_TEST_DEFINITELY_NOT_SET_XYZ123" }
         check_env_refs(&items, false, &mut diag).unwrap();
         let collected = diag.drain();
         assert_eq!(collected.len(), 1);
-        assert!(collected[0].message.contains("MARS_TEST_DEFINITELY_NOT_SET_XYZ123"));
+        assert!(
+            collected[0]
+                .message
+                .contains("MARS_TEST_DEFINITELY_NOT_SET_XYZ123")
+        );
     }
 
     #[test]

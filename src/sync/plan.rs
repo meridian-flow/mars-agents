@@ -32,6 +32,7 @@ pub enum PlannedAction {
         reason: &'static str,
     },
     /// Three-way merge required.
+    // Reserved — plan stage emits Overwrite for conflicts; merge not yet implemented end-to-end.
     Merge {
         target: TargetItem,
         base_content: Vec<u8>,

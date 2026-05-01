@@ -318,7 +318,10 @@ mod tests {
             diagnostics: vec![],
         };
         let json = serde_json::to_string(&env).unwrap();
-        assert!(json.contains("\"schema_version\":1"), "missing schema_version: {json}");
+        assert!(
+            json.contains("\"schema_version\":1"),
+            "missing schema_version: {json}"
+        );
     }
 
     #[test]
@@ -333,7 +336,10 @@ mod tests {
             action: "install".to_string(),
         };
         let json = serde_json::to_string(&item).unwrap();
-        assert!(!json.contains("content"), "item should not have content field");
+        assert!(
+            !json.contains("content"),
+            "item should not have content field"
+        );
         assert!(!json.contains("body"), "item should not have body field");
     }
 

@@ -83,21 +83,15 @@ pub enum SkillPlacementError {
     RoutedMissingTargets { name: String },
 
     /// `placement: shared` with explicit targets must include `.agents`.
-    #[error(
-        "skill `{name}`: shared placement with explicit `targets` must include `.agents`"
-    )]
+    #[error("skill `{name}`: shared placement with explicit `targets` must include `.agents`")]
     SharedMissingAgents { name: String },
 
     /// Unknown `placement:` value.
-    #[error(
-        "skill `{name}`: unknown placement value `{value}` — expected `shared` or `routed`"
-    )]
+    #[error("skill `{name}`: unknown placement value `{value}` — expected `shared` or `routed`")]
     InvalidPlacementValue { name: String, value: String },
 
     /// Target name doesn't start with `.`.
-    #[error(
-        "skill `{name}`: invalid target name `{target}` — target roots must start with `.`"
-    )]
+    #[error("skill `{name}`: invalid target name `{target}` — target roots must start with `.`")]
     InvalidTargetName { name: String, target: String },
 }
 
@@ -135,9 +129,7 @@ pub enum SkillValidationError {
 ///
 /// The check is cross-package: call with all planned outputs from the full
 /// dependency graph.
-pub fn check_overlap(
-    planned: &[PlannedSkillOutput],
-) -> Vec<SkillValidationError> {
+pub fn check_overlap(planned: &[PlannedSkillOutput]) -> Vec<SkillValidationError> {
     let mut errors = Vec::new();
 
     // Group by (skill_name, consumer) → list of visible roots
@@ -314,10 +306,7 @@ mod tests {
 
     #[test]
     fn overlap_agents_plus_pi_for_same_name_is_error() {
-        let planned = vec![
-            shared_output("research"),
-            target_output("research", ".pi"),
-        ];
+        let planned = vec![shared_output("research"), target_output("research", ".pi")];
         let errors = check_overlap(&planned);
         assert!(!errors.is_empty());
     }
@@ -366,7 +355,11 @@ mod tests {
     #[test]
     fn codex_agent_referencing_routed_codex_skill_is_valid() {
         let planned = vec![target_output("repo-research", ".codex")];
-        let refs = vec![targeted_agent_ref("codex-researcher", "repo-research", ".codex")];
+        let refs = vec![targeted_agent_ref(
+            "codex-researcher",
+            "repo-research",
+            ".codex",
+        )];
         let errors = check_agent_skill_refs(&refs, &planned);
         assert!(errors.is_empty());
     }
@@ -383,7 +376,11 @@ mod tests {
     #[test]
     fn claude_agent_referencing_claude_routed_skill_is_valid() {
         let planned = vec![target_output("shell-basics", ".claude")];
-        let refs = vec![targeted_agent_ref("claude-agent", "shell-basics", ".claude")];
+        let refs = vec![targeted_agent_ref(
+            "claude-agent",
+            "shell-basics",
+            ".claude",
+        )];
         let errors = check_agent_skill_refs(&refs, &planned);
         assert!(errors.is_empty());
     }

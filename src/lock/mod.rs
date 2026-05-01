@@ -268,25 +268,42 @@ pub fn write(root: &Path, lock: &LockFile) -> Result<(), MarsError> {
 ///
 /// Each v1 entry becomes one `LockedItemV2` with exactly one `OutputRecord`
 /// using `target_root = ".mars"` (the only output root in v1).
+///
+/// Key collision: two v1 entries with different dest_paths but the same basename
+/// (e.g. `hooks/pre-commit/hook.sh` and `hooks/pre-push/hook.sh` both name "hook")
+/// would map to the same key and silently drop one. When a collision is detected,
+/// we warn and fall back to the raw dest_path string as a disambiguated key.
 fn promote_v1_items(v1_items: IndexMap<DestPath, LockedItem>) -> IndexMap<String, LockedItemV2> {
-    v1_items
-        .into_iter()
-        .map(|(dest_path, item)| {
-            let key = format!("{}/{}", item.kind, dest_path.item_name(item.kind));
-            let item_v2 = LockedItemV2 {
-                source: item.source,
-                kind: item.kind,
-                version: item.version,
-                source_checksum: item.source_checksum,
-                outputs: vec![OutputRecord {
-                    target_root: ".mars".to_string(),
-                    dest_path: item.dest_path,
-                    installed_checksum: item.installed_checksum,
-                }],
-            };
-            (key, item_v2)
-        })
-        .collect()
+    let mut result: IndexMap<String, LockedItemV2> = IndexMap::new();
+
+    for (dest_path, item) in v1_items {
+        let key = format!("{}/{}", item.kind, dest_path.item_name(item.kind));
+        let item_v2 = LockedItemV2 {
+            source: item.source,
+            kind: item.kind,
+            version: item.version,
+            source_checksum: item.source_checksum,
+            outputs: vec![OutputRecord {
+                target_root: ".mars".to_string(),
+                dest_path: item.dest_path,
+                installed_checksum: item.installed_checksum,
+            }],
+        };
+
+        if result.contains_key(&key) {
+            // Two v1 entries share the same basename — use the full dest_path as a
+            // disambiguated key so neither entry is silently dropped.
+            let fallback_key = format!("{}/{}", item_v2.kind, dest_path.as_str());
+            eprintln!(
+                "[WARN] v1→v2 promotion: key collision on `{key}`; using dest_path key `{fallback_key}`"
+            );
+            result.insert(fallback_key, item_v2);
+        } else {
+            result.insert(key, item_v2);
+        }
+    }
+
+    result
 }
 
 // ---------------------------------------------------------------------------
@@ -1070,6 +1087,56 @@ dest_path = "agents/coder.md"
         let msg = err.to_string();
         assert!(msg.contains("missing checksum for write-producing action"));
         assert!(msg.contains("agents/coder.md"));
+    }
+
+    #[test]
+    fn promote_v1_collision_both_survive() {
+        // Two v1 items with different full dest_paths but the same basename
+        // (e.g. "hook" from two different subdirectories) must both survive promotion.
+        // Without collision handling the second would silently overwrite the first.
+        let mut v1_items: IndexMap<DestPath, LockedItem> = IndexMap::new();
+
+        v1_items.insert(
+            DestPath::from("hooks/pre-commit/hook.sh"),
+            LockedItem {
+                source: "base".into(),
+                kind: ItemKind::Hook,
+                version: None,
+                source_checksum: "sha256:aaa".into(),
+                installed_checksum: "sha256:bbb".into(),
+                dest_path: DestPath::from("hooks/pre-commit/hook.sh"),
+            },
+        );
+        v1_items.insert(
+            DestPath::from("hooks/pre-push/hook.sh"),
+            LockedItem {
+                source: "base".into(),
+                kind: ItemKind::Hook,
+                version: None,
+                source_checksum: "sha256:ccc".into(),
+                installed_checksum: "sha256:ddd".into(),
+                dest_path: DestPath::from("hooks/pre-push/hook.sh"),
+            },
+        );
+
+        let promoted = promote_v1_items(v1_items);
+
+        // Both entries must be present — neither was silently dropped.
+        assert_eq!(promoted.len(), 2, "both items should survive promotion");
+
+        // The first item gets the canonical key; the second gets the fallback dest_path key.
+        let checksums: std::collections::HashSet<String> = promoted
+            .values()
+            .map(|v| v.source_checksum.as_ref().to_string())
+            .collect();
+        assert!(
+            checksums.contains("sha256:aaa"),
+            "pre-commit hook must be present"
+        );
+        assert!(
+            checksums.contains("sha256:ccc"),
+            "pre-push hook must be present"
+        );
     }
 
     #[test]

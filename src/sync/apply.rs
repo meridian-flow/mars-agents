@@ -86,7 +86,7 @@ fn execute_action(
             // Read source content and install
             let installed_checksum = install_item(target, &dest)?;
 
-            // Cache the installed content as base for future merges
+            // Writes base for future three-way merge support — currently unused by plan stage.
             cache_base_content(cache_bases_dir, &installed_checksum, &dest, target.id.kind)?;
 
             Ok(ActionOutcome {
@@ -105,7 +105,7 @@ fn execute_action(
             // Install (overwrite) source content
             let installed_checksum = install_item(target, &dest)?;
 
-            // Update base cache
+            // Writes base for future three-way merge support — currently unused by plan stage.
             cache_base_content(cache_bases_dir, &installed_checksum, &dest, target.id.kind)?;
 
             Ok(ActionOutcome {
@@ -118,6 +118,7 @@ fn execute_action(
             })
         }
 
+        // Reserved — unreachable from current plan stage. See PlannedAction::Merge.
         PlannedAction::Merge {
             target,
             base_content,
@@ -446,7 +447,7 @@ pub fn prune_orphans(
 mod tests {
     use super::*;
     use crate::hash;
-    use crate::lock::{ItemId, ItemKind, LockedItem, LockedItemV2, OutputRecord};
+    use crate::lock::{ItemId, ItemKind, LockedItem};
     use crate::sync::plan::{PlannedAction, SyncPlan};
     use crate::sync::target::TargetItem;
     use std::fs;

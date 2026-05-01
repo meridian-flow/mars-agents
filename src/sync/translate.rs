@@ -44,9 +44,7 @@ mod tests {
     use super::*;
     use crate::lock::{ItemId, ItemKind};
     use crate::sync::plan::{PlannedAction, SyncPlan};
-    use crate::sync::target::TargetItem;
     use crate::types::DestPath;
-    use std::path::PathBuf;
 
     fn make_skip_action() -> PlannedAction {
         PlannedAction::Skip {

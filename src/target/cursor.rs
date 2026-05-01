@@ -70,7 +70,10 @@ impl CursorAdapter {
     ///
     /// Called by the compiler before `write_config_entries` so that the
     /// lossiness is reported even though hooks are silently skipped in write.
-    pub fn emit_hook_lossiness_diagnostics(entries: &[ConfigEntry], diag: &mut DiagnosticCollector) {
+    pub fn emit_hook_lossiness_diagnostics(
+        entries: &[ConfigEntry],
+        diag: &mut DiagnosticCollector,
+    ) {
         for entry in entries {
             if let ConfigEntry::Hook(hook) = entry {
                 diag.warn(
@@ -284,7 +287,10 @@ mod tests {
     fn remove_mcp_entries_preserves_others() {
         let tmp = TempDir::new().unwrap();
         let adapter = CursorAdapter;
-        let entries = vec![make_mcp_entry("to-remove", None), make_mcp_entry("to-keep", None)];
+        let entries = vec![
+            make_mcp_entry("to-remove", None),
+            make_mcp_entry("to-keep", None),
+        ];
         adapter.write_config_entries(&entries, tmp.path()).unwrap();
 
         adapter

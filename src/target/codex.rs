@@ -198,10 +198,7 @@ fn remove_codex_mcp_entries(entry_keys: &[String], target_dir: &Path) -> Result<
 //   }
 // }
 
-fn write_codex_hooks_json(
-    target_dir: &Path,
-    hooks: &[&HookEntry],
-) -> Result<PathBuf, MarsError> {
+fn write_codex_hooks_json(target_dir: &Path, hooks: &[&HookEntry]) -> Result<PathBuf, MarsError> {
     let path = target_dir.join("codex_hooks.json");
 
     let mut root: serde_json::Value = if path.is_file() {
@@ -278,7 +275,12 @@ fn remove_codex_hook_entries(entry_keys: &[String], target_dir: &Path) -> Result
             if let Some(arr) = event_hooks.as_array_mut() {
                 arr.retain(|cmd| {
                     let cmd_str = cmd.as_str().unwrap_or("");
-                    !hook_names.iter().any(|name| cmd_str.contains(name))
+                    !hook_names.iter().any(|name| {
+                        // Exact path-segment match to avoid partial name collisions.
+                        let seg_fwd = format!("/hooks/{name}/");
+                        let seg_bwd = format!("\\hooks\\{name}\\");
+                        cmd_str.contains(&seg_fwd) || cmd_str.contains(&seg_bwd)
+                    })
                 });
             }
         }

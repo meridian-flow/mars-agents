@@ -32,10 +32,7 @@ pub struct ItemVisibility {
 pub enum VisibilityWarning {
     /// A Hook or McpServer was explicitly marked `exported: true`.
     /// This crosses a package boundary which has side-effect implications.
-    EffectfulItemExported {
-        kind: ItemKind,
-        name: String,
-    },
+    EffectfulItemExported { kind: ItemKind, name: String },
 }
 
 /// Determine the default visibility class for an item kind (D1/D10).
@@ -108,12 +105,18 @@ mod tests {
 
     #[test]
     fn agents_are_exported_by_default() {
-        assert_eq!(default_visibility(ItemKind::Agent), VisibilityClass::Exported);
+        assert_eq!(
+            default_visibility(ItemKind::Agent),
+            VisibilityClass::Exported
+        );
     }
 
     #[test]
     fn skills_are_exported_by_default() {
-        assert_eq!(default_visibility(ItemKind::Skill), VisibilityClass::Exported);
+        assert_eq!(
+            default_visibility(ItemKind::Skill),
+            VisibilityClass::Exported
+        );
     }
 
     #[test]

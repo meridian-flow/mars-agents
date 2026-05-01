@@ -95,9 +95,11 @@ fn compile_config_entries(
     diag: &mut DiagnosticCollector,
 ) {
     use crate::compiler::hooks::{discover_hook_items, order_hooks, translate_hooks_for_target};
-    use crate::compiler::mcp::{check_env_refs, detect_mcp_collisions, discover_mcp_items, lower_for_target};
-    use crate::target::{ConfigEntry, HookEntry, McpServerEntry, TargetRegistry};
+    use crate::compiler::mcp::{
+        check_env_refs, detect_mcp_collisions, discover_mcp_items, lower_for_target,
+    };
     use crate::target::cursor::CursorAdapter;
+    use crate::target::{ConfigEntry, HookEntry, McpServerEntry, TargetRegistry};
 
     let graph = &applied.planned.targeted.resolved.graph;
     let effective = &applied.planned.targeted.resolved.loaded.effective;
@@ -115,7 +117,10 @@ fn compile_config_entries(
     let local_mcp = match discover_mcp_items(&ctx.project_root, "_self", 0) {
         Ok(items) => items,
         Err(e) => {
-            diag.warn("mcp-discover", format!("failed to scan local MCP items: {e}"));
+            diag.warn(
+                "mcp-discover",
+                format!("failed to scan local MCP items: {e}"),
+            );
             Vec::new()
         }
     };
@@ -124,7 +129,10 @@ fn compile_config_entries(
     let local_hooks = match discover_hook_items(&ctx.project_root, "_self", 0, 0) {
         Ok(items) => items,
         Err(e) => {
-            diag.warn("hook-discover", format!("failed to scan local hook items: {e}"));
+            diag.warn(
+                "hook-discover",
+                format!("failed to scan local hook items: {e}"),
+            );
             Vec::new()
         }
     };
@@ -132,7 +140,9 @@ fn compile_config_entries(
 
     // Dependency packages.
     for (decl_order, source_name) in graph.order.iter().enumerate() {
-        let Some(node) = graph.nodes.get(source_name) else { continue };
+        let Some(node) = graph.nodes.get(source_name) else {
+            continue;
+        };
         let depth = depths.get(source_name).copied().unwrap_or(1);
         let package_root = &node.rooted_ref.package_root;
 
@@ -157,15 +167,55 @@ fn compile_config_entries(
         }
     }
 
+    // HIGH-3: Filter out hooks and MCP items from dependency packages where visibility is Local.
+    {
+        use crate::compiler::visibility::{can_cross_package_boundary, resolve_visibility};
+        use crate::lock::ItemKind;
+
+        all_mcp.retain(|item| {
+            // Local package items always pass.
+            if item.source_name == "_self" {
+                return true;
+            }
+            // Dependency item — check visibility.
+            let explicit = match item.def.visibility.as_str() {
+                "exported" => Some(true),
+                "local" => Some(false),
+                _ => None, // treat unknown as default (local)
+            };
+            let vis = resolve_visibility(ItemKind::McpServer, &item.name, explicit);
+            if !can_cross_package_boundary(&vis) {
+                return false;
+            }
+            // Emit warning for explicitly exported effectful items.
+            true
+        });
+
+        all_hooks.retain(|item| {
+            // Local package items always pass.
+            if item.source_name == "_self" {
+                return true;
+            }
+            // Dependency item — check visibility.
+            let explicit = match item.def.visibility.as_str() {
+                "exported" => Some(true),
+                "local" => Some(false),
+                _ => None,
+            };
+            let vis = resolve_visibility(ItemKind::Hook, &item.def.name, explicit);
+            can_cross_package_boundary(&vis)
+        });
+    }
+
     // Env ref preflight (non-strict by default).
     if let Err(e) = check_env_refs(&all_mcp, false, diag) {
         diag.warn("mcp-env", format!("MCP env check failed: {e}"));
     }
 
-    // Collision detection.
+    // Collision detection — hard error (MEDIUM-1).
     if let Err(e) = detect_mcp_collisions(&all_mcp, &target_root_strs) {
         diag.warn("mcp-collision", format!("{e}"));
-        // Don't abort — write what we can.
+        return; // Hard error: stop config-entry compilation.
     }
 
     // Order hooks deterministically.
@@ -198,17 +248,30 @@ fn compile_config_entries(
         // Translate hooks for this target, filtering dropped ones.
         let translated_hooks = translate_hooks_for_target(ordered_hooks.clone(), target_root);
 
-        // Emit lossiness diagnostics for dropped hooks.
+        // Emit lossiness diagnostics for dropped and approximate hooks.
         for th in &translated_hooks {
-            if th.lossiness == crate::compiler::hooks::LossinessKind::Dropped {
-                diag.warn(
-                    "hook-dropped",
-                    format!(
-                        "hook `{}` (event `{}`) dropped for target `{target_root}` — \
-                         no native hook support",
-                        th.hook.item.def.name, th.hook.item.def.event
-                    ),
-                );
+            match th.lossiness {
+                crate::compiler::hooks::LossinessKind::Dropped => {
+                    diag.warn(
+                        "hook-dropped",
+                        format!(
+                            "hook `{}` (event `{}`) dropped for target `{target_root}` — \
+                             no native hook support",
+                            th.hook.item.def.name, th.hook.item.def.event
+                        ),
+                    );
+                }
+                crate::compiler::hooks::LossinessKind::Approximate => {
+                    diag.info(
+                        "hook-approximate",
+                        format!(
+                            "hook `{}` (event `{}`) approximately mapped for target \
+                             `{target_root}` — semantics may differ slightly",
+                            th.hook.item.def.name, th.hook.item.def.event
+                        ),
+                    );
+                }
+                crate::compiler::hooks::LossinessKind::Exact => {}
             }
         }
 
@@ -219,9 +282,11 @@ fn compile_config_entries(
                 let native_event = th.native_event?;
                 let script_path = match &th.hook.item.def.action {
                     crate::compiler::hooks::HookAction::Script { path } => {
-                        // Resolve script path relative to package root.
-                        let pkg_root = &ctx.project_root; // local package
-                        pkg_root.join("hooks")
+                        // Resolve script path relative to the package root the hook came from.
+                        th.hook
+                            .item
+                            .package_root
+                            .join("hooks")
                             .join(&th.hook.item.def.name)
                             .join(path)
                             .to_string_lossy()
@@ -343,11 +408,7 @@ fn compute_depths(graph: &crate::resolve::ResolvedGraph) -> HashMap<SourceName, 
 ///
 /// Errors are non-fatal — they are emitted as diagnostics and the sync continues.
 /// This preserves the "target sync is non-fatal" principle (D9).
-fn dual_surface_compile(
-    project_root: &Path,
-    mars_dir: &Path,
-    diag: &mut DiagnosticCollector,
-) {
+fn dual_surface_compile(project_root: &Path, mars_dir: &Path, diag: &mut DiagnosticCollector) {
     use crate::compiler::agents::HarnessKind;
     use crate::compiler::agents::lower::lower_for_harness;
     use crate::compiler::agents::parse_agent_content;
@@ -360,7 +421,9 @@ fn dual_surface_compile(
 
     for entry in entries.flatten() {
         let path = entry.path();
-        let Some(ext) = path.extension() else { continue };
+        let Some(ext) = path.extension() else {
+            continue;
+        };
         if ext != "md" {
             continue;
         }
@@ -389,10 +452,11 @@ fn dual_surface_compile(
         };
 
         // Emit agent-level diagnostics (validation errors, legacy fields)
-        let agent_name = profile
-            .name
-            .as_deref()
-            .unwrap_or_else(|| path.file_stem().and_then(|s| s.to_str()).unwrap_or("unknown"));
+        let agent_name = profile.name.as_deref().unwrap_or_else(|| {
+            path.file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("unknown")
+        });
         for d in &agent_diags {
             if d.is_error() {
                 diag.warn(

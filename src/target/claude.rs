@@ -104,10 +104,7 @@ impl TargetAdapter for ClaudeAdapter {
 /// ```
 ///
 /// Existing entries with other names are preserved (merge, not replace).
-fn write_mcp_json(
-    target_dir: &Path,
-    servers: &[&McpServerEntry],
-) -> Result<PathBuf, MarsError> {
+fn write_mcp_json(target_dir: &Path, servers: &[&McpServerEntry]) -> Result<PathBuf, MarsError> {
     let path = target_dir.join(".mcp.json");
 
     // Load existing config or start fresh.
@@ -121,11 +118,19 @@ fn write_mcp_json(
     // Ensure mcpServers key exists.
     let mcp_obj = root
         .as_object_mut()
-        .ok_or_else(|| MarsError::Config(crate::error::ConfigError::Invalid { message: format!("{} is not a JSON object", path.display()), }))?
+        .ok_or_else(|| {
+            MarsError::Config(crate::error::ConfigError::Invalid {
+                message: format!("{} is not a JSON object", path.display()),
+            })
+        })?
         .entry("mcpServers")
         .or_insert_with(|| serde_json::json!({}));
 
-    let mcp_map = mcp_obj.as_object_mut().ok_or_else(|| MarsError::Config(crate::error::ConfigError::Invalid { message: format!("{}: mcpServers is not an object", path.display()), }))?;
+    let mcp_map = mcp_obj.as_object_mut().ok_or_else(|| {
+        MarsError::Config(crate::error::ConfigError::Invalid {
+            message: format!("{}: mcpServers is not an object", path.display()),
+        })
+    })?;
 
     for server in servers {
         let mut entry = serde_json::json!({
@@ -145,7 +150,11 @@ fn write_mcp_json(
         mcp_map.insert(server.name.clone(), entry);
     }
 
-    let content = serde_json::to_string_pretty(&root).map_err(|e| MarsError::Config(crate::error::ConfigError::Invalid { message: format!("failed to serialize {}: {e}", path.display()), }))?;
+    let content = serde_json::to_string_pretty(&root).map_err(|e| {
+        MarsError::Config(crate::error::ConfigError::Invalid {
+            message: format!("failed to serialize {}: {e}", path.display()),
+        })
+    })?;
     crate::fs::atomic_write(&path, content.as_bytes())?;
 
     Ok(path)
@@ -175,7 +184,11 @@ fn remove_mcp_entries_by_key(entry_keys: &[String], target_dir: &Path) -> Result
         }
     }
 
-    let content = serde_json::to_string_pretty(&root).map_err(|e| MarsError::Config(crate::error::ConfigError::Invalid { message: format!("failed to serialize {}: {e}", path.display()), }))?;
+    let content = serde_json::to_string_pretty(&root).map_err(|e| {
+        MarsError::Config(crate::error::ConfigError::Invalid {
+            message: format!("failed to serialize {}: {e}", path.display()),
+        })
+    })?;
     crate::fs::atomic_write(&path, content.as_bytes())?;
 
     Ok(())
@@ -197,10 +210,7 @@ fn remove_mcp_entries_by_key(entry_keys: &[String], target_dir: &Path) -> Result
 ///   }
 /// }
 /// ```
-fn write_hooks_settings(
-    target_dir: &Path,
-    hooks: &[&HookEntry],
-) -> Result<PathBuf, MarsError> {
+fn write_hooks_settings(target_dir: &Path, hooks: &[&HookEntry]) -> Result<PathBuf, MarsError> {
     let path = target_dir.join("settings.json");
 
     let mut root: serde_json::Value = if path.is_file() {
@@ -212,13 +222,19 @@ fn write_hooks_settings(
 
     let hooks_section = root
         .as_object_mut()
-        .ok_or_else(|| MarsError::Config(crate::error::ConfigError::Invalid { message: format!("{} is not a JSON object", path.display()), }))?
+        .ok_or_else(|| {
+            MarsError::Config(crate::error::ConfigError::Invalid {
+                message: format!("{} is not a JSON object", path.display()),
+            })
+        })?
         .entry("hooks")
         .or_insert_with(|| serde_json::json!({}));
 
-    let hooks_map = hooks_section
-        .as_object_mut()
-        .ok_or_else(|| MarsError::Config(crate::error::ConfigError::Invalid { message: format!("{}: hooks is not an object", path.display()), }))?;
+    let hooks_map = hooks_section.as_object_mut().ok_or_else(|| {
+        MarsError::Config(crate::error::ConfigError::Invalid {
+            message: format!("{}: hooks is not an object", path.display()),
+        })
+    })?;
 
     for hook in hooks {
         let native_event = &hook.native_event;
@@ -239,7 +255,11 @@ fn write_hooks_settings(
             .push(hook_binding);
     }
 
-    let content = serde_json::to_string_pretty(&root).map_err(|e| MarsError::Config(crate::error::ConfigError::Invalid { message: format!("failed to serialize {}: {e}", path.display()), }))?;
+    let content = serde_json::to_string_pretty(&root).map_err(|e| {
+        MarsError::Config(crate::error::ConfigError::Invalid {
+            message: format!("failed to serialize {}: {e}", path.display()),
+        })
+    })?;
     crate::fs::atomic_write(&path, content.as_bytes())?;
 
     Ok(path)
@@ -291,15 +311,20 @@ fn remove_hook_entries_by_key(entry_keys: &[String], target_dir: &Path) -> Resul
                     arr.retain(|binding| {
                         // Retain if we can't parse it (not ours) or if it doesn't
                         // contain the hook name in any inner command.
-                        let Some(inner_hooks) =
-                            binding.get("hooks").and_then(|h| h.as_array())
+                        let Some(inner_hooks) = binding.get("hooks").and_then(|h| h.as_array())
                         else {
                             return true;
                         };
                         !inner_hooks.iter().any(|h| {
                             h.get("command")
                                 .and_then(|c| c.as_str())
-                                .map(|cmd| cmd.contains(name))
+                                .map(|cmd| {
+                                    // Exact path-segment match to avoid partial name collisions
+                                    // (e.g., "audit" must not match "audit-extended").
+                                    let seg_fwd = format!("/hooks/{name}/");
+                                    let seg_bwd = format!("\\hooks\\{name}\\");
+                                    cmd.contains(&seg_fwd) || cmd.contains(&seg_bwd)
+                                })
                                 .unwrap_or(false)
                         })
                     });
@@ -308,7 +333,11 @@ fn remove_hook_entries_by_key(entry_keys: &[String], target_dir: &Path) -> Resul
         }
     }
 
-    let content = serde_json::to_string_pretty(&root).map_err(|e| MarsError::Config(crate::error::ConfigError::Invalid { message: format!("failed to serialize {}: {e}", path.display()), }))?;
+    let content = serde_json::to_string_pretty(&root).map_err(|e| {
+        MarsError::Config(crate::error::ConfigError::Invalid {
+            message: format!("failed to serialize {}: {e}", path.display()),
+        })
+    })?;
     crate::fs::atomic_write(&path, content.as_bytes())?;
 
     Ok(())
@@ -403,7 +432,10 @@ mod tests {
 
         let raw = std::fs::read_to_string(tmp.path().join(".mcp.json")).unwrap();
         let json: serde_json::Value = serde_json::from_str(&raw).unwrap();
-        assert_eq!(json["mcpServers"]["server"]["env"]["API_KEY"], "${MY_SECRET}");
+        assert_eq!(
+            json["mcpServers"]["server"]["env"]["API_KEY"],
+            "${MY_SECRET}"
+        );
     }
 
     #[test]

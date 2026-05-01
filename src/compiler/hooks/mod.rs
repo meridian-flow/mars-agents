@@ -9,7 +9,7 @@
 /// - Per-target lossiness classification: exact | approximate | dropped
 /// - Deterministic total ordering: depth → dependency order → `order` field → name
 use std::fmt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
@@ -122,6 +122,8 @@ pub struct ParsedHookItem {
     /// Position of the source in the dependency declaration order.
     /// Used for stable ordering within the same depth.
     pub dep_decl_order: usize,
+    /// Absolute path to the package root this hook was discovered in.
+    pub package_root: PathBuf,
 }
 
 // ---------------------------------------------------------------------------
@@ -184,6 +186,7 @@ pub fn discover_hook_items(
             source_name: source_name.to_string(),
             package_depth,
             dep_decl_order,
+            package_root: package_root.to_path_buf(),
         });
     }
 
@@ -278,7 +281,10 @@ pub fn translate_hook_for_target(hook: OrderedHook, target_root: &str) -> Transl
     }
 }
 
-fn classify_for_target(event: UniversalEvent, target_root: &str) -> (LossinessKind, Option<String>) {
+fn classify_for_target(
+    event: UniversalEvent,
+    target_root: &str,
+) -> (LossinessKind, Option<String>) {
     match target_root {
         ".claude" => match event {
             UniversalEvent::SessionStart => {
@@ -288,12 +294,8 @@ fn classify_for_target(event: UniversalEvent, target_root: &str) -> (LossinessKi
                 // Claude uses SessionStop, not SessionEnd — close but not exact.
                 (LossinessKind::Approximate, Some("SessionStop".to_string()))
             }
-            UniversalEvent::ToolPre => {
-                (LossinessKind::Exact, Some("PreToolUse".to_string()))
-            }
-            UniversalEvent::ToolPost => {
-                (LossinessKind::Exact, Some("PostToolUse".to_string()))
-            }
+            UniversalEvent::ToolPre => (LossinessKind::Exact, Some("PreToolUse".to_string())),
+            UniversalEvent::ToolPost => (LossinessKind::Exact, Some("PostToolUse".to_string())),
         },
         ".codex" => {
             // Codex uses structural hook entries, not named events — approximate for all.
@@ -333,8 +335,7 @@ pub fn translate_hooks_for_target(
     ordered
         .into_iter()
         .filter(|h| {
-            h.item.def.targets.is_empty()
-                || h.item.def.targets.iter().any(|t| t == target_root)
+            h.item.def.targets.is_empty() || h.item.def.targets.iter().any(|t| t == target_root)
         })
         .map(|h| translate_hook_for_target(h, target_root))
         .collect()

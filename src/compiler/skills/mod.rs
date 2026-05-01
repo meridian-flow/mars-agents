@@ -269,10 +269,7 @@ fn parse_placement_mode(value: &str, name: &str) -> Result<PlacementMode, SkillP
     }
 }
 
-fn parse_literal_targets(
-    raw: &str,
-    name: &str,
-) -> Result<Vec<String>, SkillPlacementError> {
+fn parse_literal_targets(raw: &str, name: &str) -> Result<Vec<String>, SkillPlacementError> {
     // Accept comma-separated list (from inline or multi-line extraction)
     let targets: Vec<String> = raw
         .split(',')
@@ -368,48 +365,65 @@ mod tests {
     fn shared_with_agents_and_codex_is_error() {
         let content = "---\nplacement: shared\ntargets: [.agents, .codex]\n---\nbody";
         let err = SkillPlacement::from_frontmatter(content, "s").unwrap_err();
-        assert!(matches!(err, SkillPlacementError::SharedWithOverlapping { .. }));
+        assert!(matches!(
+            err,
+            SkillPlacementError::SharedWithOverlapping { .. }
+        ));
     }
 
     #[test]
     fn shared_with_agents_and_opencode_is_error() {
         let content = "---\nplacement: shared\ntargets: [.agents, .opencode]\n---\nbody";
         let err = SkillPlacement::from_frontmatter(content, "s").unwrap_err();
-        assert!(matches!(err, SkillPlacementError::SharedWithOverlapping { .. }));
+        assert!(matches!(
+            err,
+            SkillPlacementError::SharedWithOverlapping { .. }
+        ));
     }
 
     #[test]
     fn shared_with_agents_and_pi_is_error() {
         let content = "---\nplacement: shared\ntargets: [.agents, .pi]\n---\nbody";
         let err = SkillPlacement::from_frontmatter(content, "s").unwrap_err();
-        assert!(matches!(err, SkillPlacementError::SharedWithOverlapping { .. }));
+        assert!(matches!(
+            err,
+            SkillPlacementError::SharedWithOverlapping { .. }
+        ));
     }
 
     #[test]
     fn shared_targets_must_include_agents() {
         let content = "---\nplacement: shared\ntargets: [.claude]\n---\nbody";
         let err = SkillPlacement::from_frontmatter(content, "s").unwrap_err();
-        assert!(matches!(err, SkillPlacementError::SharedMissingAgents { .. }));
+        assert!(matches!(
+            err,
+            SkillPlacementError::SharedMissingAgents { .. }
+        ));
     }
 
     #[test]
     fn routed_without_targets_is_error() {
         let content = "---\nplacement: routed\n---\nbody";
         let err = SkillPlacement::from_frontmatter(content, "s").unwrap_err();
-        assert!(matches!(err, SkillPlacementError::RoutedMissingTargets { .. }));
+        assert!(matches!(
+            err,
+            SkillPlacementError::RoutedMissingTargets { .. }
+        ));
     }
 
     #[test]
     fn routed_with_agents_is_error() {
         let content = "---\nplacement: routed\ntargets: [.agents, .codex]\n---\nbody";
         let err = SkillPlacement::from_frontmatter(content, "s").unwrap_err();
-        assert!(matches!(err, SkillPlacementError::RoutedIncludesAgents { .. }));
+        assert!(matches!(
+            err,
+            SkillPlacementError::RoutedIncludesAgents { .. }
+        ));
     }
 
     #[test]
     fn routed_to_codex_opencode_pi_is_valid() {
-        let content =
-            "---\nplacement: routed\ntargets: [.codex, .opencode, .pi]\n---\nbody";
+        let content = "---\nplacement: routed\ntargets: [.codex, .opencode, .pi]\n---\nbody";
         let p = SkillPlacement::from_frontmatter(content, "s").unwrap();
         assert_eq!(p.mode, PlacementMode::Routed);
         assert!(p.targets.contains(&".codex".to_owned()));
@@ -442,7 +456,10 @@ mod tests {
     fn shared_emit_paths_are_agents_only_by_default() {
         let p = SkillPlacement::shared_default();
         let paths = p.emit_paths("planning");
-        assert_eq!(paths, vec![(".agents".to_owned(), "skills/planning".to_owned())]);
+        assert_eq!(
+            paths,
+            vec![(".agents".to_owned(), "skills/planning".to_owned())]
+        );
     }
 
     #[test]

@@ -318,10 +318,12 @@ impl AgentDiagnostic {
 
     pub fn message(&self) -> String {
         match self {
-            AgentDiagnostic::InvalidFieldValue { field, value, allowed } => {
-                format!(
-                    "agent field `{field}` has invalid value `{value}`; allowed: {allowed}"
-                )
+            AgentDiagnostic::InvalidFieldValue {
+                field,
+                value,
+                allowed,
+            } => {
+                format!("agent field `{field}` has invalid value `{value}`; allowed: {allowed}")
             }
             AgentDiagnostic::LegacyModelsField => {
                 "agent uses deprecated `models:` field; rename to `model-overrides:`".to_string()
@@ -330,9 +332,7 @@ impl AgentDiagnostic {
                 format!("unknown harness `{value}`; known: claude, codex, opencode, pi")
             }
             AgentDiagnostic::NonOverridableFieldInOverride { field, table } => {
-                format!(
-                    "field `{field}` is not overridable; remove from `{table}`"
-                )
+                format!("field `{field}` is not overridable; remove from `{table}`")
             }
             AgentDiagnostic::DroppedField { field, target } => {
                 format!(
@@ -373,7 +373,11 @@ fn yaml_str_list(val: &Value) -> Vec<String> {
     }
 }
 
-fn parse_override_fields(mapping: &serde_yaml::Mapping, table_name: &str, diags: &mut Vec<AgentDiagnostic>) -> OverrideFields {
+fn parse_override_fields(
+    mapping: &serde_yaml::Mapping,
+    table_name: &str,
+    diags: &mut Vec<AgentDiagnostic>,
+) -> OverrideFields {
     let mut out = OverrideFields::default();
 
     for (k, v) in mapping {
@@ -406,7 +410,14 @@ fn parse_override_fields(mapping: &serde_yaml::Mapping, table_name: &str, diags:
             }
             "autocompact" => {
                 if let Some(n) = v.as_u64() {
-                    out.autocompact = Some(n as u32);
+                    match u32::try_from(n) {
+                        Ok(v32) => out.autocompact = Some(v32),
+                        Err(_) => diags.push(AgentDiagnostic::InvalidFieldValue {
+                            field: format!("{table_name}.autocompact"),
+                            value: n.to_string(),
+                            allowed: "integer 0–4294967295",
+                        }),
+                    }
                 }
             }
             "approval" => {
@@ -501,10 +512,7 @@ fn parse_model_policies(val: &Value) -> Vec<ModelPolicyEntry> {
 
 fn parse_fanout(val: &Value) -> Vec<FanoutEntry> {
     match val {
-        Value::Sequence(seq) => seq
-            .iter()
-            .map(|v| FanoutEntry { raw: v.clone() })
-            .collect(),
+        Value::Sequence(seq) => seq.iter().map(|v| FanoutEntry { raw: v.clone() }).collect(),
         _ => vec![],
     }
 }
@@ -518,19 +526,21 @@ fn parse_fanout(val: &Value) -> Vec<FanoutEntry> {
 /// Collects diagnostics without failing — the caller decides whether errors
 /// are fatal. The parsed [`AgentProfile`] is always returned even when there
 /// are validation errors; invalid fields are skipped (omitted from the profile).
-pub fn parse_agent_profile(
-    fm: &Frontmatter,
-    diags: &mut Vec<AgentDiagnostic>,
-) -> AgentProfile {
+pub fn parse_agent_profile(fm: &Frontmatter, diags: &mut Vec<AgentDiagnostic>) -> AgentProfile {
     let name = fm.name().map(str::to_owned);
-    let description = fm.get("description").and_then(Value::as_str).map(str::to_owned);
+    let description = fm
+        .get("description")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
 
     // harness:
     let harness = fm.get("harness").and_then(Value::as_str).and_then(|s| {
         if let Some(h) = HarnessKind::from_str(s) {
             Some(h)
         } else {
-            diags.push(AgentDiagnostic::UnknownHarness { value: s.to_string() });
+            diags.push(AgentDiagnostic::UnknownHarness {
+                value: s.to_string(),
+            });
             None
         }
     });
@@ -539,8 +549,10 @@ pub fn parse_agent_profile(
     let model = fm.get("model").and_then(Value::as_str).map(str::to_owned);
 
     // mode:
-    let mode = fm.get("mode").and_then(Value::as_str).and_then(|s| {
-        match s {
+    let mode = fm
+        .get("mode")
+        .and_then(Value::as_str)
+        .and_then(|s| match s {
             "primary" => Some(AgentMode::Primary),
             "subagent" => Some(AgentMode::Subagent),
             other => {
@@ -551,8 +563,7 @@ pub fn parse_agent_profile(
                 });
                 None
             }
-        }
-    });
+        });
 
     // approval:
     let approval = fm.get("approval").and_then(Value::as_str).and_then(|s| {
@@ -597,15 +608,28 @@ pub fn parse_agent_profile(
     });
 
     // autocompact:
-    let autocompact = fm
-        .get("autocompact")
-        .and_then(Value::as_u64)
-        .map(|n| n as u32);
+    let autocompact =
+        fm.get("autocompact")
+            .and_then(Value::as_u64)
+            .and_then(|n| match u32::try_from(n) {
+                Ok(v32) => Some(v32),
+                Err(_) => {
+                    diags.push(AgentDiagnostic::InvalidFieldValue {
+                        field: "autocompact".to_string(),
+                        value: n.to_string(),
+                        allowed: "integer 0–4294967295",
+                    });
+                    None
+                }
+            });
 
     // skills/tools/disallowed-tools/mcp-tools:
     let skills = fm.skills();
     let tools = fm.get("tools").map(yaml_str_list).unwrap_or_default();
-    let disallowed_tools = fm.get("disallowed-tools").map(yaml_str_list).unwrap_or_default();
+    let disallowed_tools = fm
+        .get("disallowed-tools")
+        .map(yaml_str_list)
+        .unwrap_or_default();
     let mcp_tools = fm.get("mcp-tools").map(yaml_str_list).unwrap_or_default();
 
     // harness-overrides:
@@ -621,10 +645,7 @@ pub fn parse_agent_profile(
         .unwrap_or_default();
 
     // fanout:
-    let fanout = fm
-        .get("fanout")
-        .map(parse_fanout)
-        .unwrap_or_default();
+    let fanout = fm.get("fanout").map(parse_fanout).unwrap_or_default();
 
     // Legacy models: field
     let has_legacy_models = fm.get("models").is_some();
@@ -706,7 +727,9 @@ mod tests {
         let (p, diags) = parse("---\nmode: invalid\n---\n");
         assert_eq!(p.mode, None);
         assert_eq!(diags.len(), 1);
-        assert!(matches!(&diags[0], AgentDiagnostic::InvalidFieldValue { field, .. } if field == "mode"));
+        assert!(
+            matches!(&diags[0], AgentDiagnostic::InvalidFieldValue { field, .. } if field == "mode")
+        );
     }
 
     #[test]
@@ -735,7 +758,9 @@ mod tests {
         let (p, diags) = parse("---\nharness: unknown\n---\n");
         assert_eq!(p.harness, None);
         assert_eq!(diags.len(), 1);
-        assert!(matches!(&diags[0], AgentDiagnostic::UnknownHarness { value } if value == "unknown"));
+        assert!(
+            matches!(&diags[0], AgentDiagnostic::UnknownHarness { value } if value == "unknown")
+        );
     }
 
     #[test]
@@ -748,7 +773,10 @@ mod tests {
         ] {
             let content = format!("---\neffort: {s}\n---\n");
             let (p, diags) = parse(&content);
-            assert!(diags.is_empty(), "unexpected diags for effort={s}: {diags:?}");
+            assert!(
+                diags.is_empty(),
+                "unexpected diags for effort={s}: {diags:?}"
+            );
             assert_eq!(p.effort, Some(expected));
         }
     }
@@ -765,7 +793,12 @@ mod tests {
 
     #[test]
     fn parses_sandbox_all_values() {
-        for s in ["default", "read-only", "workspace-write", "danger-full-access"] {
+        for s in [
+            "default",
+            "read-only",
+            "workspace-write",
+            "danger-full-access",
+        ] {
             let content = format!("---\nsandbox: {s}\n---\n");
             let (p, diags) = parse(&content);
             assert!(diags.is_empty(), "unexpected diags for sandbox={s}");
@@ -830,7 +863,9 @@ mod tests {
         let content = "---\nharness-overrides:\n  claude:\n    name: bad\n---\n";
         let (_p, diags) = parse(content);
         assert_eq!(diags.len(), 1);
-        assert!(matches!(&diags[0], AgentDiagnostic::NonOverridableFieldInOverride { field, .. } if field == "name"));
+        assert!(
+            matches!(&diags[0], AgentDiagnostic::NonOverridableFieldInOverride { field, .. } if field == "name")
+        );
     }
 
     // --- 3.1: legacy models field ---

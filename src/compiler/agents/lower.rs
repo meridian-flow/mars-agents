@@ -59,15 +59,21 @@ impl<'a> Effective<'a> {
     }
 
     fn effort(&self) -> Option<&crate::compiler::agents::EffortLevel> {
-        self.over.and_then(|o| o.effort.as_ref()).or(self.profile.effort.as_ref())
+        self.over
+            .and_then(|o| o.effort.as_ref())
+            .or(self.profile.effort.as_ref())
     }
 
     fn approval(&self) -> Option<&crate::compiler::agents::ApprovalMode> {
-        self.over.and_then(|o| o.approval.as_ref()).or(self.profile.approval.as_ref())
+        self.over
+            .and_then(|o| o.approval.as_ref())
+            .or(self.profile.approval.as_ref())
     }
 
     fn sandbox(&self) -> Option<&crate::compiler::agents::SandboxMode> {
-        self.over.and_then(|o| o.sandbox.as_ref()).or(self.profile.sandbox.as_ref())
+        self.over
+            .and_then(|o| o.sandbox.as_ref())
+            .or(self.profile.sandbox.as_ref())
     }
 
     fn skills(&self) -> &[String] {
@@ -125,11 +131,7 @@ pub fn lower_to_meridian(source_content: &str) -> LoweredOutput {
 ///
 /// `harness-overrides.claude` values are merged into top-level fields
 /// before lowering (D42 — compile-time merge).
-pub fn lower_to_claude(
-    profile: &AgentProfile,
-    _fm: &Frontmatter,
-    body: &str,
-) -> LoweredOutput {
+pub fn lower_to_claude(profile: &AgentProfile, _fm: &Frontmatter, body: &str) -> LoweredOutput {
     let eff = Effective::new(profile, &HarnessKind::Claude);
     let mut lossy = Vec::new();
 
@@ -153,34 +155,30 @@ pub fn lower_to_claude(
     // skills — exact (Claude reads skills natively from .agents/skills/)
     let skills = eff.skills();
     if !skills.is_empty() {
-        let seq: serde_yaml::Value = serde_yaml::Value::Sequence(
-            skills.iter().map(|s| yv(s)).collect(),
-        );
+        let seq: serde_yaml::Value =
+            serde_yaml::Value::Sequence(skills.iter().map(|s| yv(s)).collect());
         yaml.insert(yk("skills"), seq);
     }
     // tools — exact
     let tools = eff.tools();
     if !tools.is_empty() {
-        let seq: serde_yaml::Value = serde_yaml::Value::Sequence(
-            tools.iter().map(|s| yv(s)).collect(),
-        );
+        let seq: serde_yaml::Value =
+            serde_yaml::Value::Sequence(tools.iter().map(|s| yv(s)).collect());
         yaml.insert(yk("tools"), seq);
     }
     // disallowed-tools — exact
     let dt = eff.disallowed_tools();
     if !dt.is_empty() {
-        let seq: serde_yaml::Value = serde_yaml::Value::Sequence(
-            dt.iter().map(|s| yv(s)).collect(),
-        );
+        let seq: serde_yaml::Value =
+            serde_yaml::Value::Sequence(dt.iter().map(|s| yv(s)).collect());
         yaml.insert(yk("disallowed-tools"), seq);
     }
 
     // mcp-tools — exact (pass through raw from source)
     let mcp = &profile.mcp_tools;
     if !mcp.is_empty() {
-        let seq: serde_yaml::Value = serde_yaml::Value::Sequence(
-            mcp.iter().map(|s| yv(s)).collect(),
-        );
+        let seq: serde_yaml::Value =
+            serde_yaml::Value::Sequence(mcp.iter().map(|s| yv(s)).collect());
         yaml.insert(yk("mcp-tools"), seq);
     }
 
@@ -273,10 +271,7 @@ pub fn lower_to_claude(
 /// - Dropped: skills (no native field), tools (no allowlist), disallowed-tools,
 ///   mcp-tools (approximate), mode, autocompact, model-policies, fanout
 /// - Merged: harness-overrides.codex applied to top-level fields before lowering
-pub fn lower_to_codex(
-    profile: &AgentProfile,
-    body: &str,
-) -> LoweredOutput {
+pub fn lower_to_codex(profile: &AgentProfile, body: &str) -> LoweredOutput {
     let eff = Effective::new(profile, &HarnessKind::Codex);
     let mut lossy = Vec::new();
     let target = "Codex";
@@ -292,15 +287,18 @@ pub fn lower_to_codex(
     let sandbox_str = eff.sandbox().map(|s| s.as_str()).unwrap_or("");
 
     // Approval — exact (lowered to approval_policy)
-    let approval_policy = eff.approval().map(|a| {
-        use crate::compiler::agents::ApprovalMode;
-        match a {
-            ApprovalMode::Default => "",
-            ApprovalMode::Auto => "on-request",
-            ApprovalMode::Confirm => "untrusted",
-            ApprovalMode::Yolo => "bypass",
-        }
-    }).unwrap_or("");
+    let approval_policy = eff
+        .approval()
+        .map(|a| {
+            use crate::compiler::agents::ApprovalMode;
+            match a {
+                ApprovalMode::Default => "",
+                ApprovalMode::Auto => "on-request",
+                ApprovalMode::Confirm => "untrusted",
+                ApprovalMode::Yolo => "bypass",
+            }
+        })
+        .unwrap_or("");
 
     // Dropped fields
     let skills = eff.skills();
@@ -331,7 +329,9 @@ pub fn lower_to_codex(
         lossy.push(LossyField {
             field: "mcp-tools".into(),
             target: target.into(),
-            classification: Lossiness::Approximate { note: "Codex uses -c mcp.servers.<name>.command" },
+            classification: Lossiness::Approximate {
+                note: "Codex uses -c mcp.servers.<name>.command",
+            },
         });
     }
     if profile.mode.is_some() {
@@ -374,17 +374,24 @@ pub fn lower_to_codex(
         out.push_str(&format!("model = {}\n", toml_str(model)));
     }
 
-    let has_config = !effort_str.is_empty() || !sandbox_str.is_empty() || !approval_policy.is_empty();
+    let has_config =
+        !effort_str.is_empty() || !sandbox_str.is_empty() || !approval_policy.is_empty();
     if has_config {
         out.push_str("\n[agent.config]\n");
         if !effort_str.is_empty() {
-            out.push_str(&format!("model_reasoning_effort = {}\n", toml_str(effort_str)));
+            out.push_str(&format!(
+                "model_reasoning_effort = {}\n",
+                toml_str(effort_str)
+            ));
         }
         if !sandbox_str.is_empty() {
             out.push_str(&format!("sandbox_mode = {}\n", toml_str(sandbox_str)));
         }
         if !approval_policy.is_empty() {
-            out.push_str(&format!("approval_policy = {}\n", toml_str(approval_policy)));
+            out.push_str(&format!(
+                "approval_policy = {}\n",
+                toml_str(approval_policy)
+            ));
         }
     }
 
@@ -415,10 +422,7 @@ fn toml_str(s: &str) -> String {
 /// - Dropped: most policy fields (approval, sandbox, tools, disallowed-tools,
 ///   effort, mcp-tools, autocompact)
 /// - Meridian-only: model-policies, fanout
-pub fn lower_to_opencode(
-    profile: &AgentProfile,
-    body: &str,
-) -> LoweredOutput {
+pub fn lower_to_opencode(profile: &AgentProfile, body: &str) -> LoweredOutput {
     let eff = Effective::new(profile, &HarnessKind::OpenCode);
     let mut lossy = Vec::new();
     let target = "OpenCode";
@@ -444,45 +448,79 @@ pub fn lower_to_opencode(
         lossy.push(LossyField {
             field: "mode".into(),
             target: target.into(),
-            classification: Lossiness::Approximate { note: "OpenCode uses the same mode concept" },
+            classification: Lossiness::Approximate {
+                note: "OpenCode uses the same mode concept",
+            },
         });
     }
 
     // Dropped fields
     if eff.approval().is_some() {
-        lossy.push(LossyField { field: "approval".into(), target: target.into(), classification: Lossiness::Dropped });
+        lossy.push(LossyField {
+            field: "approval".into(),
+            target: target.into(),
+            classification: Lossiness::Dropped,
+        });
     }
     if eff.sandbox().is_some() {
-        lossy.push(LossyField { field: "sandbox".into(), target: target.into(), classification: Lossiness::Dropped });
+        lossy.push(LossyField {
+            field: "sandbox".into(),
+            target: target.into(),
+            classification: Lossiness::Dropped,
+        });
     }
     if !eff.tools().is_empty() {
-        lossy.push(LossyField { field: "tools".into(), target: target.into(), classification: Lossiness::Dropped });
+        lossy.push(LossyField {
+            field: "tools".into(),
+            target: target.into(),
+            classification: Lossiness::Dropped,
+        });
     }
     if !eff.disallowed_tools().is_empty() {
-        lossy.push(LossyField { field: "disallowed-tools".into(), target: target.into(), classification: Lossiness::Dropped });
+        lossy.push(LossyField {
+            field: "disallowed-tools".into(),
+            target: target.into(),
+            classification: Lossiness::Dropped,
+        });
     }
     if eff.effort().is_some() {
         lossy.push(LossyField {
             field: "effort".into(),
             target: target.into(),
-            classification: Lossiness::Approximate { note: "effort maps to --variant on subprocess only" },
+            classification: Lossiness::Approximate {
+                note: "effort maps to --variant on subprocess only",
+            },
         });
     }
     if !profile.mcp_tools.is_empty() {
         lossy.push(LossyField {
             field: "mcp-tools".into(),
             target: target.into(),
-            classification: Lossiness::Approximate { note: "mcp-tools on subprocess errors; streaming uses session payload" },
+            classification: Lossiness::Approximate {
+                note: "mcp-tools on subprocess errors; streaming uses session payload",
+            },
         });
     }
     if profile.autocompact.is_some() {
-        lossy.push(LossyField { field: "autocompact".into(), target: target.into(), classification: Lossiness::MeridianOnly });
+        lossy.push(LossyField {
+            field: "autocompact".into(),
+            target: target.into(),
+            classification: Lossiness::MeridianOnly,
+        });
     }
     if !profile.model_policies.is_empty() {
-        lossy.push(LossyField { field: "model-policies".into(), target: target.into(), classification: Lossiness::MeridianOnly });
+        lossy.push(LossyField {
+            field: "model-policies".into(),
+            target: target.into(),
+            classification: Lossiness::MeridianOnly,
+        });
     }
     if !profile.fanout.is_empty() {
-        lossy.push(LossyField { field: "fanout".into(), target: target.into(), classification: Lossiness::MeridianOnly });
+        lossy.push(LossyField {
+            field: "fanout".into(),
+            target: target.into(),
+            classification: Lossiness::MeridianOnly,
+        });
     }
 
     // Serialize
@@ -517,10 +555,7 @@ pub fn lower_to_opencode(
 /// Pi's format is similar to OpenCode: markdown + YAML frontmatter with a
 /// minimal subset of fields. Per agent-compilation-mapping.md §6, all policy
 /// fields are dropped.
-pub fn lower_to_pi(
-    profile: &AgentProfile,
-    body: &str,
-) -> LoweredOutput {
+pub fn lower_to_pi(profile: &AgentProfile, body: &str) -> LoweredOutput {
     let mut lossy = Vec::new();
     let target = "Pi";
 
@@ -543,39 +578,71 @@ pub fn lower_to_pi(
         lossy.push(LossyField {
             field: "mode".into(),
             target: target.into(),
-            classification: Lossiness::Approximate { note: "Pi may use the same mode concept" },
+            classification: Lossiness::Approximate {
+                note: "Pi may use the same mode concept",
+            },
         });
     }
 
     // Everything else is dropped
     let eff = Effective::new(profile, &HarnessKind::Pi);
     if eff.approval().is_some() {
-        lossy.push(LossyField { field: "approval".into(), target: target.into(), classification: Lossiness::Dropped });
+        lossy.push(LossyField {
+            field: "approval".into(),
+            target: target.into(),
+            classification: Lossiness::Dropped,
+        });
     }
     if eff.sandbox().is_some() {
-        lossy.push(LossyField { field: "sandbox".into(), target: target.into(), classification: Lossiness::Dropped });
+        lossy.push(LossyField {
+            field: "sandbox".into(),
+            target: target.into(),
+            classification: Lossiness::Dropped,
+        });
     }
     if !eff.tools().is_empty() {
-        lossy.push(LossyField { field: "tools".into(), target: target.into(), classification: Lossiness::Dropped });
+        lossy.push(LossyField {
+            field: "tools".into(),
+            target: target.into(),
+            classification: Lossiness::Dropped,
+        });
     }
     if !eff.disallowed_tools().is_empty() {
-        lossy.push(LossyField { field: "disallowed-tools".into(), target: target.into(), classification: Lossiness::Dropped });
+        lossy.push(LossyField {
+            field: "disallowed-tools".into(),
+            target: target.into(),
+            classification: Lossiness::Dropped,
+        });
     }
     if eff.effort().is_some() {
         lossy.push(LossyField {
             field: "effort".into(),
             target: target.into(),
-            classification: Lossiness::Approximate { note: "Pi effort semantics unverified" },
+            classification: Lossiness::Approximate {
+                note: "Pi effort semantics unverified",
+            },
         });
     }
     if profile.autocompact.is_some() {
-        lossy.push(LossyField { field: "autocompact".into(), target: target.into(), classification: Lossiness::MeridianOnly });
+        lossy.push(LossyField {
+            field: "autocompact".into(),
+            target: target.into(),
+            classification: Lossiness::MeridianOnly,
+        });
     }
     if !profile.model_policies.is_empty() {
-        lossy.push(LossyField { field: "model-policies".into(), target: target.into(), classification: Lossiness::MeridianOnly });
+        lossy.push(LossyField {
+            field: "model-policies".into(),
+            target: target.into(),
+            classification: Lossiness::MeridianOnly,
+        });
     }
     if !profile.fanout.is_empty() {
-        lossy.push(LossyField { field: "fanout".into(), target: target.into(), classification: Lossiness::MeridianOnly });
+        lossy.push(LossyField {
+            field: "fanout".into(),
+            target: target.into(),
+            classification: Lossiness::MeridianOnly,
+        });
     }
 
     let yaml_str = if yaml.is_empty() {
@@ -624,12 +691,12 @@ pub fn lower_for_harness(
 
 /// Collect lossiness diagnostics from a lowered output and push them as
 /// `AgentDiagnostic::DroppedField` entries.
-pub fn collect_lossiness_diags(
-    output: &LoweredOutput,
-    diags: &mut Vec<AgentDiagnostic>,
-) {
+pub fn collect_lossiness_diags(output: &LoweredOutput, diags: &mut Vec<AgentDiagnostic>) {
     for lf in &output.lossy_fields {
-        if matches!(lf.classification, Lossiness::Dropped | Lossiness::MeridianOnly) {
+        if matches!(
+            lf.classification,
+            Lossiness::Dropped | Lossiness::MeridianOnly
+        ) {
             diags.push(AgentDiagnostic::DroppedField {
                 field: lf.field.clone(),
                 target: lf.target.clone(),
@@ -641,7 +708,7 @@ pub fn collect_lossiness_diags(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compiler::agents::{parse_agent_content};
+    use crate::compiler::agents::parse_agent_content;
 
     fn profile_from(content: &str) -> (AgentProfile, Frontmatter, Vec<AgentDiagnostic>) {
         let mut diags = Vec::new();
@@ -669,7 +736,10 @@ mod tests {
         let out = lower_to_claude(&profile, &fm, body);
         let text = String::from_utf8(out.bytes).unwrap();
         assert!(text.contains("name: coder"), "name missing: {text}");
-        assert!(text.contains("description: Code impl agent"), "desc missing");
+        assert!(
+            text.contains("description: Code impl agent"),
+            "desc missing"
+        );
         assert!(text.contains("model: gpt55"), "model missing");
         assert!(text.contains("skills"), "skills missing");
         assert!(text.contains("tools"), "tools missing");
@@ -687,9 +757,18 @@ mod tests {
         assert!(!text.contains("autocompact:"), "autocompact leaked: {text}");
         // Lossiness should report dropped fields
         let dropped: Vec<_> = out.lossy_fields.iter().map(|f| f.field.as_str()).collect();
-        assert!(dropped.contains(&"approval"), "approval not in lossy: {dropped:?}");
-        assert!(dropped.contains(&"sandbox"), "sandbox not in lossy: {dropped:?}");
-        assert!(dropped.contains(&"autocompact"), "autocompact not in lossy: {dropped:?}");
+        assert!(
+            dropped.contains(&"approval"),
+            "approval not in lossy: {dropped:?}"
+        );
+        assert!(
+            dropped.contains(&"sandbox"),
+            "sandbox not in lossy: {dropped:?}"
+        );
+        assert!(
+            dropped.contains(&"autocompact"),
+            "autocompact not in lossy: {dropped:?}"
+        );
     }
 
     #[test]
@@ -698,8 +777,14 @@ mod tests {
         let (profile, fm, _) = profile_from(content);
         let out = lower_to_claude(&profile, &fm, fm.body());
         let text = String::from_utf8(out.bytes).unwrap();
-        assert!(text.contains("override-skill"), "override not applied: {text}");
-        assert!(!text.contains("base-skill"), "base skill not overridden: {text}");
+        assert!(
+            text.contains("override-skill"),
+            "override not applied: {text}"
+        );
+        assert!(
+            !text.contains("base-skill"),
+            "base skill not overridden: {text}"
+        );
     }
 
     #[test]
@@ -708,9 +793,14 @@ mod tests {
         let (profile, fm, _) = profile_from(content);
         let out = lower_to_claude(&profile, &fm, fm.body());
         let text = String::from_utf8(out.bytes).unwrap();
-        assert!(!text.contains("model-policies:"), "model-policies leaked: {text}");
+        assert!(
+            !text.contains("model-policies:"),
+            "model-policies leaked: {text}"
+        );
         assert!(!text.contains("fanout:"), "fanout leaked: {text}");
-        let meridian_only: Vec<_> = out.lossy_fields.iter()
+        let meridian_only: Vec<_> = out
+            .lossy_fields
+            .iter()
             .filter(|f| matches!(f.classification, Lossiness::MeridianOnly))
             .map(|f| f.field.as_str())
             .collect();
@@ -730,10 +820,22 @@ mod tests {
         assert!(text.contains("name = \"coder\""), "name missing");
         assert!(text.contains("model = \"gpt55\""), "model missing");
         assert!(text.contains("[agent.config]"), "no config section");
-        assert!(text.contains("model_reasoning_effort = \"high\""), "effort missing");
-        assert!(text.contains("sandbox_mode = \"workspace-write\""), "sandbox missing");
-        assert!(text.contains("approval_policy = \"on-request\""), "approval missing");
-        assert!(text.contains("[agent.instructions]"), "no instructions section");
+        assert!(
+            text.contains("model_reasoning_effort = \"high\""),
+            "effort missing"
+        );
+        assert!(
+            text.contains("sandbox_mode = \"workspace-write\""),
+            "sandbox missing"
+        );
+        assert!(
+            text.contains("approval_policy = \"on-request\""),
+            "approval missing"
+        );
+        assert!(
+            text.contains("[agent.instructions]"),
+            "no instructions section"
+        );
     }
 
     #[test]
@@ -741,7 +843,9 @@ mod tests {
         let content = "---\nname: r\nharness: codex\nskills: [review]\ntools: [Bash]\ndisallowed-tools: [Agent]\n---\n# body";
         let (profile, fm, _) = profile_from(content);
         let out = lower_to_codex(&profile, fm.body());
-        let dropped: Vec<_> = out.lossy_fields.iter()
+        let dropped: Vec<_> = out
+            .lossy_fields
+            .iter()
             .filter(|f| matches!(f.classification, Lossiness::Dropped))
             .map(|f| f.field.as_str())
             .collect();
@@ -756,8 +860,14 @@ mod tests {
         let (profile, fm, _) = profile_from(content);
         let out = lower_to_codex(&profile, fm.body());
         let text = String::from_utf8(out.bytes).unwrap();
-        assert!(text.contains("model_reasoning_effort = \"high\""), "override not applied: {text}");
-        assert!(text.contains("sandbox_mode = \"workspace-write\""), "sandbox override not applied: {text}");
+        assert!(
+            text.contains("model_reasoning_effort = \"high\""),
+            "override not applied: {text}"
+        );
+        assert!(
+            text.contains("sandbox_mode = \"workspace-write\""),
+            "sandbox override not applied: {text}"
+        );
     }
 
     // --- 3.3: OpenCode lowering ---
