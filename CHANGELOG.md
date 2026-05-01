@@ -12,6 +12,9 @@ Caveman style. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `TargetAdapter::write_config_entries` / `remove_config_entries` default-no-op methods + `ConfigEntry`/`ConfigEntryKind` placeholder types in `target/mod.rs`.
 - Lock-driven orphan cleanup in `target_sync`: `cleanup_orphans` now iterates lock v2 `previous_managed_paths` directly instead of scanning hardcoded subdirectories (`agents/`, `skills/`, etc.).
 - `mars version` CHANGELOG.md integration. Automatically promotes `[Unreleased]` → `[X.Y.Z] - YYYY-MM-DD`, inserts fresh empty `[Unreleased]`, stages alongside `mars.toml`. Warns when `[Unreleased]` section is empty. Silent skip when no CHANGELOG.md exists.
+- `compiler::agents` — typed agent-profile schema parser: `AgentMode`, `HarnessKind`, `ApprovalMode`, `SandboxMode`, `EffortLevel`, `HarnessOverrides`, `ModelPolicyEntry`, `FanoutEntry`. `parse_agent_profile()` validates field values, flags legacy `models:`, rejects non-overridable fields in override blocks, collects `AgentDiagnostic` without aborting the sync.
+- `compiler::agents::lower` — per-target agent lowering: `lower_to_claude()` (markdown+YAML per agent-compilation-mapping spec), `lower_to_codex()` (TOML `[agent]/[agent.config]/[agent.instructions]`), `lower_to_opencode()` (markdown+YAML), `lower_to_pi()` (simplified markdown). `harness-overrides` merged compile-time (D42). Lossiness classification `Exact/Approximate/Dropped/MeridianOnly` per field per target.
+- Dual-surface compilation in `compiler::compile()` — `dual_surface_compile()` after `apply_plan()` writes `.mars/agents/`; scans harness-bound agents and writes native artifacts to `<project_root>/<harness_dir>/agents/<name>.<ext>`; emits lossiness warnings as diagnostics; non-fatal (D9). Universal agents (no `harness:`) produce only `.agents/` artifact.
 
 ## [0.1.19] - 2026-04-25
 
