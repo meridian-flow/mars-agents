@@ -5,6 +5,14 @@
 /// [`crate::sync::SyncReport`] by assigning dest paths, computing diffs,
 /// writing files, syncing managed targets, and persisting the lock.
 pub mod context;
+/// Hook compiler lane: discovery, event validation, ordering, lossiness classification.
+pub mod hooks;
+/// MCP server compiler lane: discovery, env-ref validation, collision detection.
+pub mod mcp;
+/// Skill placement, output planning, and compile-time overlap/visibility checks.
+pub mod skills;
+/// Visibility propagation rules for passive vs effectful items (D1/D10).
+pub mod visibility;
 
 use crate::compiler::context::CompileContext;
 use crate::diagnostic::DiagnosticCollector;
