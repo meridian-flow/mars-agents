@@ -50,7 +50,12 @@ fn run_clean(json: bool) -> Result<i32, MarsError> {
     let total = archives + git;
 
     if json {
-        println!("{{\"freed_bytes\":{total},\"archives_bytes\":{archives},\"git_bytes\":{git}}}");
+        let payload = serde_json::json!({
+            "freed_bytes": total,
+            "archives_bytes": archives,
+            "git_bytes": git,
+        });
+        println!("{}", payload);
     } else {
         output::print_info(&format!(
             "cleaned {} (archives: {}, git: {})",
@@ -72,9 +77,13 @@ fn run_info(json: bool) -> Result<i32, MarsError> {
     let path = cache.root.display().to_string();
 
     if json {
-        println!(
-            "{{\"path\":\"{path}\",\"total_bytes\":{total},\"archives_bytes\":{archives},\"git_bytes\":{git}}}"
-        );
+        let payload = serde_json::json!({
+            "path": path,
+            "total_bytes": total,
+            "archives_bytes": archives,
+            "git_bytes": git,
+        });
+        println!("{}", payload);
     } else {
         println!("path:     {path}");
         println!("total:    {}", format_bytes(total));

@@ -264,7 +264,6 @@ pub fn load(root: &Path) -> Result<Config, MarsError> {
     })?;
     let mut config: Config = toml::from_str(&content).map_err(ConfigError::Parse)?;
     migrate_legacy_source_urls(&mut config);
-    config.settings.model_visibility.validate()?;
     Ok(config)
 }
 

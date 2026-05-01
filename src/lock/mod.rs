@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::Path;
 
 use indexmap::IndexMap;
@@ -112,6 +113,52 @@ impl LockFile {
     }
 }
 
+/// Ephemeral lookup index for lock files.
+///
+/// `LockFile` preserves the persisted v2 shape. Build this short-lived index
+/// at hot call sites that need repeated output-path lookups.
+pub struct LockIndex<'a> {
+    lock: &'a LockFile,
+    by_dest_path: HashMap<&'a DestPath, (&'a str, usize)>,
+}
+
+impl<'a> LockIndex<'a> {
+    pub fn new(lock: &'a LockFile) -> Self {
+        let by_dest_path = lock
+            .items
+            .iter()
+            .flat_map(|(key, item)| {
+                item.outputs
+                    .iter()
+                    .enumerate()
+                    .map(move |(idx, output)| (&output.dest_path, (key.as_str(), idx)))
+            })
+            .collect();
+
+        Self { lock, by_dest_path }
+    }
+
+    /// Look up a locked item by output dest_path, returning a flat [`LockedItem`] view.
+    pub fn find_by_dest_path(&self, dest_path: &DestPath) -> Option<LockedItem> {
+        let (item_key, output_idx) = self.by_dest_path.get(dest_path)?;
+        let item_v2 = self.lock.items.get(*item_key)?;
+        let output = item_v2.outputs.get(*output_idx)?;
+        Some(LockedItem {
+            source: item_v2.source.clone(),
+            kind: item_v2.kind,
+            version: item_v2.version.clone(),
+            source_checksum: item_v2.source_checksum.clone(),
+            installed_checksum: output.installed_checksum.clone(),
+            dest_path: output.dest_path.clone(),
+        })
+    }
+
+    /// Check if any output record has the given dest_path.
+    pub fn contains_dest_path(&self, dest_path: &DestPath) -> bool {
+        self.by_dest_path.contains_key(dest_path)
+    }
+}
+
 /// One resolved source in the lock.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LockedSource {
@@ -205,12 +252,6 @@ struct LockFileV2Wire {
     items: IndexMap<String, LockedItemV2>,
 }
 
-/// Minimal version-probe type.
-#[derive(Deserialize)]
-struct VersionProbe {
-    version: u32,
-}
-
 // ---------------------------------------------------------------------------
 // Load / write
 // ---------------------------------------------------------------------------
@@ -239,37 +280,42 @@ pub fn load_with_diagnostics(root: &Path) -> Result<(LockFile, Vec<Diagnostic>),
         Err(e) => return Err(LockError::Io(e).into()),
     };
 
-    // Detect version before full parse.
-    let version = toml::from_str::<VersionProbe>(&content)
-        .map(|p| p.version)
-        .unwrap_or(1);
+    let value: toml::Value = toml::from_str(&content).map_err(|e| LockError::Corrupt {
+        message: format!("failed to parse {}: {e}", path.display()),
+    })?;
 
-    if version >= 2 {
-        let wire: LockFileV2Wire = toml::from_str(&content).map_err(|e| LockError::Corrupt {
-            message: format!("failed to parse {}: {e}", path.display()),
-        })?;
-        Ok((
+    match value.clone().try_into::<LockFileV2Wire>() {
+        Ok(wire) if wire.version >= 2 => Ok((
             LockFile {
                 version: wire.version,
                 dependencies: wire.dependencies,
                 items: wire.items,
             },
             Vec::new(),
-        ))
-    } else {
-        // V1 → V2 promotion (D19): map each DestPath key to a logical identity.
-        let wire: LockFileV1 = toml::from_str(&content).map_err(|e| LockError::Corrupt {
-            message: format!("failed to parse {}: {e}", path.display()),
-        })?;
-        let (items, diagnostics) = promote_v1_items(wire.items);
-        Ok((
-            LockFile {
-                version: LOCK_VERSION,
-                dependencies: wire.dependencies,
-                items,
-            },
-            diagnostics,
-        ))
+        )),
+        v2_result => {
+            // V1 → V2 promotion (D19): map each DestPath key to a logical identity.
+            let wire: LockFileV1 = value.clone().try_into().map_err(|v1_error| {
+                let parse_error = match v2_result {
+                    Ok(wire) => format!("unsupported lock version {}", wire.version),
+                    Err(v2_error) => {
+                        format!("v2 parse failed: {v2_error}; v1 parse failed: {v1_error}")
+                    }
+                };
+                LockError::Corrupt {
+                    message: format!("failed to parse {}: {parse_error}", path.display()),
+                }
+            })?;
+            let (items, diagnostics) = promote_v1_items(wire.items);
+            Ok((
+                LockFile {
+                    version: LOCK_VERSION,
+                    dependencies: wire.dependencies,
+                    items,
+                },
+                diagnostics,
+            ))
+        }
     }
 }
 
@@ -351,6 +397,7 @@ pub fn build(
 
     let mut dependencies = IndexMap::new();
     let mut items: IndexMap<String, LockedItemV2> = IndexMap::new();
+    let old_lock_index = LockIndex::new(old_lock);
 
     for outcome in &applied.outcomes {
         match outcome.action {
@@ -413,7 +460,7 @@ pub fn build(
                     } else {
                         // Fall back: search old lock by dest_path (handles v1→v2 migrations
                         // where item_key may not match yet)
-                        if let Some(flat) = old_lock.find_by_dest_path(&outcome.dest_path) {
+                        if let Some(flat) = old_lock_index.find_by_dest_path(&outcome.dest_path) {
                             let key =
                                 format!("{}/{}", flat.kind, outcome.dest_path.item_name(flat.kind));
                             items.entry(key).or_insert_with(|| LockedItemV2 {
@@ -437,7 +484,7 @@ pub fn build(
                 let item_key = item_key(&outcome.item_id);
                 if let Some(old_item) = old_lock.items.get(&item_key) {
                     items.insert(item_key, old_item.clone());
-                } else if let Some(flat) = old_lock.find_by_dest_path(&outcome.dest_path) {
+                } else if let Some(flat) = old_lock_index.find_by_dest_path(&outcome.dest_path) {
                     let key = format!("{}/{}", flat.kind, outcome.dest_path.item_name(flat.kind));
                     items.entry(key).or_insert_with(|| LockedItemV2 {
                         source: flat.source,
@@ -874,6 +921,36 @@ installed_checksum = "sha256:222"
         let lock = sample_lock();
         assert!(lock.contains_dest_path(&DestPath::from("agents/coder.md")));
         assert!(!lock.contains_dest_path(&DestPath::from("agents/nobody.md")));
+    }
+
+    #[test]
+    fn lock_index_find_by_dest_path_hit_and_miss() {
+        let lock = sample_lock();
+        let index = LockIndex::new(&lock);
+
+        let found = index
+            .find_by_dest_path(&DestPath::from("agents/coder.md"))
+            .unwrap();
+        assert_eq!(found.source, "base");
+        assert_eq!(found.kind, ItemKind::Agent);
+        assert_eq!(found.source_checksum, "sha256:aaa");
+        assert_eq!(found.installed_checksum, "sha256:bbb");
+        assert_eq!(found.dest_path.as_str(), "agents/coder.md");
+
+        assert!(
+            index
+                .find_by_dest_path(&DestPath::from("agents/missing.md"))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn lock_index_contains_dest_path_hit_and_miss() {
+        let lock = sample_lock();
+        let index = LockIndex::new(&lock);
+
+        assert!(index.contains_dest_path(&DestPath::from("agents/coder.md")));
+        assert!(!index.contains_dest_path(&DestPath::from("agents/nobody.md")));
     }
 
     #[test]

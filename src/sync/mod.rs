@@ -18,8 +18,8 @@ use crate::diagnostic::{Diagnostic, DiagnosticCollector};
 use crate::error::MarsError;
 use crate::fs::FileLock;
 use crate::hash;
-use crate::lock::LockFile;
 use crate::lock::{ItemId, ItemKind};
+use crate::lock::{LockFile, LockIndex};
 use crate::resolve::{ResolveOptions, ResolvedGraph};
 use crate::source::GlobalCache;
 use crate::sync::apply::ApplyResult;
@@ -264,6 +264,7 @@ pub(crate) fn build_target(
             .unwrap_or_else(|_| ctx.project_root.clone()),
         subpath: None,
     };
+    let old_lock_index = LockIndex::new(&resolved.loaded.old_lock);
 
     for item in local_items {
         let source_path = item.disk_path();
@@ -297,9 +298,7 @@ pub(crate) fn build_target(
         }
 
         let disk_path = dest_path.resolve(managed_root);
-        if !resolved.loaded.old_lock.contains_dest_path(&dest_path)
-            && disk_path.symlink_metadata().is_ok()
-        {
+        if !old_lock_index.contains_dest_path(&dest_path) && disk_path.symlink_metadata().is_ok() {
             diag.warn(
                 "unmanaged-collision",
                 format!(

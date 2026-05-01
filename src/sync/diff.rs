@@ -2,7 +2,7 @@ use std::path::Path;
 
 use crate::error::MarsError;
 use crate::hash;
-use crate::lock::{LockFile, LockedItem};
+use crate::lock::{LockFile, LockIndex, LockedItem};
 use crate::sync::target::{TargetItem, TargetState};
 use crate::types::ContentHash;
 
@@ -57,10 +57,11 @@ pub fn compute(
     force: bool,
 ) -> Result<SyncDiff, MarsError> {
     let mut items = Vec::new();
+    let lock_index = LockIndex::new(lock);
 
     // Process each target item
     for (_dest_key, target_item) in &target.items {
-        if let Some(locked_item) = lock.find_by_dest_path(&target_item.dest_path) {
+        if let Some(locked_item) = lock_index.find_by_dest_path(&target_item.dest_path) {
             // Item exists in lock — compare checksums
             let source_changed = target_item.source_hash != locked_item.source_checksum
                 || rewritten_installed_checksum(target_item)
