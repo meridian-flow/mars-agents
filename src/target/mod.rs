@@ -15,24 +15,64 @@ pub mod pi;
 
 use std::path::{Path, PathBuf};
 
+use indexmap::IndexMap;
+
 use crate::error::MarsError;
 use crate::lock::ItemKind;
 use crate::types::DestPath;
 
 /// A config entry to be written to a target's config file.
 ///
-/// Currently a placeholder — future use: MCP server entries, hook bindings.
+/// Adapters consume these entries to write or update target-specific config
+/// files (MCP JSON, hooks in settings.json, etc.).
 #[derive(Debug, Clone)]
-pub struct ConfigEntry {
-    pub key: String,
-    pub kind: ConfigEntryKind,
+pub enum ConfigEntry {
+    /// An MCP server entry to register in the target's MCP config file.
+    McpServer(McpServerEntry),
+    /// A hook binding to register in the target's hook config.
+    Hook(HookEntry),
 }
 
-/// Kind of config entry.
+impl ConfigEntry {
+    /// Stable identity key for this entry (used by stale-cleanup logic).
+    pub fn key(&self) -> String {
+        match self {
+            ConfigEntry::McpServer(e) => format!("mcp:{}", e.name),
+            ConfigEntry::Hook(e) => format!("hook:{}:{}", e.event, e.name),
+        }
+    }
+}
+
+/// An MCP server entry ready to be written into a target config file.
+///
+/// Env values are variable names (symbolic). Adapters translate them to the
+/// target's interpolation syntax (e.g. `${VAR}` for Claude, plain name for Codex).
 #[derive(Debug, Clone)]
-pub enum ConfigEntryKind {
-    McpServer,
-    HookBinding,
+pub struct McpServerEntry {
+    /// Server name as it appears in the target config.
+    pub name: String,
+    /// Launch command.
+    pub command: String,
+    /// Launch arguments.
+    pub args: Vec<String>,
+    /// Env vars: config key → environment variable name (symbolic, never resolved).
+    pub env: IndexMap<String, String>,
+}
+
+/// A hook binding entry ready to be written into a target config file.
+#[derive(Debug, Clone)]
+pub struct HookEntry {
+    /// Hook name (for identification — two hooks with the same name from
+    /// different packages are both executed; hooks are additive).
+    pub name: String,
+    /// Universal event name (e.g. "tool.pre").
+    pub event: String,
+    /// Native event name for this target (e.g. "PreToolUse" for Claude).
+    pub native_event: String,
+    /// Script path to execute, relative to the target directory.
+    pub script_path: String,
+    /// Explicit ordering hint (lower = earlier).
+    pub order: i32,
 }
 
 /// Per-target compilation adapter.
