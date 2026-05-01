@@ -9,6 +9,7 @@ pub mod target;
 pub mod types;
 
 use std::cmp::Reverse;
+use std::collections::BTreeMap;
 use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
 use std::path::Path;
 use std::path::PathBuf;
@@ -125,6 +126,7 @@ pub(crate) struct AppliedState {
 pub(crate) struct SyncedState {
     pub applied: AppliedState,
     pub target_outcomes: Vec<crate::target_sync::TargetSyncOutcome>,
+    pub config_entries: BTreeMap<String, BTreeMap<String, crate::lock::ConfigEntryRecord>>,
 }
 
 /// Execute the unified sync pipeline.
@@ -495,6 +497,7 @@ pub(crate) fn sync_targets(
         return SyncedState {
             applied,
             target_outcomes: Vec::new(),
+            config_entries: BTreeMap::new(),
         };
     }
 
@@ -530,6 +533,7 @@ pub(crate) fn sync_targets(
     SyncedState {
         applied,
         target_outcomes,
+        config_entries: BTreeMap::new(),
     }
 }
 
@@ -548,7 +552,12 @@ pub(crate) fn finalize(
 
     // Write lock file (D21 — regardless of target sync outcome).
     if !request.options.dry_run {
-        let new_lock = crate::lock::build(graph, &state.applied.applied, old_lock)?;
+        let new_lock = crate::lock::build(
+            graph,
+            &state.applied.applied,
+            old_lock,
+            state.config_entries,
+        )?;
         crate::lock::write(project_root, &new_lock)?;
 
         // Persist dependency-only model aliases so `mars models list` can load
@@ -1615,7 +1624,8 @@ mod tests {
         );
 
         // Build lock
-        let new_lock = crate::lock::build(&graph, &result, &lock).unwrap();
+        let new_lock =
+            crate::lock::build(&graph, &result, &lock, std::collections::BTreeMap::new()).unwrap();
         assert_eq!(new_lock.items.len(), 2);
         assert!(new_lock.items.contains_key("agent/coder"));
         assert!(new_lock.items.contains_key("skill/planning"));
@@ -1643,7 +1653,8 @@ mod tests {
         let sync_plan = create_sync_plan(&sync_diff, &options, &cache_dir);
         let result =
             apply::execute(fixture.managed_root(), &sync_plan, &options, &cache_dir).unwrap();
-        let first_lock = crate::lock::build(&graph, &result, &lock).unwrap();
+        let first_lock =
+            crate::lock::build(&graph, &result, &lock, std::collections::BTreeMap::new()).unwrap();
 
         // Second sync with same content
         let (target2, _) = target::build_with_collisions(&graph, &config).unwrap();
@@ -1685,7 +1696,8 @@ mod tests {
         let sync_plan = create_sync_plan(&sync_diff, &options, &cache_dir);
         let result =
             apply::execute(fixture.managed_root(), &sync_plan, &options, &cache_dir).unwrap();
-        let first_lock = crate::lock::build(&graph, &result, &lock).unwrap();
+        let first_lock =
+            crate::lock::build(&graph, &result, &lock, std::collections::BTreeMap::new()).unwrap();
 
         // Update source content
         let agents_dir = fixture.tree_path(src_idx).join("agents");
@@ -1725,7 +1737,8 @@ mod tests {
         let sync_plan = create_sync_plan(&sync_diff, &options, &cache_dir);
         let result =
             apply::execute(fixture.managed_root(), &sync_plan, &options, &cache_dir).unwrap();
-        let first_lock = crate::lock::build(&graph, &result, &lock).unwrap();
+        let first_lock =
+            crate::lock::build(&graph, &result, &lock, std::collections::BTreeMap::new()).unwrap();
 
         // Locally modify the installed file
         fs::write(
@@ -1775,7 +1788,8 @@ mod tests {
         let sync_plan = create_sync_plan(&sync_diff, &options, &cache_dir);
         let result =
             apply::execute(fixture.managed_root(), &sync_plan, &options, &cache_dir).unwrap();
-        let first_lock = crate::lock::build(&graph, &result, &lock).unwrap();
+        let first_lock =
+            crate::lock::build(&graph, &result, &lock, std::collections::BTreeMap::new()).unwrap();
 
         // Locally modify the installed file
         fs::write(
@@ -1846,7 +1860,8 @@ mod tests {
         let sync_plan = create_sync_plan(&sync_diff, &options, &cache_dir);
         let result =
             apply::execute(fixture.managed_root(), &sync_plan, &options, &cache_dir).unwrap();
-        let first_lock = crate::lock::build(&graph, &result, &lock).unwrap();
+        let first_lock =
+            crate::lock::build(&graph, &result, &lock, std::collections::BTreeMap::new()).unwrap();
 
         assert!(fixture.managed_root().join("agents/coder.md").exists());
         assert!(fixture.managed_root().join("agents/reviewer.md").exists());
@@ -1937,7 +1952,8 @@ mod tests {
         let result =
             apply::execute(fixture.managed_root(), &sync_plan, &options, &cache_dir).unwrap();
 
-        let new_lock = crate::lock::build(&graph, &result, &lock).unwrap();
+        let new_lock =
+            crate::lock::build(&graph, &result, &lock, std::collections::BTreeMap::new()).unwrap();
         crate::lock::write(fixture.project_root(), &new_lock).unwrap();
 
         // Verify lock file exists and is valid

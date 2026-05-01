@@ -45,6 +45,23 @@ fn create_source(
     source_dir.to_path_buf()
 }
 
+fn create_mcp_source(dir: &TempDir, name: &str, server_name: &str) -> std::path::PathBuf {
+    let source_dir = dir.child(name);
+    let mcp_dir = source_dir.child("mcp").child(server_name);
+    mcp_dir.create_dir_all().unwrap();
+    mcp_dir
+        .child("mcp.toml")
+        .write_str(
+            r#"
+command = "npx"
+args = ["-y", "example@latest"]
+visibility = "exported"
+"#,
+        )
+        .unwrap();
+    source_dir.to_path_buf()
+}
+
 fn mars() -> Command {
     Command::cargo_bin("mars").unwrap()
 }
@@ -348,6 +365,50 @@ fn remove_prunes_files() {
 
     // File should be pruned
     assert!(!agents_dir.child("agents").child("coder.md").exists());
+}
+
+#[test]
+fn remove_prunes_stale_config_entries() {
+    let dir = TempDir::new().unwrap();
+    let source = create_mcp_source(&dir, "base", "context7");
+    let project = dir.child("project");
+
+    mars()
+        .args(["init", "--root", project.path().to_str().unwrap()])
+        .assert()
+        .success();
+    mars()
+        .args([
+            "link",
+            ".claude",
+            "--root",
+            project.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    mars()
+        .args([
+            "add",
+            source.to_str().unwrap(),
+            "--root",
+            project.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let mcp_path = project.child(".claude").child(".mcp.json");
+    let installed: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(mcp_path.path()).unwrap()).unwrap();
+    assert!(installed["mcpServers"]["context7"].is_object());
+
+    mars()
+        .args(["remove", "base", "--root", project.path().to_str().unwrap()])
+        .assert()
+        .success();
+
+    let removed: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(mcp_path.path()).unwrap()).unwrap();
+    assert!(removed["mcpServers"]["context7"].is_null());
 }
 
 // ═══════════════════════════════════════════════════════════════

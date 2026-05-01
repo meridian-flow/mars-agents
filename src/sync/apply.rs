@@ -924,6 +924,7 @@ mod tests {
             version: 2,
             dependencies: indexmap::IndexMap::new(),
             items: lock_items,
+            config_entries: std::collections::BTreeMap::new(),
         };
 
         // Empty target = orphan should be pruned

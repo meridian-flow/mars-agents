@@ -247,7 +247,7 @@ fn write_hooks_settings(target_dir: &Path, hooks: &[&HookEntry]) -> Result<PathB
             "hooks": [command_entry],
         });
 
-        hooks_map
+        let event_hooks = hooks_map
             .entry(native_event.clone())
             .or_insert_with(|| serde_json::json!([]))
             .as_array_mut()
@@ -255,8 +255,9 @@ fn write_hooks_settings(target_dir: &Path, hooks: &[&HookEntry]) -> Result<PathB
                 MarsError::Config(ConfigError::Invalid {
                     message: format!("{}: hooks.{native_event} is not an array", path.display()),
                 })
-            })?
-            .push(hook_binding);
+            })?;
+        remove_managed_hook_bindings(event_hooks, &hook.name);
+        event_hooks.push(hook_binding);
     }
 
     let content = serde_json::to_string_pretty(&root).map_err(|e| {
@@ -267,6 +268,25 @@ fn write_hooks_settings(target_dir: &Path, hooks: &[&HookEntry]) -> Result<PathB
     crate::fs::atomic_write(&path, content.as_bytes())?;
 
     Ok(path)
+}
+
+fn remove_managed_hook_bindings(bindings: &mut Vec<serde_json::Value>, hook_name: &str) {
+    bindings.retain(|binding| {
+        let Some(inner_hooks) = binding.get("hooks").and_then(|h| h.as_array()) else {
+            return true;
+        };
+        !inner_hooks.iter().any(|h| {
+            h.get("command")
+                .and_then(|c| c.as_str())
+                .map(|cmd| is_managed_hook_command_for(cmd, hook_name))
+                .unwrap_or(false)
+        })
+    });
+}
+
+fn is_managed_hook_command_for(command: &str, hook_name: &str) -> bool {
+    let normalized = command.replace('\\', "/").replace("//", "/");
+    normalized.contains(&format!("/hooks/{hook_name}/"))
 }
 
 /// Remove hook entries by key from `settings.json`.
@@ -283,14 +303,14 @@ fn remove_hook_entries_by_key(entry_keys: &[String], target_dir: &Path) -> Resul
     // For now: if any hook keys are being removed, we reload and remove matching
     // command entries. This is conservative — we only remove entries we know
     // belong to mars-managed hooks.
-    let hook_keys: Vec<(&str, &str)> = entry_keys
+    let hook_keys: Vec<(String, &str)> = entry_keys
         .iter()
         .filter_map(|k| {
             let rest = k.strip_prefix("hook:")?;
             let mut parts = rest.splitn(2, ':');
             let event = parts.next()?;
             let name = parts.next()?;
-            Some((event, name))
+            Some((claude_hook_event(event)?.to_string(), name))
         })
         .collect();
 
@@ -309,8 +329,8 @@ fn remove_hook_entries_by_key(entry_keys: &[String], target_dir: &Path) -> Resul
         .and_then(|o| o.get_mut("hooks"))
         .and_then(|v| v.as_object_mut())
     {
-        for (_event, name) in &hook_keys {
-            for event_hooks in hooks_map.values_mut() {
+        for (event, name) in &hook_keys {
+            if let Some(event_hooks) = hooks_map.get_mut(event) {
                 if let Some(arr) = event_hooks.as_array_mut() {
                     arr.retain(|binding| {
                         // Retain if we can't parse it (not ours) or if it doesn't
@@ -325,8 +345,7 @@ fn remove_hook_entries_by_key(entry_keys: &[String], target_dir: &Path) -> Resul
                                 .map(|cmd| {
                                     // Exact path-segment match to avoid partial name collisions
                                     // (e.g., "audit" must not match "audit-extended").
-                                    let normalized = cmd.replace('\\', "/").replace("//", "/");
-                                    normalized.contains(&format!("/hooks/{name}/"))
+                                    is_managed_hook_command_for(cmd, name)
                                 })
                                 .unwrap_or(false)
                         })
@@ -344,6 +363,16 @@ fn remove_hook_entries_by_key(entry_keys: &[String], target_dir: &Path) -> Resul
     crate::fs::atomic_write(&path, content.as_bytes())?;
 
     Ok(())
+}
+
+fn claude_hook_event(event: &str) -> Option<&'static str> {
+    match event {
+        "session.start" => Some("SessionStart"),
+        "session.end" => Some("SessionStop"),
+        "tool.pre" => Some("PreToolUse"),
+        "tool.post" => Some("PostToolUse"),
+        _ => None,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -382,6 +411,21 @@ mod tests {
             event: event.to_string(),
             native_event: native.to_string(),
             script_path: format!("/hooks/{name}/run.sh"),
+            order: 0,
+        })
+    }
+
+    fn make_hook_entry_with_path(
+        name: &str,
+        event: &str,
+        native: &str,
+        script_path: &str,
+    ) -> ConfigEntry {
+        ConfigEntry::Hook(HookEntry {
+            name: name.to_string(),
+            event: event.to_string(),
+            native_event: native.to_string(),
+            script_path: script_path.to_string(),
             order: 0,
         })
     }
@@ -455,6 +499,41 @@ mod tests {
         let json: serde_json::Value = serde_json::from_str(&raw).unwrap();
         assert!(json["hooks"]["PreToolUse"].is_array());
         assert!(!json["hooks"]["PreToolUse"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn write_hooks_replaces_existing_managed_hook_with_same_event_and_name() {
+        let tmp = TempDir::new().unwrap();
+        let adapter = ClaudeAdapter;
+        adapter
+            .write_config_entries(
+                &[make_hook_entry_with_path(
+                    "audit",
+                    "tool.pre",
+                    "PreToolUse",
+                    "/old/hooks/audit/run.sh",
+                )],
+                tmp.path(),
+            )
+            .unwrap();
+        adapter
+            .write_config_entries(
+                &[make_hook_entry_with_path(
+                    "audit",
+                    "tool.pre",
+                    "PreToolUse",
+                    "/new/hooks/audit/run.sh",
+                )],
+                tmp.path(),
+            )
+            .unwrap();
+
+        let raw = std::fs::read_to_string(tmp.path().join("settings.json")).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        let hooks = json["hooks"]["PreToolUse"].as_array().unwrap();
+        assert_eq!(hooks.len(), 1);
+        let command = hooks[0]["hooks"][0]["command"].as_str().unwrap();
+        assert!(command.contains("/new/hooks/audit/"));
     }
 
     #[test]

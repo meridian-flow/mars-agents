@@ -1001,6 +1001,7 @@ url = "https://github.com/org/base.git"
                 },
             )]),
             items: indexmap::IndexMap::new(),
+            config_entries: std::collections::BTreeMap::new(),
         };
         let serialized = toml::to_string_pretty(&lock).unwrap();
         assert!(serialized.contains("subpath = \"plugins/foo\""));
@@ -1179,6 +1180,7 @@ subpath = "plugins\\foo"
                 },
             )]),
             items: indexmap::IndexMap::new(),
+            config_entries: std::collections::BTreeMap::new(),
         };
 
         crate::lock::write(dir.path(), &lock).unwrap();

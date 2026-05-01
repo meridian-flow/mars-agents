@@ -59,10 +59,12 @@ pub fn compile(
     // Discovers MCP server and hook items from all packages, validates env refs,
     // detects collisions, and writes per-target config entries via adapters.
     // Diagnostics run always; file writes are gated on !dry_run.
-    config_entries::compile_config_entries(ctx, &applied, request.options.dry_run, diag);
+    let config_entry_records =
+        config_entries::compile_config_entries(ctx, &applied, request.options.dry_run, diag);
 
     // Phase 6: copy from canonical store to managed target directories.
-    let synced = sync_targets(ctx, applied, request, diag);
+    let mut synced = sync_targets(ctx, applied, request, diag);
+    synced.config_entries = config_entry_records;
 
     // Phase 7: write lock file, build report.
     finalize(ctx, synced, request, diag)

@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -25,6 +26,9 @@ pub struct LockFile {
     /// V2: logical items keyed by "kind/name" identity string.
     #[serde(default)]
     pub items: IndexMap<String, LockedItemV2>,
+    /// Config entries installed by mars sync, keyed by target root and entry key.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub config_entries: BTreeMap<String, BTreeMap<String, ConfigEntryRecord>>,
 }
 
 /// Custom `Deserialize` for `LockFile`: delegates to the v2 wire type.
@@ -39,6 +43,7 @@ impl<'de> serde::Deserialize<'de> for LockFile {
             version: wire.version,
             dependencies: wire.dependencies,
             items: wire.items,
+            config_entries: wire.config_entries,
         })
     }
 }
@@ -50,6 +55,7 @@ impl LockFile {
             version: LOCK_VERSION,
             dependencies: IndexMap::new(),
             items: IndexMap::new(),
+            config_entries: BTreeMap::new(),
         }
     }
 
@@ -215,6 +221,12 @@ pub struct OutputRecord {
     pub installed_checksum: ContentHash,
 }
 
+/// Ownership record for one target-native config entry.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ConfigEntryRecord {
+    pub source: String,
+}
+
 /// Flat view of a single installed item — used by diff, plan, and apply stages.
 ///
 /// Constructed from [`LockedItemV2`] + one [`OutputRecord`]; preserves backward
@@ -261,6 +273,8 @@ struct LockFileV2Wire {
     dependencies: IndexMap<SourceName, LockedSource>,
     #[serde(default)]
     items: IndexMap<String, LockedItemV2>,
+    #[serde(default)]
+    config_entries: BTreeMap<String, BTreeMap<String, ConfigEntryRecord>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -301,6 +315,7 @@ pub fn load_with_diagnostics(root: &Path) -> Result<(LockFile, Vec<Diagnostic>),
                 version: wire.version,
                 dependencies: wire.dependencies,
                 items: wire.items,
+                config_entries: wire.config_entries,
             },
             Vec::new(),
         )),
@@ -323,6 +338,7 @@ pub fn load_with_diagnostics(root: &Path) -> Result<(LockFile, Vec<Diagnostic>),
                     version: LOCK_VERSION,
                     dependencies: wire.dependencies,
                     items,
+                    config_entries: BTreeMap::new(),
                 },
                 diagnostics,
             ))
@@ -403,6 +419,7 @@ pub fn build(
     graph: &crate::resolve::ResolvedGraph,
     applied: &crate::sync::apply::ApplyResult,
     old_lock: &LockFile,
+    config_entries: BTreeMap<String, BTreeMap<String, ConfigEntryRecord>>,
 ) -> Result<LockFile, MarsError> {
     use crate::sync::apply::ActionTaken;
 
@@ -610,6 +627,7 @@ pub fn build(
         version: LOCK_VERSION,
         dependencies,
         items,
+        config_entries,
     })
 }
 
@@ -710,6 +728,7 @@ mod tests {
             version: LOCK_VERSION,
             dependencies,
             items,
+            config_entries: BTreeMap::new(),
         }
     }
 
@@ -793,6 +812,30 @@ installed_checksum = "sha256:bbb"
         write(dir.path(), &lock).unwrap();
         let reloaded = load(dir.path()).unwrap();
         assert_eq!(lock, reloaded);
+    }
+
+    #[test]
+    fn roundtrip_lock_file_with_config_entries() {
+        let mut lock = sample_lock();
+        lock.config_entries.insert(
+            ".claude".to_string(),
+            BTreeMap::from([(
+                "mcp:context7".to_string(),
+                ConfigEntryRecord {
+                    source: "base".to_string(),
+                },
+            )]),
+        );
+
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), &lock).unwrap();
+        let reloaded = load(dir.path()).unwrap();
+
+        assert_eq!(lock, reloaded);
+        assert_eq!(
+            reloaded.config_entries[".claude"]["mcp:context7"].source,
+            "base"
+        );
     }
 
     #[test]
@@ -1082,9 +1125,16 @@ dest_path = "agents/coder.md"
             version: LOCK_VERSION,
             dependencies: old_sources,
             items: IndexMap::new(),
+            config_entries: std::collections::BTreeMap::new(),
         };
 
-        let new_lock = build(&graph, &applied, &old_lock).unwrap();
+        let new_lock = build(
+            &graph,
+            &applied,
+            &old_lock,
+            std::collections::BTreeMap::new(),
+        )
+        .unwrap();
 
         let base = &new_lock.dependencies["base"];
         assert_eq!(base.url.as_ref(), Some(&git_url));
@@ -1147,6 +1197,7 @@ dest_path = "agents/coder.md"
                     }],
                 },
             )]),
+            config_entries: std::collections::BTreeMap::new(),
         };
         let applied = ApplyResult {
             outcomes: vec![ActionOutcome {
@@ -1162,7 +1213,13 @@ dest_path = "agents/coder.md"
             }],
         };
 
-        let new_lock = build(&graph, &applied, &old_lock).unwrap();
+        let new_lock = build(
+            &graph,
+            &applied,
+            &old_lock,
+            std::collections::BTreeMap::new(),
+        )
+        .unwrap();
 
         assert!(
             new_lock
@@ -1198,7 +1255,13 @@ dest_path = "agents/coder.md"
             }],
         };
 
-        let err = build(&graph, &applied, &old_lock).unwrap_err();
+        let err = build(
+            &graph,
+            &applied,
+            &old_lock,
+            std::collections::BTreeMap::new(),
+        )
+        .unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("missing checksum for write-producing action"));
         assert!(msg.contains("agents/coder.md"));
@@ -1319,6 +1382,7 @@ dest_path = "hooks/pre-push/hook.sh"
                     }],
                 },
             )]),
+            config_entries: std::collections::BTreeMap::new(),
         };
         let applied = ApplyResult {
             outcomes: vec![ActionOutcome {
@@ -1334,7 +1398,13 @@ dest_path = "hooks/pre-push/hook.sh"
             }],
         };
 
-        let err = build(&graph, &applied, &old_lock).unwrap_err();
+        let err = build(
+            &graph,
+            &applied,
+            &old_lock,
+            std::collections::BTreeMap::new(),
+        )
+        .unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("empty source_checksum"));
     }

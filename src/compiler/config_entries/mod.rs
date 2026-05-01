@@ -6,9 +6,10 @@
 pub mod resolve;
 pub mod stale;
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 
 use crate::diagnostic::DiagnosticCollector;
+use crate::lock::ConfigEntryRecord;
 use crate::sync::AppliedState;
 use crate::types::{MarsContext, SourceName};
 
@@ -30,7 +31,7 @@ pub(crate) fn compile_config_entries(
     applied: &AppliedState,
     dry_run: bool,
     diag: &mut DiagnosticCollector,
-) {
+) -> BTreeMap<String, BTreeMap<String, ConfigEntryRecord>> {
     use crate::compiler::config_entries::resolve::{
         resolve_hook_collisions_for_target, resolve_mcp_collisions_for_target,
     };
@@ -156,6 +157,8 @@ pub(crate) fn compile_config_entries(
 
     // Get the target registry.
     let registry = TargetRegistry::new();
+    let mut current_records: BTreeMap<String, BTreeMap<String, ConfigEntryRecord>> =
+        BTreeMap::new();
 
     // For each target root, lower and write config entries.
     for target_root in &target_roots {
@@ -166,19 +169,21 @@ pub(crate) fn compile_config_entries(
         }
 
         // Lower MCP items for this target.
-        let mcp_entries: Vec<ConfigEntry> =
-            resolve_mcp_collisions_for_target(&all_mcp, target_root, diag)
-                .into_iter()
-                .map(TargetMcpEntry::from_parsed)
-                .map(|e| {
-                    ConfigEntry::McpServer(McpServerEntry {
-                        name: e.name,
-                        command: e.command,
-                        args: e.args,
-                        env: e.env.into_iter().collect(),
-                    })
-                })
-                .collect();
+        let mut entries_with_source: Vec<(ConfigEntry, String)> = Vec::new();
+
+        for parsed in resolve_mcp_collisions_for_target(&all_mcp, target_root, diag) {
+            let source = parsed.source_name.clone();
+            let e = TargetMcpEntry::from_parsed(parsed);
+            entries_with_source.push((
+                ConfigEntry::McpServer(McpServerEntry {
+                    name: e.name,
+                    command: e.command,
+                    args: e.args,
+                    env: e.env.into_iter().collect(),
+                }),
+                source,
+            ));
+        }
 
         // Resolve and translate hooks for this target, filtering dropped ones.
         let target_hooks: Vec<_> =
@@ -216,10 +221,11 @@ pub(crate) fn compile_config_entries(
         }
 
         // Build hook config entries (only non-dropped ones).
-        let hook_entries: Vec<ConfigEntry> = translated_hooks
+        let hook_entries: Vec<(ConfigEntry, String)> = translated_hooks
             .into_iter()
             .filter_map(|th| {
                 let native_event = th.native_event?;
+                let source = th.hook.item.source_name.clone();
                 let script_path = match &th.hook.item.def.action {
                     crate::compiler::hooks::HookAction::Script { path } => {
                         // Resolve script path relative to the package root the hook came from.
@@ -243,21 +249,23 @@ pub(crate) fn compile_config_entries(
                         resolved.to_string_lossy().to_string()
                     }
                 };
-                Some(ConfigEntry::Hook(HookEntry {
-                    name: th.hook.item.def.name.clone(),
-                    event: th.hook.item.def.event.to_string(),
-                    native_event,
-                    script_path,
-                    order: th.hook.item.def.order,
-                }))
+                Some((
+                    ConfigEntry::Hook(HookEntry {
+                        name: th.hook.item.def.name.clone(),
+                        event: th.hook.item.def.event.to_string(),
+                        native_event,
+                        script_path,
+                        order: th.hook.item.def.order,
+                    }),
+                    source,
+                ))
             })
             .collect();
 
         // Combine all entries.
-        let mut entries = mcp_entries;
-        entries.extend(hook_entries);
+        entries_with_source.extend(hook_entries);
 
-        if entries.is_empty() {
+        if entries_with_source.is_empty() {
             continue;
         }
 
@@ -266,6 +274,21 @@ pub(crate) fn compile_config_entries(
             // No adapter registered — skip.
             continue;
         };
+
+        let entries: Vec<ConfigEntry> = entries_with_source
+            .iter()
+            .map(|(entry, _)| entry.clone())
+            .collect();
+
+        let target_records = current_records.entry(target_root.clone()).or_default();
+        for (entry, source) in &entries_with_source {
+            target_records.insert(
+                entry.key(),
+                ConfigEntryRecord {
+                    source: source.clone(),
+                },
+            );
+        }
 
         // Emit target-specific pre-write diagnostics (runs even on dry runs).
         adapter.emit_pre_write_diagnostics(&entries, diag);
@@ -279,6 +302,56 @@ pub(crate) fn compile_config_entries(
             }
         }
     }
+
+    let previous_records = &applied
+        .planned
+        .targeted
+        .resolved
+        .loaded
+        .old_lock
+        .config_entries;
+    let stale_entries = stale::find_stale_entries(previous_records, &current_records);
+    for (target_root, keys) in stale_entries {
+        if dry_run {
+            diag.warn(
+                "stale-config-entry",
+                format!(
+                    "target `{target_root}` has stale config entries: {}",
+                    keys.join(", ")
+                ),
+            );
+            continue;
+        }
+
+        let Some(adapter) = registry.get(&target_root) else {
+            continue;
+        };
+        let target_dir = ctx.project_root.join(&target_root);
+        if let Err(e) = adapter.remove_config_entries(&keys, &target_dir) {
+            diag.warn(
+                "config-entry-remove",
+                format!("failed to remove stale config entries from `{target_root}`: {e}"),
+            );
+            if let Some(previous_target_records) = previous_records.get(&target_root) {
+                let target_records = current_records.entry(target_root.clone()).or_default();
+                for key in &keys {
+                    if let Some(record) = previous_target_records.get(key) {
+                        target_records.insert(key.clone(), record.clone());
+                    }
+                }
+            }
+        } else {
+            diag.info(
+                "stale-config-entry",
+                format!(
+                    "removed stale config entries from `{target_root}`: {}",
+                    keys.join(", ")
+                ),
+            );
+        }
+    }
+
+    current_records
 }
 
 /// Compute package depth for hook ordering.
