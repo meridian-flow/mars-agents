@@ -59,7 +59,10 @@ impl LockFile {
     pub fn find_by_dest_path(&self, dest_path: &DestPath) -> Option<LockedItem> {
         for item_v2 in self.items.values() {
             for output in &item_v2.outputs {
-                if &output.dest_path == dest_path {
+                if crate::target::dest_paths_equivalent(
+                    output.dest_path.as_str(),
+                    dest_path.as_str(),
+                ) {
                     return Some(LockedItem {
                         source: item_v2.source.clone(),
                         kind: item_v2.kind,
@@ -76,9 +79,11 @@ impl LockFile {
 
     /// Check if any output record has the given dest_path.
     pub fn contains_dest_path(&self, dest_path: &DestPath) -> bool {
-        self.items
-            .values()
-            .any(|item| item.outputs.iter().any(|o| &o.dest_path == dest_path))
+        self.items.values().any(|item| {
+            item.outputs.iter().any(|o| {
+                crate::target::dest_paths_equivalent(o.dest_path.as_str(), dest_path.as_str())
+            })
+        })
     }
 
     /// Iterate all output dest_paths across all items.
@@ -140,9 +145,13 @@ impl<'a> LockIndex<'a> {
 
     /// Look up a locked item by output dest_path, returning a flat [`LockedItem`] view.
     pub fn find_by_dest_path(&self, dest_path: &DestPath) -> Option<LockedItem> {
-        let (item_key, output_idx) = self.by_dest_path.get(dest_path)?;
-        let item_v2 = self.lock.items.get(*item_key)?;
-        let output = item_v2.outputs.get(*output_idx)?;
+        let (item_key, output_idx) =
+            self.by_dest_path.iter().find_map(|(locked_dest, value)| {
+                crate::target::dest_paths_equivalent(locked_dest.as_str(), dest_path.as_str())
+                    .then_some(*value)
+            })?;
+        let item_v2 = self.lock.items.get(item_key)?;
+        let output = item_v2.outputs.get(output_idx)?;
         Some(LockedItem {
             source: item_v2.source.clone(),
             kind: item_v2.kind,
@@ -155,7 +164,9 @@ impl<'a> LockIndex<'a> {
 
     /// Check if any output record has the given dest_path.
     pub fn contains_dest_path(&self, dest_path: &DestPath) -> bool {
-        self.by_dest_path.contains_key(dest_path)
+        self.by_dest_path.keys().any(|locked_dest| {
+            crate::target::dest_paths_equivalent(locked_dest.as_str(), dest_path.as_str())
+        })
     }
 }
 

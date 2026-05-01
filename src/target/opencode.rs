@@ -11,7 +11,7 @@ use crate::error::MarsError;
 use crate::lock::ItemKind;
 use crate::types::DestPath;
 
-use super::{ConfigEntry, HookEntry, McpServerEntry, TargetAdapter};
+use super::{ConfigEntry, HookEntry, McpServerEntry, TargetAdapter, hook_command};
 
 #[derive(Debug)]
 pub struct OpencodeAdapter;
@@ -155,7 +155,7 @@ fn write_opencode_config(
         })?;
 
         for hook in hooks {
-            let command = format!("bash '{}'", hook.script_path.replace('\'', "'\\''"));
+            let command = hook_command(&hook.script_path);
             let native_event = hook.native_event.clone();
             hooks_map
                 .entry(native_event.clone())
@@ -227,9 +227,8 @@ fn remove_opencode_entries(entry_keys: &[String], target_dir: &Path) -> Result<(
                         let cmd_str = cmd.as_str().unwrap_or("");
                         !hook_names.iter().any(|name| {
                             // Exact path-segment match to avoid partial name collisions.
-                            let seg_fwd = format!("/hooks/{name}/");
-                            let seg_bwd = format!("\\hooks\\{name}\\");
-                            cmd_str.contains(&seg_fwd) || cmd_str.contains(&seg_bwd)
+                            let normalized = cmd_str.replace('\\', "/").replace("//", "/");
+                            normalized.contains(&format!("/hooks/{name}/"))
                         })
                     });
                 }

@@ -296,7 +296,8 @@ pub(crate) fn seed_items_for_request(
             selected.extend(package.items().filter(|item| {
                 let source_path = item.source_path.to_string_lossy();
                 !excluded.iter().any(|excluded_item| {
-                    excluded_item == &item.id.name || excluded_item == source_path.as_ref()
+                    excluded_item == &item.id.name
+                        || crate::target::paths_equivalent(excluded_item.as_ref(), &source_path)
                 })
             }));
         }

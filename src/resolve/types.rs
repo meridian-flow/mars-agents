@@ -272,7 +272,10 @@ fn resolved_ref_matches(existing: &ResolvedRef, incoming: &ResolvedRef) -> bool 
         && existing.version == incoming.version
         && existing.version_tag == incoming.version_tag
         && existing.commit == incoming.commit
-        && existing.tree_path == incoming.tree_path
+        && crate::target::paths_equivalent(
+            &existing.tree_path.to_string_lossy(),
+            &incoming.tree_path.to_string_lossy(),
+        )
 }
 
 /// Options controlling resolution behavior.

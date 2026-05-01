@@ -13,7 +13,7 @@ use crate::error::{ConfigError, MarsError};
 use crate::lock::ItemKind;
 use crate::types::DestPath;
 
-use super::{ConfigEntry, HookEntry, McpServerEntry, TargetAdapter};
+use super::{ConfigEntry, HookEntry, McpServerEntry, TargetAdapter, hook_command};
 
 #[derive(Debug)]
 pub struct ClaudeAdapter;
@@ -240,7 +240,7 @@ fn write_hooks_settings(target_dir: &Path, hooks: &[&HookEntry]) -> Result<PathB
         let native_event = &hook.native_event;
         let command_entry = serde_json::json!({
             "type": "command",
-            "command": format!("bash '{}'", hook.script_path.replace('\'', "'\\''")),
+            "command": hook_command(&hook.script_path),
         });
         let hook_binding = serde_json::json!({
             "matcher": "",
@@ -325,9 +325,8 @@ fn remove_hook_entries_by_key(entry_keys: &[String], target_dir: &Path) -> Resul
                                 .map(|cmd| {
                                     // Exact path-segment match to avoid partial name collisions
                                     // (e.g., "audit" must not match "audit-extended").
-                                    let seg_fwd = format!("/hooks/{name}/");
-                                    let seg_bwd = format!("\\hooks\\{name}\\");
-                                    cmd.contains(&seg_fwd) || cmd.contains(&seg_bwd)
+                                    let normalized = cmd.replace('\\', "/").replace("//", "/");
+                                    normalized.contains(&format!("/hooks/{name}/"))
                                 })
                                 .unwrap_or(false)
                         })
@@ -487,5 +486,40 @@ mod tests {
         assert_eq!(written.len(), 2);
         assert!(tmp.path().join(".mcp.json").exists());
         assert!(tmp.path().join("settings.json").exists());
+    }
+
+    #[test]
+    fn remove_hook_entries_matches_backslash_commands() {
+        let tmp = TempDir::new().unwrap();
+        let existing = serde_json::json!({
+            "hooks": {
+                "PreToolUse": [
+                    {
+                        "matcher": "",
+                        "hooks": [
+                            { "type": "command", "command": "bash \"C:\\\\pkg\\\\hooks\\\\audit\\\\run.sh\"" }
+                        ]
+                    },
+                    {
+                        "matcher": "",
+                        "hooks": [
+                            { "type": "command", "command": "bash \"C:\\\\pkg\\\\hooks\\\\audit-extended\\\\run.sh\"" }
+                        ]
+                    }
+                ]
+            }
+        });
+        std::fs::write(
+            tmp.path().join("settings.json"),
+            serde_json::to_string_pretty(&existing).unwrap(),
+        )
+        .unwrap();
+
+        remove_hook_entries_by_key(&["hook:tool.pre:audit".to_string()], tmp.path()).unwrap();
+
+        let raw = std::fs::read_to_string(tmp.path().join("settings.json")).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        let hooks = json["hooks"]["PreToolUse"].as_array().unwrap();
+        assert_eq!(hooks.len(), 1);
     }
 }

@@ -26,9 +26,9 @@ pub(crate) fn is_item_excluded(
             filters.iter().any(|filter| match filter {
                 FilterMode::Exclude(excluded) => excluded.iter().any(|excluded_item| {
                     excluded_item == item
-                        || source_path
-                            .as_deref()
-                            .is_some_and(|path| excluded_item.as_ref() == path)
+                        || source_path.as_deref().is_some_and(|path| {
+                            crate::target::paths_equivalent(excluded_item.as_ref(), path)
+                        })
                 }),
                 _ => false,
             })

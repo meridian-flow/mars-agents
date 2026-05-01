@@ -11,7 +11,7 @@ use crate::error::MarsError;
 use crate::lock::ItemKind;
 use crate::types::DestPath;
 
-use super::{ConfigEntry, HookEntry, McpServerEntry, TargetAdapter};
+use super::{ConfigEntry, HookEntry, McpServerEntry, TargetAdapter, hook_command};
 
 #[derive(Debug)]
 pub struct CodexAdapter;
@@ -225,7 +225,7 @@ fn write_codex_hooks_json(target_dir: &Path, hooks: &[&HookEntry]) -> Result<Pat
     })?;
 
     for hook in hooks {
-        let command = format!("bash '{}'", hook.script_path.replace('\'', "'\\''"));
+        let command = hook_command(&hook.script_path);
         let native_event = hook.native_event.clone();
         hooks_map
             .entry(native_event.clone())
@@ -282,9 +282,8 @@ fn remove_codex_hook_entries(entry_keys: &[String], target_dir: &Path) -> Result
                     let cmd_str = cmd.as_str().unwrap_or("");
                     !hook_names.iter().any(|name| {
                         // Exact path-segment match to avoid partial name collisions.
-                        let seg_fwd = format!("/hooks/{name}/");
-                        let seg_bwd = format!("\\hooks\\{name}\\");
-                        cmd_str.contains(&seg_fwd) || cmd_str.contains(&seg_bwd)
+                        let normalized = cmd_str.replace('\\', "/").replace("//", "/");
+                        normalized.contains(&format!("/hooks/{name}/"))
                     })
                 });
             }
@@ -396,5 +395,31 @@ mod tests {
         let json: serde_json::Value = serde_json::from_str(&raw).unwrap();
         assert!(json["mcpServers"]["to-remove"].is_null());
         assert!(json["mcpServers"]["to-keep"].is_object());
+    }
+
+    #[test]
+    fn remove_hook_entries_matches_backslash_commands() {
+        let tmp = TempDir::new().unwrap();
+        let existing = serde_json::json!({
+            "hooks": {
+                "pre-exec": [
+                    "bash \"C:\\\\pkg\\\\hooks\\\\audit\\\\run.sh\"",
+                    "bash \"C:\\\\pkg\\\\hooks\\\\audit-extended\\\\run.sh\""
+                ]
+            }
+        });
+        std::fs::write(
+            tmp.path().join("codex_hooks.json"),
+            serde_json::to_string_pretty(&existing).unwrap(),
+        )
+        .unwrap();
+
+        remove_codex_hook_entries(&["hook:tool.pre:audit".to_string()], tmp.path()).unwrap();
+
+        let raw = std::fs::read_to_string(tmp.path().join("codex_hooks.json")).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        let hooks = json["hooks"]["pre-exec"].as_array().unwrap();
+        assert_eq!(hooks.len(), 1);
+        assert!(hooks[0].as_str().unwrap().contains("audit-extended"));
     }
 }

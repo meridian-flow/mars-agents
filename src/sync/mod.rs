@@ -256,7 +256,7 @@ pub(crate) fn build_target(
 
     // Build target state from resolved graph.
     let (mut target_state, renames) =
-        target::build_with_collisions(&resolved.graph, &resolved.loaded.effective)?;
+        target::build_with_collisions_and_diag(&resolved.graph, &resolved.loaded.effective, diag)?;
 
     let local_source_name: SourceName = SourceOrigin::LocalPackage.to_string().into();
     let local_source_id = SourceId::Path {
@@ -278,6 +278,18 @@ pub(crate) fn build_target(
         } else {
             ContentHash::from(hash::compute_hash(&source_path, item.discovered.id.kind)?)
         };
+        if item.discovered.id.kind == ItemKind::Agent {
+            if let Err(message) =
+                crate::target::validate_agent_filename(item.discovered.id.name.as_str())
+            {
+                diag.error_with_category(
+                    "invalid-agent-filename",
+                    format!("{message}; skipping local agent"),
+                    crate::diagnostic::DiagnosticCategory::Validation,
+                );
+                continue;
+            }
+        }
         let dest_path =
             default_dest_path(item.discovered.id.kind, item.discovered.id.name.as_str());
 

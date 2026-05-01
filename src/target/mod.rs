@@ -21,6 +21,8 @@ use crate::error::MarsError;
 use crate::lock::ItemKind;
 use crate::types::DestPath;
 
+const WINDOWS_INVALID_CHARS: &[char] = &[':', '*', '?', '<', '>', '|', '"', '/', '\\'];
+
 /// A config entry to be written to a target's config file.
 ///
 /// Adapters consume these entries to write or update target-specific config
@@ -190,6 +192,66 @@ impl Default for TargetRegistry {
     }
 }
 
+/// Build a platform-appropriate command string for executing a hook script.
+pub fn hook_command(script_path: &str) -> String {
+    hook_command_for_platform(script_path, cfg!(windows))
+}
+
+fn hook_command_for_platform(script_path: &str, windows: bool) -> String {
+    if windows {
+        // Use double quotes for Windows cmd.exe compatibility.
+        format!("bash \"{}\"", script_path.replace('\\', "/"))
+    } else {
+        // POSIX: single quotes with proper escaping.
+        format!("bash '{}'", script_path.replace('\'', "'\\''"))
+    }
+}
+
+/// Return an error message when an agent name would create a Windows-invalid
+/// native filename. Runs on every platform so generated packages stay portable.
+pub fn validate_agent_filename(name: &str) -> Result<(), String> {
+    if let Some(ch) = name.chars().find(|ch| WINDOWS_INVALID_CHARS.contains(ch)) {
+        return Err(format!(
+            "agent `{name}` contains portable filename-invalid character `{ch}`"
+        ));
+    }
+
+    let stem = name
+        .split('.')
+        .next()
+        .unwrap_or(name)
+        .trim_end_matches([' ', '.'])
+        .to_ascii_uppercase();
+
+    let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || stem
+            .strip_prefix("COM")
+            .is_some_and(|n| matches!(n, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"))
+        || stem
+            .strip_prefix("LPT")
+            .is_some_and(|n| matches!(n, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"));
+
+    if reserved {
+        return Err(format!(
+            "agent `{name}` would create reserved Windows device filename `{stem}`"
+        ));
+    }
+
+    Ok(())
+}
+
+pub fn paths_equivalent(a: &str, b: &str) -> bool {
+    if cfg!(windows) {
+        a.replace('\\', "/") == b.replace('\\', "/")
+    } else {
+        a == b
+    }
+}
+
+pub fn dest_paths_equivalent(a: &str, b: &str) -> bool {
+    a.replace('\\', "/") == b.replace('\\', "/")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -235,5 +297,53 @@ mod tests {
             .default_dest_path(ItemKind::Skill, "planning")
             .unwrap();
         assert_eq!(path.as_str(), "skills/planning");
+    }
+
+    #[test]
+    fn hook_command_posix_uses_single_quotes() {
+        assert_eq!(
+            hook_command_for_platform("/hooks/audit/run.sh", false),
+            "bash '/hooks/audit/run.sh'"
+        );
+    }
+
+    #[test]
+    fn hook_command_windows_uses_double_quotes_and_normalizes_backslashes() {
+        assert_eq!(
+            hook_command_for_platform(r"C:\hooks\audit\run.sh", true),
+            "bash \"C:/hooks/audit/run.sh\""
+        );
+    }
+
+    #[test]
+    fn windows_invalid_agent_filename_is_rejected() {
+        assert!(validate_agent_filename("bad:name").is_err());
+        assert!(validate_agent_filename("team/lead").is_err());
+        assert!(validate_agent_filename(r"team\lead").is_err());
+        assert!(validate_agent_filename("CON").is_err());
+        assert!(validate_agent_filename("com1").is_err());
+    }
+
+    #[test]
+    fn valid_agent_filename_passes() {
+        assert!(validate_agent_filename("coder").is_ok());
+        assert!(validate_agent_filename("deep-agent").is_ok());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn path_equivalence_normalizes_separators_on_windows() {
+        assert!(paths_equivalent(r"agents\coder.md", "agents/coder.md"));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn path_equivalence_preserves_backslash_on_posix() {
+        assert!(!paths_equivalent(r"agents\coder.md", "agents/coder.md"));
+    }
+
+    #[test]
+    fn dest_path_equivalence_always_normalizes_separators() {
+        assert!(dest_paths_equivalent(r"agents\coder.md", "agents/coder.md"));
     }
 }

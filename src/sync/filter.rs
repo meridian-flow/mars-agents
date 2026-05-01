@@ -32,7 +32,7 @@ pub(crate) fn apply_filter(
                 let path_str = item.source_path.to_string_lossy();
                 !excluded.iter().any(|e| {
                     // Match against full source path or just the name
-                    path_str == e.as_ref() || item.id.name == *e
+                    crate::target::paths_equivalent(&path_str, e.as_ref()) || item.id.name == *e
                 })
             })
             .cloned()
@@ -172,6 +172,37 @@ mod tests {
             tree.path(),
         )
         .unwrap();
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].id.name, "coder");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn filter_exclude_path_matches_mixed_separators_on_windows() {
+        let tree = make_source_tree(&[("coder.md", "# coder")], &[]);
+        let discovered = discover::discover_source(tree.path(), None).unwrap();
+        let filtered = apply_filter(
+            &discovered,
+            &FilterMode::Exclude(vec![r"agents\coder.md".into()]),
+            tree.path(),
+        )
+        .unwrap();
+
+        assert!(filtered.is_empty());
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn filter_exclude_path_preserves_backslash_on_posix() {
+        let tree = make_source_tree(&[("coder.md", "# coder")], &[]);
+        let discovered = discover::discover_source(tree.path(), None).unwrap();
+        let filtered = apply_filter(
+            &discovered,
+            &FilterMode::Exclude(vec![r"agents\coder.md".into()]),
+            tree.path(),
+        )
+        .unwrap();
+
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].id.name, "coder");
     }

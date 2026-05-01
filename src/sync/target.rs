@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use indexmap::IndexMap;
 
 use crate::config::{EffectiveConfig, FilterMode};
+use crate::diagnostic::{DiagnosticCategory, DiagnosticCollector};
 use crate::discover;
 use crate::error::MarsError;
 use crate::hash;
@@ -59,6 +60,15 @@ pub fn build_with_collisions(
     graph: &ResolvedGraph,
     config: &EffectiveConfig,
 ) -> Result<(TargetState, Vec<ExplicitSkillRename>), MarsError> {
+    let mut diag = DiagnosticCollector::new();
+    build_with_collisions_and_diag(graph, config, &mut diag)
+}
+
+pub fn build_with_collisions_and_diag(
+    graph: &ResolvedGraph,
+    config: &EffectiveConfig,
+    diag: &mut DiagnosticCollector,
+) -> Result<(TargetState, Vec<ExplicitSkillRename>), MarsError> {
     let mut items: IndexMap<DestPath, TargetItem> = IndexMap::new();
     let mut explicit_skill_renames = Vec::new();
 
@@ -108,6 +118,16 @@ pub fn build_with_collisions(
 
             let (dest_name, dest_path) =
                 apply_item_rename(item.id.kind, &item.id.name, &renames, source_name)?;
+            if item.id.kind == ItemKind::Agent {
+                if let Err(message) = crate::target::validate_agent_filename(dest_name.as_str()) {
+                    diag.error_with_category(
+                        "invalid-agent-filename",
+                        format!("{message}; skipping agent from source `{source_name}`"),
+                        DiagnosticCategory::Validation,
+                    );
+                    continue;
+                }
+            }
             if item.id.kind == ItemKind::Skill && dest_name != item.id.name {
                 explicit_skill_renames.push(ExplicitSkillRename {
                     original_name: item.id.name.clone(),
@@ -442,6 +462,26 @@ mod tests {
         assert_eq!(target.items.len(), 2);
         assert!(target.items.contains_key("agents/coder.md"));
         assert!(target.items.contains_key("skills/planning"));
+    }
+
+    #[test]
+    fn invalid_windows_agent_filename_emits_diagnostic_and_skips() {
+        let tree = make_source_tree(&[("bad:name.md", "# bad"), ("coder.md", "# coder")], &[]);
+        let (graph, config) = make_graph_and_config(vec![(
+            "base",
+            &tree,
+            Some("https://github.com/org/base"),
+            FilterMode::All,
+        )]);
+        let mut diag = DiagnosticCollector::new();
+
+        let (target, _) = build_with_collisions_and_diag(&graph, &config, &mut diag).unwrap();
+        let diagnostics = diag.drain();
+
+        assert!(!target.items.contains_key("agents/bad:name.md"));
+        assert!(target.items.contains_key("agents/coder.md"));
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].code, "invalid-agent-filename");
     }
 
     #[test]
