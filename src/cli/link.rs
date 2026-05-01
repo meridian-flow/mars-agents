@@ -77,8 +77,7 @@ fn link_target(ctx: &super::MarsContext, target_name: &str, json: bool) -> Resul
     let lock = crate::lock::load(&ctx.project_root)?;
     let outcomes = lock_items_as_sync_outcomes(&lock);
     let previous_managed_paths = lock
-        .items
-        .keys()
+        .all_output_dest_paths()
         .map(|dest_path| dest_path.to_string())
         .collect::<HashSet<String>>();
 
@@ -207,18 +206,18 @@ fn normalize_target_name(target: &str) -> Result<String, MarsError> {
 }
 
 fn lock_items_as_sync_outcomes(lock: &LockFile) -> Vec<ActionOutcome> {
-    lock.items
-        .values()
-        .map(|item| ActionOutcome {
+    lock.flat_items()
+        .into_iter()
+        .map(|(dest_path, item)| ActionOutcome {
             item_id: ItemId {
                 kind: item.kind,
-                name: item_name_from_dest_path(&item.dest_path, item.kind),
+                name: item_name_from_dest_path(&dest_path, item.kind),
             },
             action: ActionTaken::Skipped,
-            dest_path: item.dest_path.clone(),
-            source_name: item.source.clone(),
+            dest_path,
+            source_name: item.source,
             source_checksum: None,
-            installed_checksum: Some(item.installed_checksum.clone()),
+            installed_checksum: Some(item.installed_checksum),
         })
         .collect()
 }

@@ -67,7 +67,7 @@ pub fn run(args: &AdoptArgs, ctx: &MarsContext, json: bool) -> Result<i32, MarsE
             ),
         }
     })?;
-    if lock.items.contains_key(&target_dest) {
+    if lock.contains_dest_path(&target_dest) {
         return Err(MarsError::InvalidRequest {
             message: format!(
                 "{source_display} is already managed by Mars (target `{target_name}` item `{}`)",

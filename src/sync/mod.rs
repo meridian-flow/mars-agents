@@ -301,7 +301,7 @@ pub(crate) fn build_target(
         }
 
         let disk_path = dest_path.resolve(managed_root);
-        if !resolved.loaded.old_lock.items.contains_key(&dest_path)
+        if !resolved.loaded.old_lock.contains_dest_path(&dest_path)
             && disk_path.symlink_metadata().is_ok()
         {
             diag.warn(
@@ -507,8 +507,7 @@ pub(crate) fn sync_targets(
         .resolved
         .loaded
         .old_lock
-        .items
-        .keys()
+        .all_output_dest_paths()
         .map(|dest_path| dest_path.to_string())
         .collect::<HashSet<String>>();
 
@@ -1612,8 +1611,8 @@ mod tests {
         // Build lock
         let new_lock = crate::lock::build(&graph, &result, &lock).unwrap();
         assert_eq!(new_lock.items.len(), 2);
-        assert!(new_lock.items.contains_key("agents/coder.md"));
-        assert!(new_lock.items.contains_key("skills/planning"));
+        assert!(new_lock.items.contains_key("agent/coder"));
+        assert!(new_lock.items.contains_key("skill/planning"));
     }
 
     #[test]
@@ -1938,12 +1937,12 @@ mod tests {
         // Verify lock file exists and is valid
         let reloaded = crate::lock::load(fixture.project_root()).unwrap();
         assert_eq!(reloaded.items.len(), 1);
-        assert!(reloaded.items.contains_key("agents/coder.md"));
+        assert!(reloaded.items.contains_key("agent/coder"));
 
-        let item = &reloaded.items["agents/coder.md"];
+        let item = &reloaded.items["agent/coder"];
         assert_eq!(item.kind, ItemKind::Agent);
         assert!(!item.source_checksum.is_empty());
-        assert!(!item.installed_checksum.is_empty());
+        assert!(!item.outputs[0].installed_checksum.is_empty());
     }
 
     #[test]

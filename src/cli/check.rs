@@ -307,10 +307,10 @@ fn dependency_skills_from_lock(base: &Path) -> HashSet<String> {
         return HashSet::new();
     };
 
-    lock.items
-        .values()
-        .filter(|item| item.kind == crate::lock::ItemKind::Skill)
-        .filter_map(|item| skill_name_from_dest_path(item.dest_path.as_str()))
+    lock.flat_items()
+        .into_iter()
+        .filter(|(_, item)| item.kind == crate::lock::ItemKind::Skill)
+        .filter_map(|(dest_path, _)| skill_name_from_dest_path(dest_path.as_str()))
         .collect()
 }
 
@@ -328,7 +328,7 @@ fn skill_name_from_dest_path(dest_path: &str) -> Option<String> {
 mod tests {
     use std::path::Path;
 
-    use crate::lock::{ItemKind, LockFile, LockedItem};
+    use crate::lock::{ItemKind, LockFile, LockedItemV2, OutputRecord};
     use crate::types::{ContentHash, DestPath, SourceName};
     use tempfile::TempDir;
 
@@ -348,15 +348,19 @@ mod tests {
     fn write_lock_skill(path: &Path, skill_name: &str) {
         let mut lock = LockFile::empty();
         let dest_path = DestPath::from(format!("skills/{skill_name}"));
+        let key = format!("skill/{skill_name}");
         lock.items.insert(
-            dest_path.clone(),
-            LockedItem {
+            key,
+            LockedItemV2 {
                 source: SourceName::from("dep-source"),
                 kind: ItemKind::Skill,
                 version: None,
                 source_checksum: ContentHash::from("source-hash"),
-                installed_checksum: ContentHash::from("installed-hash"),
-                dest_path,
+                outputs: vec![OutputRecord {
+                    target_root: ".mars".to_string(),
+                    dest_path,
+                    installed_checksum: ContentHash::from("installed-hash"),
+                }],
             },
         );
         crate::lock::write(path, &lock).unwrap();

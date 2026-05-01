@@ -28,14 +28,16 @@ pub fn run(args: &RenameArgs, ctx: &super::MarsContext, json: bool) -> Result<i3
         source_name: "rename".to_string(),
         message: format!("invalid destination path `{}`: {e}", args.to),
     })?;
-    if !lock.items.contains_key(&from_dest) {
+    if !lock.contains_dest_path(&from_dest) {
         return Err(MarsError::Source {
             source_name: "rename".to_string(),
             message: format!("`{}` is not a managed item", args.from),
         });
     }
 
-    let locked_item = &lock.items[&from_dest];
+    let locked_item = lock
+        .find_by_dest_path(&from_dest)
+        .expect("checked above: dest_path exists in lock");
     let request = SyncRequest {
         resolution: ResolutionMode::Normal,
         mutation: Some(ConfigMutation::SetRename {

@@ -419,8 +419,8 @@ pub fn prune_orphans(
 ) -> Result<Vec<ActionOutcome>, MarsError> {
     let mut outcomes = Vec::new();
 
-    for (dest_path_str, locked_item) in &lock.items {
-        if !target.items.contains_key(dest_path_str) {
+    for (dest_path_str, locked_item) in lock.flat_items() {
+        if !target.items.contains_key(&dest_path_str) {
             let dest = dest_path_str.resolve(root);
             if dest.exists() {
                 fs_ops::safe_remove(&dest)?;
@@ -431,8 +431,8 @@ pub fn prune_orphans(
                     name: ItemName::from(dest_path_str.item_name(locked_item.kind)),
                 },
                 action: ActionTaken::Removed,
-                dest_path: dest_path_str.clone(),
-                source_name: locked_item.source.clone(),
+                dest_path: dest_path_str,
+                source_name: locked_item.source,
                 source_checksum: None,
                 installed_checksum: None,
             });
@@ -446,7 +446,7 @@ pub fn prune_orphans(
 mod tests {
     use super::*;
     use crate::hash;
-    use crate::lock::{ItemId, ItemKind, LockedItem};
+    use crate::lock::{ItemId, ItemKind, LockedItem, LockedItemV2, OutputRecord};
     use crate::sync::plan::{PlannedAction, SyncPlan};
     use crate::sync::target::TargetItem;
     use std::fs;
@@ -906,18 +906,21 @@ mod tests {
 
         let mut lock_items = indexmap::IndexMap::new();
         lock_items.insert(
-            "agents/old.md".into(),
-            LockedItem {
+            "agent/old".to_string(),
+            crate::lock::LockedItemV2 {
                 source: "old-source".into(),
                 kind: ItemKind::Agent,
                 version: None,
                 source_checksum: "sha256:aaa".into(),
-                installed_checksum: "sha256:bbb".into(),
-                dest_path: "agents/old.md".into(),
+                outputs: vec![crate::lock::OutputRecord {
+                    target_root: ".mars".to_string(),
+                    dest_path: "agents/old.md".into(),
+                    installed_checksum: "sha256:bbb".into(),
+                }],
             },
         );
         let lock = crate::lock::LockFile {
-            version: 1,
+            version: 2,
             dependencies: indexmap::IndexMap::new(),
             items: lock_items,
         };

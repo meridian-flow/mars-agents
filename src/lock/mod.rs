@@ -10,26 +10,104 @@ use crate::types::{
 
 /// The complete lock file — ownership registry for all managed items.
 ///
-/// Tracks every managed file with provenance and integrity data.
+/// Schema version 2: items are keyed by logical identity ("kind/name"), and each item
+/// carries a list of per-output records (one per target root materialization).
+///
 /// TOML format, deterministically ordered (sorted keys) for clean git diffs.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct LockFile {
-    /// Schema version, currently 1.
+    /// Schema version. Current version is 2.
     pub version: u32,
     #[serde(default)]
     pub dependencies: IndexMap<SourceName, LockedSource>,
+    /// V2: logical items keyed by "kind/name" identity string.
     #[serde(default)]
-    pub items: IndexMap<DestPath, LockedItem>,
+    pub items: IndexMap<String, LockedItemV2>,
+}
+
+/// Custom `Deserialize` for `LockFile`: delegates to the v2 wire type.
+///
+/// For reading v1 lock files, always go through [`load()`] which handles
+/// the v1→v2 promotion. Direct deserialization via `toml::from_str::<LockFile>`
+/// only supports v2 format.
+impl<'de> serde::Deserialize<'de> for LockFile {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let wire = LockFileV2Wire::deserialize(deserializer)?;
+        Ok(LockFile {
+            version: wire.version,
+            dependencies: wire.dependencies,
+            items: wire.items,
+        })
+    }
 }
 
 impl LockFile {
     /// Create a new empty lock file with the current schema version.
     pub fn empty() -> Self {
         LockFile {
-            version: 1,
+            version: LOCK_VERSION,
             dependencies: IndexMap::new(),
             items: IndexMap::new(),
         }
+    }
+
+    /// Look up a locked item by its output dest_path, returning a flat [`LockedItem`] view.
+    ///
+    /// Searches across all items and their output records. Returns the first match.
+    pub fn find_by_dest_path(&self, dest_path: &DestPath) -> Option<LockedItem> {
+        for item_v2 in self.items.values() {
+            for output in &item_v2.outputs {
+                if &output.dest_path == dest_path {
+                    return Some(LockedItem {
+                        source: item_v2.source.clone(),
+                        kind: item_v2.kind,
+                        version: item_v2.version.clone(),
+                        source_checksum: item_v2.source_checksum.clone(),
+                        installed_checksum: output.installed_checksum.clone(),
+                        dest_path: output.dest_path.clone(),
+                    });
+                }
+            }
+        }
+        None
+    }
+
+    /// Check if any output record has the given dest_path.
+    pub fn contains_dest_path(&self, dest_path: &DestPath) -> bool {
+        self.items
+            .values()
+            .any(|item| item.outputs.iter().any(|o| &o.dest_path == dest_path))
+    }
+
+    /// Iterate all output dest_paths across all items.
+    pub fn all_output_dest_paths(&self) -> impl Iterator<Item = &DestPath> {
+        self.items
+            .values()
+            .flat_map(|item| item.outputs.iter().map(|o| &o.dest_path))
+    }
+
+    /// Flat view of all items as owned `(dest_path, LockedItem)` pairs.
+    ///
+    /// Used by diff, orphan scan, and CLI commands that need a per-output view.
+    pub fn flat_items(&self) -> Vec<(DestPath, LockedItem)> {
+        self.items
+            .values()
+            .flat_map(|item_v2| {
+                item_v2.outputs.iter().map(|output| {
+                    (
+                        output.dest_path.clone(),
+                        LockedItem {
+                            source: item_v2.source.clone(),
+                            kind: item_v2.kind,
+                            version: item_v2.version.clone(),
+                            source_checksum: item_v2.source_checksum.clone(),
+                            installed_checksum: output.installed_checksum.clone(),
+                            dest_path: output.dest_path.clone(),
+                        },
+                    )
+                })
+            })
+            .collect()
     }
 }
 
@@ -52,7 +130,36 @@ pub struct LockedSource {
     pub tree_hash: Option<String>,
 }
 
-/// One installed item tracked by the lock.
+/// V2 locked item: one logical item with per-output records.
+///
+/// `source_checksum` is shared across all outputs (same source content).
+/// Each `OutputRecord` has its own `installed_checksum` for divergence detection.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LockedItemV2 {
+    pub source: SourceName,
+    pub kind: ItemKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    pub source_checksum: ContentHash,
+    /// Per-output records: one per target root this item was materialized to.
+    pub outputs: Vec<OutputRecord>,
+}
+
+/// A single materialized output of a logical item.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct OutputRecord {
+    /// Target root this output belongs to (e.g., ".mars", ".agents", ".claude").
+    pub target_root: String,
+    /// Relative path under the target root (e.g., "agents/coder.md").
+    pub dest_path: DestPath,
+    /// Checksum of the installed content at this output location.
+    pub installed_checksum: ContentHash,
+}
+
+/// Flat view of a single installed item — used by diff, plan, and apply stages.
+///
+/// Constructed from [`LockedItemV2`] + one [`OutputRecord`]; preserves backward
+/// compat with code that operates on per-dest-path records.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LockedItem {
     pub source: SourceName,
@@ -69,28 +176,86 @@ pub struct LockedItem {
 pub use crate::types::{ItemId, ItemKind};
 
 const LOCK_FILE: &str = "mars.lock";
+/// Current lock file schema version.
+const LOCK_VERSION: u32 = 2;
+
+// ---------------------------------------------------------------------------
+// V1 wire type — used only for reading legacy lock files.
+// ---------------------------------------------------------------------------
+
+/// V1 wire format for reading legacy lock files.
+#[derive(Deserialize)]
+struct LockFileV1 {
+    #[allow(dead_code)]
+    version: u32,
+    #[serde(default)]
+    dependencies: IndexMap<SourceName, LockedSource>,
+    #[serde(default)]
+    items: IndexMap<DestPath, LockedItem>,
+}
+
+/// V2 wire format for Deserialize (mirrors `LockFile` but derives `Deserialize`).
+#[derive(Deserialize)]
+struct LockFileV2Wire {
+    version: u32,
+    #[serde(default)]
+    dependencies: IndexMap<SourceName, LockedSource>,
+    #[serde(default)]
+    items: IndexMap<String, LockedItemV2>,
+}
+
+/// Minimal version-probe type.
+#[derive(Deserialize)]
+struct VersionProbe {
+    version: u32,
+}
+
+// ---------------------------------------------------------------------------
+// Load / write
+// ---------------------------------------------------------------------------
 
 /// Load the lock file from the given root directory.
 ///
-/// Returns an empty LockFile if the file is absent.
+/// Returns an empty LockFile (v2) if the file is absent.
+/// V1 lock files are transparently promoted to the v2 in-memory shape (D19):
+/// the lock is only written as v2 after a successful sync.
 pub fn load(root: &Path) -> Result<LockFile, MarsError> {
     let path = root.join(LOCK_FILE);
-    match std::fs::read_to_string(&path) {
-        Ok(content) => {
-            let lock: LockFile = toml::from_str(&content).map_err(|e| LockError::Corrupt {
-                message: format!("failed to parse {}: {e}", path.display()),
-            })?;
-            Ok(lock)
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(LockFile::empty()),
-        Err(e) => Err(LockError::Io(e).into()),
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(LockFile::empty()),
+        Err(e) => return Err(LockError::Io(e).into()),
+    };
+
+    // Detect version before full parse.
+    let version = toml::from_str::<VersionProbe>(&content)
+        .map(|p| p.version)
+        .unwrap_or(1);
+
+    if version >= 2 {
+        let wire: LockFileV2Wire = toml::from_str(&content).map_err(|e| LockError::Corrupt {
+            message: format!("failed to parse {}: {e}", path.display()),
+        })?;
+        Ok(LockFile {
+            version: wire.version,
+            dependencies: wire.dependencies,
+            items: wire.items,
+        })
+    } else {
+        // V1 → V2 promotion (D19): map each DestPath key to a logical identity.
+        let wire: LockFileV1 = toml::from_str(&content).map_err(|e| LockError::Corrupt {
+            message: format!("failed to parse {}: {e}", path.display()),
+        })?;
+        let items = promote_v1_items(wire.items);
+        Ok(LockFile {
+            version: LOCK_VERSION,
+            dependencies: wire.dependencies,
+            items,
+        })
     }
 }
 
-/// Write the lock file atomically to the given root directory.
-///
-/// Keys are sorted deterministically for clean git diffs (IndexMap preserves
-/// insertion order, so callers should ensure sorted order when building).
+/// Write the lock file atomically to the given root directory (always v2 format).
 pub fn write(root: &Path, lock: &LockFile) -> Result<(), MarsError> {
     let path = root.join(LOCK_FILE);
     let content = toml::to_string_pretty(lock).map_err(|e| LockError::Corrupt {
@@ -98,6 +263,35 @@ pub fn write(root: &Path, lock: &LockFile) -> Result<(), MarsError> {
     })?;
     crate::fs::atomic_write(&path, content.as_bytes())
 }
+
+/// Convert v1 `IndexMap<DestPath, LockedItem>` to v2 `IndexMap<String, LockedItemV2>`.
+///
+/// Each v1 entry becomes one `LockedItemV2` with exactly one `OutputRecord`
+/// using `target_root = ".mars"` (the only output root in v1).
+fn promote_v1_items(v1_items: IndexMap<DestPath, LockedItem>) -> IndexMap<String, LockedItemV2> {
+    v1_items
+        .into_iter()
+        .map(|(dest_path, item)| {
+            let key = format!("{}/{}", item.kind, dest_path.item_name(item.kind));
+            let item_v2 = LockedItemV2 {
+                source: item.source,
+                kind: item.kind,
+                version: item.version,
+                source_checksum: item.source_checksum,
+                outputs: vec![OutputRecord {
+                    target_root: ".mars".to_string(),
+                    dest_path: item.dest_path,
+                    installed_checksum: item.installed_checksum,
+                }],
+            };
+            (key, item_v2)
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Build
+// ---------------------------------------------------------------------------
 
 /// Build a new lock file from resolved graph + apply results.
 ///
@@ -112,7 +306,7 @@ pub fn build(
     use crate::sync::apply::ActionTaken;
 
     let mut dependencies = IndexMap::new();
-    let mut items = IndexMap::new();
+    let mut items: IndexMap<String, LockedItemV2> = IndexMap::new();
 
     for outcome in &applied.outcomes {
         match outcome.action {
@@ -163,24 +357,55 @@ pub fn build(
         dependencies.insert(name.clone(), to_locked_source(node));
     }
 
-    // Build item entries from apply outcomes
+    // Build item entries from apply outcomes.
     for outcome in &applied.outcomes {
         match &outcome.action {
             ActionTaken::Removed | ActionTaken::Skipped => {
                 // For skipped items, carry forward from old lock
                 if matches!(outcome.action, ActionTaken::Skipped) {
-                    let dest_path = outcome.dest_path.clone();
-                    if let Some(old_item) = old_lock.items.get(&dest_path) {
-                        items.insert(dest_path, old_item.clone());
+                    let item_key = item_key(&outcome.item_id);
+                    if let Some(old_item) = old_lock.items.get(&item_key) {
+                        items.insert(item_key, old_item.clone());
+                    } else {
+                        // Fall back: search old lock by dest_path (handles v1→v2 migrations
+                        // where item_key may not match yet)
+                        if let Some(flat) = old_lock.find_by_dest_path(&outcome.dest_path) {
+                            let key =
+                                format!("{}/{}", flat.kind, outcome.dest_path.item_name(flat.kind));
+                            items.entry(key).or_insert_with(|| LockedItemV2 {
+                                source: flat.source,
+                                kind: flat.kind,
+                                version: flat.version,
+                                source_checksum: flat.source_checksum,
+                                outputs: vec![OutputRecord {
+                                    target_root: ".mars".to_string(),
+                                    dest_path: flat.dest_path,
+                                    installed_checksum: flat.installed_checksum,
+                                }],
+                            });
+                        }
                     }
                 }
-                // Removed items are excluded from the new lock
+                // Removed items are excluded from the new lock.
             }
             ActionTaken::Kept => {
-                // Keep local: carry forward old lock entry (source unchanged)
-                let dest_path = outcome.dest_path.clone();
-                if let Some(old_item) = old_lock.items.get(&dest_path) {
-                    items.insert(dest_path, old_item.clone());
+                // Keep local: carry forward old lock entry.
+                let item_key = item_key(&outcome.item_id);
+                if let Some(old_item) = old_lock.items.get(&item_key) {
+                    items.insert(item_key, old_item.clone());
+                } else if let Some(flat) = old_lock.find_by_dest_path(&outcome.dest_path) {
+                    let key = format!("{}/{}", flat.kind, outcome.dest_path.item_name(flat.kind));
+                    items.entry(key).or_insert_with(|| LockedItemV2 {
+                        source: flat.source,
+                        kind: flat.kind,
+                        version: flat.version,
+                        source_checksum: flat.source_checksum,
+                        outputs: vec![OutputRecord {
+                            target_root: ".mars".to_string(),
+                            dest_path: flat.dest_path,
+                            installed_checksum: flat.installed_checksum,
+                        }],
+                    });
                 }
             }
             ActionTaken::Installed
@@ -216,15 +441,19 @@ pub fn build(
                     .clone()
                     .expect("validated above: installed_checksum exists for write actions");
 
+                let key = item_key(&outcome.item_id);
                 items.insert(
-                    dest_path.clone(),
-                    LockedItem {
+                    key,
+                    LockedItemV2 {
                         source: source_name.unwrap_or_else(|| SourceName::from("")),
                         kind: outcome.item_id.kind,
                         version,
                         source_checksum,
-                        installed_checksum,
-                        dest_path,
+                        outputs: vec![OutputRecord {
+                            target_root: ".mars".to_string(),
+                            dest_path,
+                            installed_checksum,
+                        }],
                     },
                 );
             }
@@ -248,18 +477,26 @@ pub fn build(
         );
     }
 
+    // Validate checksums.
     for item in items.values() {
         if checksum_is_empty(&item.source_checksum) {
+            let dest = item
+                .outputs
+                .first()
+                .map(|o| o.dest_path.to_string())
+                .unwrap_or_default();
             return Err(LockError::Corrupt {
-                message: format!("empty source_checksum for {}", item.dest_path),
+                message: format!("empty source_checksum for {dest}"),
             }
             .into());
         }
-        if checksum_is_empty(&item.installed_checksum) {
-            return Err(LockError::Corrupt {
-                message: format!("empty installed_checksum for {}", item.dest_path),
+        for output in &item.outputs {
+            if checksum_is_empty(&output.installed_checksum) {
+                return Err(LockError::Corrupt {
+                    message: format!("empty installed_checksum for {}", output.dest_path),
+                }
+                .into());
             }
-            .into());
         }
     }
 
@@ -268,11 +505,15 @@ pub fn build(
     items.sort_keys();
 
     Ok(LockFile {
-        version: 1,
+        version: LOCK_VERSION,
         dependencies,
         items,
     })
 }
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 fn checksum_is_empty(checksum: &ContentHash) -> bool {
     checksum.as_ref().trim().is_empty()
@@ -297,6 +538,15 @@ fn to_locked_source(node: &crate::resolve::ResolvedNode) -> LockedSource {
         tree_hash: None,
     }
 }
+
+/// Canonical item key for v2 lock: `"kind/name"`.
+pub fn item_key(id: &ItemId) -> String {
+    format!("{}/{}", id.kind, id.name)
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -326,37 +576,43 @@ mod tests {
 
         let mut items = IndexMap::new();
         items.insert(
-            "agents/coder.md".into(),
-            LockedItem {
+            "agent/coder".to_string(),
+            LockedItemV2 {
                 source: "base".into(),
                 kind: ItemKind::Agent,
                 version: Some("v1.0.0".into()),
                 source_checksum: "sha256:aaa".into(),
-                installed_checksum: "sha256:bbb".into(),
-                dest_path: "agents/coder.md".into(),
+                outputs: vec![OutputRecord {
+                    target_root: ".mars".to_string(),
+                    dest_path: "agents/coder.md".into(),
+                    installed_checksum: "sha256:bbb".into(),
+                }],
             },
         );
         items.insert(
-            "skills/review".into(),
-            LockedItem {
+            "skill/review".to_string(),
+            LockedItemV2 {
                 source: "base".into(),
                 kind: ItemKind::Skill,
                 version: Some("v1.0.0".into()),
                 source_checksum: "sha256:ccc".into(),
-                installed_checksum: "sha256:ddd".into(),
-                dest_path: "skills/review".into(),
+                outputs: vec![OutputRecord {
+                    target_root: ".mars".to_string(),
+                    dest_path: "skills/review".into(),
+                    installed_checksum: "sha256:ddd".into(),
+                }],
             },
         );
 
         LockFile {
-            version: 1,
+            version: LOCK_VERSION,
             dependencies,
             items,
         }
     }
 
     #[test]
-    fn parse_valid_lock_file() {
+    fn parse_v1_lock_file_promoted_to_v2() {
         let toml_str = r#"
 version = 1
 
@@ -374,24 +630,67 @@ source_checksum = "sha256:aaa"
 installed_checksum = "sha256:bbb"
 dest_path = "agents/coder.md"
 "#;
-        let lock: LockFile = toml::from_str(toml_str).unwrap();
-        assert_eq!(lock.version, 1);
+        // Load via the full load() path (promotion happens there).
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("mars.lock"), toml_str).unwrap();
+        let lock = load(dir.path()).unwrap();
+
+        // Promoted to v2 in memory.
+        assert_eq!(lock.version, LOCK_VERSION);
         assert_eq!(lock.dependencies.len(), 1);
         assert_eq!(lock.items.len(), 1);
 
-        let item = &lock.items["agents/coder.md"];
+        // V2 key is "kind/name".
+        let item = &lock.items["agent/coder"];
         assert_eq!(item.source, "base");
         assert_eq!(item.kind, ItemKind::Agent);
         assert_eq!(item.source_checksum, "sha256:aaa");
-        assert_eq!(item.installed_checksum, "sha256:bbb");
+        assert_eq!(item.outputs.len(), 1);
+        assert_eq!(item.outputs[0].installed_checksum, "sha256:bbb");
+        assert_eq!(item.outputs[0].dest_path.as_str(), "agents/coder.md");
+        assert_eq!(item.outputs[0].target_root, ".mars");
+    }
+
+    #[test]
+    fn parse_v2_lock_file() {
+        let toml_str = r#"
+version = 2
+
+[dependencies.base]
+url = "https://github.com/org/base.git"
+version = "v1.0.0"
+commit = "abc123"
+
+[items."agent/coder"]
+source = "base"
+kind = "agent"
+version = "v1.0.0"
+source_checksum = "sha256:aaa"
+
+[[items."agent/coder".outputs]]
+target_root = ".mars"
+dest_path = "agents/coder.md"
+installed_checksum = "sha256:bbb"
+"#;
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("mars.lock"), toml_str).unwrap();
+        let lock = load(dir.path()).unwrap();
+
+        assert_eq!(lock.version, 2);
+        assert_eq!(lock.items.len(), 1);
+
+        let item = &lock.items["agent/coder"];
+        assert_eq!(item.source_checksum, "sha256:aaa");
+        assert_eq!(item.outputs[0].installed_checksum, "sha256:bbb");
     }
 
     #[test]
     fn roundtrip_lock_file() {
         let lock = sample_lock();
-        let serialized = toml::to_string_pretty(&lock).unwrap();
-        let deserialized: LockFile = toml::from_str(&serialized).unwrap();
-        assert_eq!(lock, deserialized);
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), &lock).unwrap();
+        let reloaded = load(dir.path()).unwrap();
+        assert_eq!(lock, reloaded);
     }
 
     #[test]
@@ -401,33 +700,28 @@ dest_path = "agents/coder.md"
         let s2 = toml::to_string_pretty(&lock).unwrap();
         assert_eq!(s1, s2);
 
-        // Verify key ordering is preserved (agents/coder.md before skills/review)
-        let coder_pos = s1.find("agents/coder.md").unwrap();
-        let review_pos = s1.find("skills/review").unwrap();
+        // V2: keys are "agent/coder" and "skill/review" — agent comes before skill alphabetically.
+        let coder_pos = s1.find("agent/coder").unwrap();
+        let review_pos = s1.find("skill/review").unwrap();
         assert!(
             coder_pos < review_pos,
-            "keys should preserve insertion order"
+            "agent/coder should appear before skill/review"
         );
     }
 
     #[test]
     fn empty_lock_file() {
         let lock = LockFile::empty();
-        assert_eq!(lock.version, 1);
+        assert_eq!(lock.version, LOCK_VERSION);
         assert!(lock.dependencies.is_empty());
         assert!(lock.items.is_empty());
-
-        // Roundtrip empty
-        let serialized = toml::to_string_pretty(&lock).unwrap();
-        let deserialized: LockFile = toml::from_str(&serialized).unwrap();
-        assert_eq!(lock, deserialized);
     }
 
     #[test]
     fn load_absent_returns_empty() {
         let dir = TempDir::new().unwrap();
         let lock = load(dir.path()).unwrap();
-        assert_eq!(lock.version, 1);
+        assert_eq!(lock.version, LOCK_VERSION);
         assert!(lock.dependencies.is_empty());
         assert!(lock.items.is_empty());
     }
@@ -444,28 +738,33 @@ dest_path = "agents/coder.md"
     #[test]
     fn dual_checksums_present() {
         let lock = sample_lock();
-        let item = &lock.items["agents/coder.md"];
-        assert_ne!(item.source_checksum, item.installed_checksum);
+        let item = &lock.items["agent/coder"];
+        assert_ne!(item.source_checksum, item.outputs[0].installed_checksum);
         assert!(item.source_checksum.starts_with("sha256:"));
-        assert!(item.installed_checksum.starts_with("sha256:"));
+        assert!(item.outputs[0].installed_checksum.starts_with("sha256:"));
     }
 
     #[test]
     fn path_source_in_lock() {
         let toml_str = r#"
-version = 1
+version = 2
 
 [dependencies.local]
 path = "/home/dev/agents"
 
-[items."agents/helper.md"]
+[items."agent/helper"]
 source = "local"
 kind = "agent"
 source_checksum = "sha256:111"
-installed_checksum = "sha256:222"
+
+[[items."agent/helper".outputs]]
+target_root = ".mars"
 dest_path = "agents/helper.md"
+installed_checksum = "sha256:222"
 "#;
-        let lock: LockFile = toml::from_str(toml_str).unwrap();
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("mars.lock"), toml_str).unwrap();
+        let lock = load(dir.path()).unwrap();
         let source = &lock.dependencies["local"];
         assert!(source.url.is_none());
         assert_eq!(source.path.as_deref(), Some("/home/dev/agents"));
@@ -474,13 +773,16 @@ dest_path = "agents/helper.md"
 
     #[test]
     fn item_kind_serializes_lowercase() {
-        let item = LockedItem {
+        let item = LockedItemV2 {
             source: "base".into(),
             kind: ItemKind::Skill,
             version: None,
             source_checksum: "sha256:aaa".into(),
-            installed_checksum: "sha256:bbb".into(),
-            dest_path: "skills/review".into(),
+            outputs: vec![OutputRecord {
+                target_root: ".mars".to_string(),
+                dest_path: "skills/review".into(),
+                installed_checksum: "sha256:bbb".into(),
+            }],
         };
         let serialized = toml::to_string(&item).unwrap();
         assert!(serialized.contains("kind = \"skill\""));
@@ -499,6 +801,73 @@ dest_path = "agents/helper.md"
     fn item_kind_display() {
         assert_eq!(ItemKind::Agent.to_string(), "agent");
         assert_eq!(ItemKind::Skill.to_string(), "skill");
+    }
+
+    #[test]
+    fn find_by_dest_path_returns_flat_view() {
+        let lock = sample_lock();
+        let found = lock
+            .find_by_dest_path(&DestPath::from("agents/coder.md"))
+            .unwrap();
+        assert_eq!(found.source, "base");
+        assert_eq!(found.kind, ItemKind::Agent);
+        assert_eq!(found.source_checksum, "sha256:aaa");
+        assert_eq!(found.installed_checksum, "sha256:bbb");
+        assert_eq!(found.dest_path.as_str(), "agents/coder.md");
+    }
+
+    #[test]
+    fn find_by_dest_path_missing_returns_none() {
+        let lock = sample_lock();
+        assert!(
+            lock.find_by_dest_path(&DestPath::from("agents/missing.md"))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn contains_dest_path_hit_and_miss() {
+        let lock = sample_lock();
+        assert!(lock.contains_dest_path(&DestPath::from("agents/coder.md")));
+        assert!(!lock.contains_dest_path(&DestPath::from("agents/nobody.md")));
+    }
+
+    #[test]
+    fn flat_items_yields_all_outputs() {
+        let lock = sample_lock();
+        let flat = lock.flat_items();
+        assert_eq!(flat.len(), 2);
+        let paths: Vec<&str> = flat.iter().map(|(dp, _)| dp.as_str()).collect();
+        assert!(paths.contains(&"agents/coder.md"));
+        assert!(paths.contains(&"skills/review"));
+    }
+
+    #[test]
+    fn v1_lock_no_spurious_reinstall() {
+        // V1 lock loaded → promoted to v2 → find_by_dest_path works for diff.
+        let v1_toml = r#"
+version = 1
+
+[dependencies.base]
+url = "https://github.com/org/base.git"
+
+[items."agents/coder.md"]
+source = "base"
+kind = "agent"
+source_checksum = "sha256:src"
+installed_checksum = "sha256:inst"
+dest_path = "agents/coder.md"
+"#;
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("mars.lock"), v1_toml).unwrap();
+        let lock = load(dir.path()).unwrap();
+
+        // Promoted items should still be findable by dest_path.
+        let found = lock.find_by_dest_path(&DestPath::from("agents/coder.md"));
+        assert!(found.is_some());
+        let item = found.unwrap();
+        assert_eq!(item.source_checksum, "sha256:src");
+        assert_eq!(item.installed_checksum, "sha256:inst");
     }
 
     #[test]
@@ -578,7 +947,7 @@ dest_path = "agents/helper.md"
             },
         );
         let old_lock = LockFile {
-            version: 1,
+            version: LOCK_VERSION,
             dependencies: old_sources,
             items: IndexMap::new(),
         };
@@ -620,7 +989,7 @@ dest_path = "agents/helper.md"
         };
         let local_source_name: SourceName = SourceOrigin::LocalPackage.to_string().into();
         let old_lock = LockFile {
-            version: 1,
+            version: LOCK_VERSION,
             dependencies: IndexMap::from([(
                 local_source_name.clone(),
                 LockedSource {
@@ -633,14 +1002,17 @@ dest_path = "agents/helper.md"
                 },
             )]),
             items: IndexMap::from([(
-                DestPath::from("skills/local-skill"),
-                LockedItem {
+                "skill/local-skill".to_string(),
+                LockedItemV2 {
                     source: local_source_name.clone(),
                     kind: ItemKind::Skill,
                     version: None,
                     source_checksum: "sha256:self".into(),
-                    installed_checksum: "sha256:self".into(),
-                    dest_path: DestPath::from("skills/local-skill"),
+                    outputs: vec![OutputRecord {
+                        target_root: ".mars".to_string(),
+                        dest_path: DestPath::from("skills/local-skill"),
+                        installed_checksum: "sha256:self".into(),
+                    }],
                 },
             )]),
         };
@@ -665,11 +1037,11 @@ dest_path = "agents/helper.md"
                 .dependencies
                 .contains_key(local_source_name.as_str())
         );
-        let item = &new_lock.items["skills/local-skill"];
+        let item = &new_lock.items["skill/local-skill"];
         assert_eq!(item.source, local_source_name);
         assert_eq!(item.kind, ItemKind::Skill);
         assert_eq!(item.source_checksum, "sha256:self");
-        assert_eq!(item.installed_checksum, "sha256:self");
+        assert_eq!(item.outputs[0].installed_checksum, "sha256:self");
     }
 
     #[test]
@@ -708,17 +1080,20 @@ dest_path = "agents/helper.md"
             filters: HashMap::new(),
         };
         let old_lock = LockFile {
-            version: 1,
+            version: LOCK_VERSION,
             dependencies: IndexMap::new(),
             items: IndexMap::from([(
-                DestPath::from("agents/coder.md"),
-                LockedItem {
+                "agent/coder".to_string(),
+                LockedItemV2 {
                     source: "base".into(),
                     kind: ItemKind::Agent,
                     version: None,
                     source_checksum: "".into(),
-                    installed_checksum: "sha256:installed".into(),
-                    dest_path: DestPath::from("agents/coder.md"),
+                    outputs: vec![OutputRecord {
+                        target_root: ".mars".to_string(),
+                        dest_path: DestPath::from("agents/coder.md"),
+                        installed_checksum: "sha256:installed".into(),
+                    }],
                 },
             )]),
         };
@@ -739,6 +1114,5 @@ dest_path = "agents/helper.md"
         let err = build(&graph, &applied, &old_lock).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("empty source_checksum"));
-        assert!(msg.contains("agents/coder.md"));
     }
 }

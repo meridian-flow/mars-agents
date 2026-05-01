@@ -60,7 +60,7 @@ pub fn compute(
 
     // Process each target item
     for (_dest_key, target_item) in &target.items {
-        if let Some(locked_item) = lock.items.get(&target_item.dest_path) {
+        if let Some(locked_item) = lock.find_by_dest_path(&target_item.dest_path) {
             // Item exists in lock — compare checksums
             let source_changed = target_item.source_hash != locked_item.source_checksum
                 || rewritten_installed_checksum(target_item)
@@ -138,10 +138,10 @@ pub fn compute(
     }
 
     // Find orphans: items in lock but not in target
-    for (dest_path, locked_item) in &lock.items {
-        if !target.items.contains_key(dest_path) {
+    for (dest_path, locked_item) in lock.flat_items() {
+        if !target.items.contains_key(&dest_path) {
             items.push(DiffEntry::Orphan {
-                locked: locked_item.clone(),
+                locked: locked_item,
             });
         }
     }
@@ -160,7 +160,7 @@ fn rewritten_installed_checksum(target_item: &TargetItem) -> Option<ContentHash>
 mod tests {
     use super::*;
     use crate::hash;
-    use crate::lock::{ItemId, ItemKind, LockedItem};
+    use crate::lock::{ItemId, ItemKind, LockedItemV2, OutputRecord};
     use crate::types::{ItemName, SourceName};
     use indexmap::IndexMap;
     use std::fs;
@@ -200,12 +200,13 @@ mod tests {
         }
     }
 
-    fn make_locked_item(
+    /// Build a v2 `(key, LockedItemV2)` pair for inserting into `LockFile.items`.
+    fn make_v2_item(
         name: &str,
         kind: ItemKind,
         source_checksum: &str,
         installed_checksum: &str,
-    ) -> LockedItem {
+    ) -> (String, LockedItemV2) {
         let dest_path = match kind {
             ItemKind::Agent => format!("agents/{name}.md"),
             ItemKind::Skill => format!("skills/{name}"),
@@ -213,14 +214,19 @@ mod tests {
             ItemKind::McpServer => format!("mcp/{name}"),
             ItemKind::BootstrapDoc => format!("bootstrap/{name}"),
         };
-        LockedItem {
+        let key = format!("{kind}/{name}");
+        let item = LockedItemV2 {
             source: SourceName::from("test-source"),
             kind,
             version: None,
             source_checksum: ContentHash::from(source_checksum),
-            installed_checksum: ContentHash::from(installed_checksum),
-            dest_path: dest_path.into(),
-        }
+            outputs: vec![OutputRecord {
+                target_root: ".mars".to_string(),
+                dest_path: dest_path.into(),
+                installed_checksum: ContentHash::from(installed_checksum),
+            }],
+        };
+        (key, item)
     }
 
     #[test]
@@ -267,11 +273,11 @@ mod tests {
             items: target_items,
         };
 
-        let locked_item = make_locked_item("coder", ItemKind::Agent, &hash, &hash);
         let mut lock_items = IndexMap::new();
-        lock_items.insert("agents/coder.md".into(), locked_item);
+        let (k, v) = make_v2_item("coder", ItemKind::Agent, &hash, &hash);
+        lock_items.insert(k, v);
         let lock = LockFile {
-            version: 1,
+            version: 2,
             dependencies: IndexMap::new(),
             items: lock_items,
         };
@@ -304,11 +310,11 @@ mod tests {
         };
 
         // Lock has old hash
-        let locked_item = make_locked_item("coder", ItemKind::Agent, &old_hash, &old_hash);
         let mut lock_items = IndexMap::new();
-        lock_items.insert("agents/coder.md".into(), locked_item);
+        let (k, v) = make_v2_item("coder", ItemKind::Agent, &old_hash, &old_hash);
+        lock_items.insert(k, v);
         let lock = LockFile {
-            version: 1,
+            version: 2,
             dependencies: IndexMap::new(),
             items: lock_items,
         };
@@ -341,12 +347,11 @@ mod tests {
         };
 
         // Lock also has original hash
-        let locked_item =
-            make_locked_item("coder", ItemKind::Agent, &original_hash, &original_hash);
         let mut lock_items = IndexMap::new();
-        lock_items.insert("agents/coder.md".into(), locked_item);
+        let (k, v) = make_v2_item("coder", ItemKind::Agent, &original_hash, &original_hash);
+        lock_items.insert(k, v);
         let lock = LockFile {
-            version: 1,
+            version: 2,
             dependencies: IndexMap::new(),
             items: lock_items,
         };
@@ -379,12 +384,11 @@ mod tests {
         };
 
         // Lock has original hash
-        let locked_item =
-            make_locked_item("coder", ItemKind::Agent, &original_hash, &original_hash);
         let mut lock_items = IndexMap::new();
-        lock_items.insert("agents/coder.md".into(), locked_item);
+        let (k, v) = make_v2_item("coder", ItemKind::Agent, &original_hash, &original_hash);
+        lock_items.insert(k, v);
         let lock = LockFile {
-            version: 1,
+            version: 2,
             dependencies: IndexMap::new(),
             items: lock_items,
         };
@@ -404,12 +408,11 @@ mod tests {
         };
 
         // Lock has an item
-        let locked_item =
-            make_locked_item("old-agent", ItemKind::Agent, "sha256:aaa", "sha256:aaa");
         let mut lock_items = IndexMap::new();
-        lock_items.insert("agents/old-agent.md".into(), locked_item);
+        let (k, v) = make_v2_item("old-agent", ItemKind::Agent, "sha256:aaa", "sha256:aaa");
+        lock_items.insert(k, v);
         let lock = LockFile {
-            version: 1,
+            version: 2,
             dependencies: IndexMap::new(),
             items: lock_items,
         };
@@ -446,11 +449,11 @@ mod tests {
         };
 
         // Lock has different source_checksum and installed_checksum
-        let locked_item = make_locked_item("coder", ItemKind::Agent, &source_hash, &installed_hash);
         let mut lock_items = IndexMap::new();
-        lock_items.insert("agents/coder.md".into(), locked_item);
+        let (k, v) = make_v2_item("coder", ItemKind::Agent, &source_hash, &installed_hash);
+        lock_items.insert(k, v);
         let lock = LockFile {
-            version: 1,
+            version: 2,
             dependencies: IndexMap::new(),
             items: lock_items,
         };
@@ -509,20 +512,14 @@ mod tests {
         };
 
         let mut lock_items = IndexMap::new();
-        lock_items.insert(
-            "agents/stable.md".into(),
-            make_locked_item("stable", ItemKind::Agent, &hash_a, &hash_a),
-        );
-        lock_items.insert(
-            "agents/updating.md".into(),
-            make_locked_item("updating", ItemKind::Agent, &hash_b_old, &hash_b_old),
-        );
-        lock_items.insert(
-            "agents/orphan.md".into(),
-            make_locked_item("orphan", ItemKind::Agent, "sha256:xxx", "sha256:xxx"),
-        );
+        let (k, v) = make_v2_item("stable", ItemKind::Agent, &hash_a, &hash_a);
+        lock_items.insert(k, v);
+        let (k, v) = make_v2_item("updating", ItemKind::Agent, &hash_b_old, &hash_b_old);
+        lock_items.insert(k, v);
+        let (k, v) = make_v2_item("orphan", ItemKind::Agent, "sha256:xxx", "sha256:xxx");
+        lock_items.insert(k, v);
         let lock = LockFile {
-            version: 1,
+            version: 2,
             dependencies: IndexMap::new(),
             items: lock_items,
         };
@@ -587,18 +584,21 @@ mod tests {
 
         let mut lock_items = IndexMap::new();
         lock_items.insert(
-            "agents/coder.md".into(),
-            LockedItem {
+            "agent/coder".to_string(),
+            LockedItemV2 {
                 source: "test-source".into(),
                 kind: ItemKind::Agent,
                 version: None,
                 source_checksum: source_hash.clone().into(),
-                installed_checksum: installed_hash.into(),
-                dest_path: "agents/coder.md".into(),
+                outputs: vec![OutputRecord {
+                    target_root: ".mars".to_string(),
+                    dest_path: "agents/coder.md".into(),
+                    installed_checksum: installed_hash.into(),
+                }],
             },
         );
         let lock = LockFile {
-            version: 1,
+            version: 2,
             dependencies: IndexMap::new(),
             items: lock_items,
         };
@@ -652,18 +652,21 @@ mod tests {
 
         let mut lock_items = IndexMap::new();
         lock_items.insert(
-            "agents/coder.md".into(),
-            LockedItem {
+            "agent/coder".to_string(),
+            LockedItemV2 {
                 source: SourceName::from("test-source"),
                 kind: ItemKind::Agent,
                 version: None,
                 source_checksum: source_hash.into(),
-                installed_checksum: old_installed_hash.clone().into(),
-                dest_path: "agents/coder.md".into(),
+                outputs: vec![OutputRecord {
+                    target_root: ".mars".to_string(),
+                    dest_path: "agents/coder.md".into(),
+                    installed_checksum: old_installed_hash.clone().into(),
+                }],
             },
         );
         let lock = LockFile {
-            version: 1,
+            version: 2,
             dependencies: IndexMap::new(),
             items: lock_items,
         };

@@ -197,7 +197,7 @@ pub fn check_unmanaged_collisions(
     let mut collisions = Vec::new();
 
     for (dest_key, target_item) in &target.items {
-        if lock.items.contains_key(dest_key) {
+        if lock.contains_dest_path(dest_key) {
             continue;
         }
 

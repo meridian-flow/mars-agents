@@ -38,10 +38,10 @@ pub fn run(args: &ListArgs, ctx: &super::MarsContext, json: bool) -> Result<i32,
     let mut agents = Vec::new();
     let mut skills = Vec::new();
 
-    for (dest_path, item) in &lock.items {
+    for (dest_path, item) in lock.flat_items() {
         // Filter by source
         if let Some(ref filter_source) = args.source
-            && &item.source != filter_source
+            && item.source != *filter_source
         {
             continue;
         }
@@ -142,9 +142,9 @@ fn run_status(
 ) -> Result<i32, MarsError> {
     let mut entries = Vec::new();
 
-    for (dest_path, item) in &lock.items {
+    for (dest_path, item) in lock.flat_items() {
         if let Some(ref filter_source) = args.source
-            && &item.source != filter_source
+            && item.source != *filter_source
         {
             continue;
         }
@@ -169,7 +169,7 @@ fn run_status(
             "conflicted".to_string()
         } else {
             let disk_hash = hash::compute_hash(&disk_path, item.kind)?;
-            if disk_hash == item.installed_checksum {
+            if disk_hash == item.installed_checksum.as_ref() {
                 "ok".to_string()
             } else {
                 "modified".to_string()

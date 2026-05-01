@@ -39,7 +39,7 @@ pub fn run(args: &ResolveArgs, ctx: &super::MarsContext, json: bool) -> Result<i
             source_name: "resolve".to_string(),
             message: format!("invalid managed item path `{}`: {e}", file.display()),
         })?;
-        if lock.items.contains_key(&rel) {
+        if lock.contains_dest_path(&rel) {
             vec![rel]
         } else {
             return Err(MarsError::Source {
@@ -49,7 +49,7 @@ pub fn run(args: &ResolveArgs, ctx: &super::MarsContext, json: bool) -> Result<i
         }
     } else {
         // Check all items
-        lock.items.keys().cloned().collect()
+        lock.all_output_dest_paths().cloned().collect()
     };
 
     for dest_path_str in &items_to_check {
@@ -64,12 +64,17 @@ pub fn run(args: &ResolveArgs, ctx: &super::MarsContext, json: bool) -> Result<i
             continue;
         }
 
-        // File has no conflict markers — update lock checksums
-        if let Some(item) = lock.items.get_mut(dest_path_str) {
-            let new_hash = hash::compute_hash(&disk_path, item.kind)?;
-            if new_hash != item.installed_checksum {
-                item.installed_checksum = ContentHash::from(new_hash);
-                resolved_files.push(dest_path_str.to_string());
+        // File has no conflict markers — update lock checksums in the matching output record.
+        'outer: for item_v2 in lock.items.values_mut() {
+            for output in &mut item_v2.outputs {
+                if &output.dest_path == dest_path_str {
+                    let new_hash = hash::compute_hash(&disk_path, item_v2.kind)?;
+                    if new_hash != output.installed_checksum {
+                        output.installed_checksum = ContentHash::from(new_hash);
+                        resolved_files.push(dest_path_str.to_string());
+                    }
+                    break 'outer;
+                }
             }
         }
     }

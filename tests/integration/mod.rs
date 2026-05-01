@@ -243,21 +243,21 @@ fn add_second_source_preserves_first_source_items_in_lock() {
     let items = lock["items"].as_table().unwrap();
 
     assert!(
-        items.contains_key("agents/coder.md"),
+        items.contains_key("agent/coder"),
         "expected first source item to remain after second add; lock:\n{lock_content}"
     );
     assert!(
-        items.contains_key("agents/reviewer.md"),
+        items.contains_key("agent/reviewer"),
         "expected second source item in lock; lock:\n{lock_content}"
     );
 
     assert_eq!(
-        items["agents/coder.md"]["source"].as_str(),
+        items["agent/coder"]["source"].as_str(),
         Some("base1"),
         "first source ownership should be preserved"
     );
     assert_eq!(
-        items["agents/reviewer.md"]["source"].as_str(),
+        items["agent/reviewer"]["source"].as_str(),
         Some("base2"),
         "second source ownership should be present"
     );
@@ -1126,7 +1126,7 @@ fn rename_applies_path_mapping_during_sync() {
         lock["items"]
             .as_table()
             .unwrap()
-            .contains_key("agents/coder-renamed.md")
+            .contains_key("agent/coder-renamed")
     );
 }
 
@@ -1547,11 +1547,11 @@ fn full_pipeline_with_local_package_and_custom_target() {
         "lock should retain _self dependency after re-sync: {lock_content_after_resync}"
     );
     assert!(
-        lock_content_after_resync.contains("[items.\"agents/local-agent.md\"]"),
+        lock_content_after_resync.contains("[items.\"agent/local-agent\"]"),
         "lock should retain local _self agent after re-sync: {lock_content_after_resync}"
     );
     assert!(
-        lock_content_after_resync.contains("[items.\"skills/local-skill\"]"),
+        lock_content_after_resync.contains("[items.\"skill/local-skill\"]"),
         "lock should retain local _self skill after re-sync: {lock_content_after_resync}"
     );
 
@@ -1767,7 +1767,7 @@ fn adopt_moves_skill_into_mars_src_and_syncs_targets() {
 
     let lock_content = fs::read_to_string(project.child("mars.lock").path()).unwrap();
     assert!(lock_content.contains("[dependencies._self]"));
-    assert!(lock_content.contains("[items.\"skills/local-skill\"]"));
+    assert!(lock_content.contains("[items.\"skill/local-skill\"]"));
 }
 
 #[test]
@@ -1821,7 +1821,7 @@ fn sync_reads_mars_src_local_items_without_package_section() {
     );
     let lock_content = fs::read_to_string(project.child("mars.lock").path()).unwrap();
     assert!(lock_content.contains("[dependencies._self]"));
-    assert!(lock_content.contains("[items.\"skills/local-only\"]"));
+    assert!(lock_content.contains("[items.\"skill/local-only\"]"));
 }
 
 #[test]
