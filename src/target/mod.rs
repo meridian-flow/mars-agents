@@ -119,6 +119,17 @@ pub trait TargetAdapter: std::fmt::Debug + Send + Sync {
         Ok(Vec::new())
     }
 
+    /// Emit target-specific pre-write diagnostics (e.g., lossiness warnings).
+    ///
+    /// Called unconditionally before `write_config_entries`, even on dry runs.
+    /// Default: no-op — most targets have no pre-write diagnostics.
+    fn emit_pre_write_diagnostics(
+        &self,
+        _entries: &[ConfigEntry],
+        _diag: &mut crate::diagnostic::DiagnosticCollector,
+    ) {
+    }
+
     /// Remove stale config entries from this target's config file.
     ///
     /// `entry_keys` are the `ConfigEntry::key` values to remove.

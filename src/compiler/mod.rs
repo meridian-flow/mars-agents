@@ -19,7 +19,6 @@ pub mod visibility;
 use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 
-use crate::compiler::context::CompileContext;
 use crate::diagnostic::DiagnosticCollector;
 use crate::error::MarsError;
 use crate::model::ReaderIr;
@@ -36,11 +35,6 @@ pub fn compile(
     request: &SyncRequest,
     diag: &mut DiagnosticCollector,
 ) -> Result<SyncReport, MarsError> {
-    // Phase 2+ scaffolding: translation context wired here so the seam exists
-    // when the pipeline is extended to produce per-target output records
-    // (lossiness classification, hook script selection). Unused today.
-    let _compile_ctx = CompileContext::new();
-
     // Phase 3: assign dest paths, handle collisions, rewrite frontmatter refs.
     let targeted = build_target(ctx, ir.resolved, ir.local_items, request, diag)?;
 
@@ -57,17 +51,17 @@ pub fn compile(
 
     // Phase 3.2 / 3.3: Dual-surface compilation — after apply writes agents to
     // .mars/agents/, compile harness-bound agents to their native target directories.
-    if !request.options.dry_run {
+    // Diagnostics run always; file writes are gated on !dry_run.
+    {
         let mars_dir = ctx.project_root.join(".mars");
-        dual_surface_compile(&ctx.project_root, &mars_dir, diag);
+        dual_surface_compile(&ctx.project_root, &mars_dir, request.options.dry_run, diag);
     }
 
     // Phase 5.1 / 5.2 / 5.3: MCP and hooks config-entry compilation.
     // Discovers MCP server and hook items from all packages, validates env refs,
     // detects collisions, and writes per-target config entries via adapters.
-    if !request.options.dry_run {
-        compile_config_entries(ctx, &applied, diag);
-    }
+    // Diagnostics run always; file writes are gated on !dry_run.
+    compile_config_entries(ctx, &applied, request.options.dry_run, diag);
 
     // Phase 6: copy from canonical store to managed target directories.
     let synced = sync_targets(ctx, applied, request, diag);
@@ -92,13 +86,13 @@ pub fn compile(
 fn compile_config_entries(
     ctx: &MarsContext,
     applied: &AppliedState,
+    dry_run: bool,
     diag: &mut DiagnosticCollector,
 ) {
     use crate::compiler::hooks::{discover_hook_items, order_hooks, translate_hooks_for_target};
     use crate::compiler::mcp::{
         check_env_refs, detect_mcp_collisions, discover_mcp_items, lower_for_target,
     };
-    use crate::target::cursor::CursorAdapter;
     use crate::target::{ConfigEntry, HookEntry, McpServerEntry, TargetRegistry};
 
     let graph = &applied.planned.targeted.resolved.graph;
@@ -283,14 +277,24 @@ fn compile_config_entries(
                 let script_path = match &th.hook.item.def.action {
                     crate::compiler::hooks::HookAction::Script { path } => {
                         // Resolve script path relative to the package root the hook came from.
-                        th.hook
+                        let resolved = th.hook
                             .item
                             .package_root
                             .join("hooks")
                             .join(&th.hook.item.def.name)
-                            .join(path)
-                            .to_string_lossy()
-                            .to_string()
+                            .join(path);
+                        // Safety check: resolved path must stay within the package root.
+                        if resolved.strip_prefix(&th.hook.item.package_root).is_err() {
+                            diag.warn(
+                                "hook-path-escape",
+                                format!(
+                                    "hook `{}`: script path `{path}` escapes package root — skipped",
+                                    th.hook.item.def.name
+                                ),
+                            );
+                            return None;
+                        }
+                        resolved.to_string_lossy().to_string()
                     }
                 };
                 Some(ConfigEntry::Hook(HookEntry {
@@ -317,16 +321,16 @@ fn compile_config_entries(
             continue;
         };
 
-        // Emit Cursor-specific hook lossiness diagnostics.
-        if target_root == ".cursor" {
-            CursorAdapter::emit_hook_lossiness_diagnostics(&entries, diag);
-        }
+        // Emit target-specific pre-write diagnostics (runs even on dry runs).
+        adapter.emit_pre_write_diagnostics(&entries, diag);
 
-        if let Err(e) = adapter.write_config_entries(&entries, &target_dir) {
-            diag.warn(
-                "config-entry-write",
-                format!("failed to write config entries to `{target_root}`: {e}"),
-            );
+        if !dry_run {
+            if let Err(e) = adapter.write_config_entries(&entries, &target_dir) {
+                diag.warn(
+                    "config-entry-write",
+                    format!("failed to write config entries to `{target_root}`: {e}"),
+                );
+            }
         }
     }
 }
@@ -408,7 +412,12 @@ fn compute_depths(graph: &crate::resolve::ResolvedGraph) -> HashMap<SourceName, 
 ///
 /// Errors are non-fatal — they are emitted as diagnostics and the sync continues.
 /// This preserves the "target sync is non-fatal" principle (D9).
-fn dual_surface_compile(project_root: &Path, mars_dir: &Path, diag: &mut DiagnosticCollector) {
+fn dual_surface_compile(
+    project_root: &Path,
+    mars_dir: &Path,
+    dry_run: bool,
+    diag: &mut DiagnosticCollector,
+) {
     use crate::compiler::agents::HarnessKind;
     use crate::compiler::agents::lower::lower_for_harness;
     use crate::compiler::agents::parse_agent_content;
@@ -515,20 +524,22 @@ fn dual_surface_compile(project_root: &Path, mars_dir: &Path, diag: &mut Diagnos
         };
         let native_path = native_agents_dir.join(&file_name);
 
-        // Write native artifact (atomic tmp+rename).
-        if let Err(e) = std::fs::create_dir_all(&native_agents_dir) {
-            diag.warn(
-                "dual-surface-mkdir",
-                format!("could not create {}: {e}", native_agents_dir.display()),
-            );
-            continue;
-        }
+        // Write native artifact (atomic tmp+rename) — skipped on dry runs.
+        if !dry_run {
+            if let Err(e) = std::fs::create_dir_all(&native_agents_dir) {
+                diag.warn(
+                    "dual-surface-mkdir",
+                    format!("could not create {}: {e}", native_agents_dir.display()),
+                );
+                continue;
+            }
 
-        if let Err(e) = crate::fs::atomic_write(&native_path, &lowered.bytes) {
-            diag.warn(
-                "dual-surface-write",
-                format!("could not write {}: {e}", native_path.display()),
-            );
+            if let Err(e) = crate::fs::atomic_write(&native_path, &lowered.bytes) {
+                diag.warn(
+                    "dual-surface-write",
+                    format!("could not write {}: {e}", native_path.display()),
+                );
+            }
         }
     }
 }

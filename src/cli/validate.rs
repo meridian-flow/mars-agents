@@ -177,9 +177,7 @@ fn category_str(cat: DiagnosticCategory) -> &'static str {
 }
 
 #[cfg(test)]
-fn validation_warning_to_diagnostic(
-    vw: &crate::validate::ValidationWarning,
-) -> Diagnostic {
+fn validation_warning_to_diagnostic(vw: &crate::validate::ValidationWarning) -> Diagnostic {
     use crate::validate::ValidationWarning;
     match vw {
         ValidationWarning::MissingSkill {
@@ -272,7 +270,10 @@ mod tests {
             category: Some(DiagnosticCategory::Validation),
         };
         let vd = ValidateDiagnostic::from_diagnostic(&diag, true);
-        assert_eq!(vd.level, "error", "warning should be escalated in strict mode");
+        assert_eq!(
+            vd.level, "error",
+            "warning should be escalated in strict mode"
+        );
     }
 
     #[test]

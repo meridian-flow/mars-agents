@@ -286,7 +286,11 @@ mod tests {
     #[test]
     fn collector_error_with_category() {
         let mut coll = DiagnosticCollector::new();
-        coll.error_with_category("compat-version", "too old", DiagnosticCategory::Compatibility);
+        coll.error_with_category(
+            "compat-version",
+            "too old",
+            DiagnosticCategory::Compatibility,
+        );
         let diags = coll.drain();
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].level, DiagnosticLevel::Error);

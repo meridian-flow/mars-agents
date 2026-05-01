@@ -155,12 +155,20 @@ fn write_opencode_config(
         })?;
 
         for hook in hooks {
-            let command = format!("bash {}", hook.script_path);
+            let command = format!("bash '{}'", hook.script_path.replace('\'', "'\\''"));
+            let native_event = hook.native_event.clone();
             hooks_map
-                .entry(hook.native_event.clone())
+                .entry(native_event.clone())
                 .or_insert_with(|| serde_json::json!([]))
                 .as_array_mut()
-                .unwrap()
+                .ok_or_else(|| {
+                    MarsError::Config(crate::error::ConfigError::Invalid {
+                        message: format!(
+                            "{}: hooks.{native_event} is not an array",
+                            path.display()
+                        ),
+                    })
+                })?
                 .push(serde_json::Value::String(command));
         }
     }

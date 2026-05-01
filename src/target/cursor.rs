@@ -29,6 +29,14 @@ impl TargetAdapter for CursorAdapter {
         }
     }
 
+    fn emit_pre_write_diagnostics(
+        &self,
+        entries: &[ConfigEntry],
+        diag: &mut crate::diagnostic::DiagnosticCollector,
+    ) {
+        CursorAdapter::emit_hook_lossiness_diagnostics(entries, diag);
+    }
+
     fn write_config_entries(
         &self,
         entries: &[ConfigEntry],

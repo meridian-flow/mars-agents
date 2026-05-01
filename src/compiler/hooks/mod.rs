@@ -127,6 +127,53 @@ pub struct ParsedHookItem {
 }
 
 // ---------------------------------------------------------------------------
+// Path traversal validation
+// ---------------------------------------------------------------------------
+
+/// Validate a hook name used as a path component.
+///
+/// Rejects names that could escape the package root via path traversal.
+fn validate_path_component(name: &str) -> Result<(), &'static str> {
+    if name.contains('\0') {
+        return Err("contains null byte");
+    }
+    // Reject any path component that is or starts with `..`.
+    for component in Path::new(name).components() {
+        use std::path::Component;
+        match component {
+            Component::ParentDir => return Err("contains `..` component"),
+            Component::RootDir | Component::Prefix(_) => {
+                return Err("must not be an absolute path");
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// Validate a script path from `HookAction::Script`.
+///
+/// - Rejects absolute paths (POSIX `/` or Windows drive letters).
+/// - Rejects paths containing `..` components.
+/// - Rejects paths with null bytes.
+fn validate_hook_script_path(path: &str) -> Result<(), &'static str> {
+    if path.contains('\0') {
+        return Err("contains null byte");
+    }
+    use std::path::Component;
+    for component in Path::new(path).components() {
+        match component {
+            Component::ParentDir => return Err("contains `..` component"),
+            Component::RootDir | Component::Prefix(_) => {
+                return Err("must not be an absolute path");
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Discovery
 // ---------------------------------------------------------------------------
 
@@ -173,6 +220,33 @@ pub fn discover_hook_items(
 
         // Validate event — reject non-V0 events with a hard error.
         let event = UniversalEvent::parse(&raw_def.event)?;
+
+        // Validate the hook name used in path construction.
+        if let Err(msg) = validate_path_component(&raw_def.name) {
+            return Err(MarsError::Config(ConfigError::Invalid {
+                message: format!(
+                    "hook in {}: invalid name `{}`: {msg}",
+                    toml_path.display(),
+                    raw_def.name
+                ),
+            }));
+        }
+
+        // Validate the script path from HookAction::Script.
+        {
+            let HookAction::Script {
+                path: ref script_path,
+            } = raw_def.action;
+            if let Err(msg) = validate_hook_script_path(script_path) {
+                return Err(MarsError::Config(ConfigError::Invalid {
+                    message: format!(
+                        "hook `{}` in {}: invalid script path `{script_path}`: {msg}",
+                        raw_def.name,
+                        toml_path.display()
+                    ),
+                }));
+            }
+        }
 
         items.push(ParsedHookItem {
             def: HookDef {
@@ -569,5 +643,72 @@ path = "./run.sh"
                 .collect();
             assert_eq!(first, current);
         }
+    }
+
+    #[test]
+    fn discover_rejects_dotdot_in_script_path() {
+        let tmp = TempDir::new().unwrap();
+        make_hook_toml_dir(
+            tmp.path(),
+            "bad-hook",
+            r#"
+name = "bad"
+event = "tool.pre"
+[action]
+kind = "script"
+path = "../../etc/passwd"
+"#,
+        );
+        let result = discover_hook_items(tmp.path(), "base", 0, 0);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains(".."), "expected traversal error, got: {msg}");
+    }
+
+    #[test]
+    fn discover_rejects_absolute_script_path() {
+        let tmp = TempDir::new().unwrap();
+        make_hook_toml_dir(
+            tmp.path(),
+            "bad-hook",
+            r#"
+name = "bad"
+event = "tool.pre"
+[action]
+kind = "script"
+path = "/etc/passwd"
+"#,
+        );
+        let result = discover_hook_items(tmp.path(), "base", 0, 0);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("absolute"),
+            "expected absolute-path error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn validate_path_component_rejects_dotdot() {
+        assert!(validate_path_component("..").is_err());
+        assert!(validate_path_component("../foo").is_err());
+    }
+
+    #[test]
+    fn validate_path_component_accepts_normal_name() {
+        assert!(validate_path_component("my-hook").is_ok());
+        assert!(validate_path_component("audit_v2").is_ok());
+    }
+
+    #[test]
+    fn validate_hook_script_path_rejects_null_byte() {
+        assert!(validate_hook_script_path("run\0.sh").is_err());
+    }
+
+    #[test]
+    fn validate_hook_script_path_accepts_relative() {
+        assert!(validate_hook_script_path("./run.sh").is_ok());
+        assert!(validate_hook_script_path("run.sh").is_ok());
+        assert!(validate_hook_script_path("scripts/run.sh").is_ok());
     }
 }

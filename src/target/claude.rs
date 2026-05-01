@@ -240,7 +240,7 @@ fn write_hooks_settings(target_dir: &Path, hooks: &[&HookEntry]) -> Result<PathB
         let native_event = &hook.native_event;
         let command_entry = serde_json::json!({
             "type": "command",
-            "command": format!("bash {}", hook.script_path),
+            "command": format!("bash '{}'", hook.script_path.replace('\'', "'\\''")),
         });
         let hook_binding = serde_json::json!({
             "matcher": "",
@@ -251,7 +251,11 @@ fn write_hooks_settings(target_dir: &Path, hooks: &[&HookEntry]) -> Result<PathB
             .entry(native_event.clone())
             .or_insert_with(|| serde_json::json!([]))
             .as_array_mut()
-            .unwrap()
+            .ok_or_else(|| {
+                MarsError::Config(ConfigError::Invalid {
+                    message: format!("{}: hooks.{native_event} is not an array", path.display()),
+                })
+            })?
             .push(hook_binding);
     }
 

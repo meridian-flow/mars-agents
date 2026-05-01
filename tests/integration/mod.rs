@@ -1952,8 +1952,7 @@ fn validate_strict_with_override_warning() {
 
     // Add mars.local.toml with an override pointing to a non-existent dep.
     // This produces an override-missing-dep Warning diagnostic.
-    let local_toml =
-        "[overrides.nonexistent-dep]\npath = \"/does/not/exist\"\n";
+    let local_toml = "[overrides.nonexistent-dep]\npath = \"/does/not/exist\"\n";
     fs::write(project.join("mars.local.toml"), local_toml).unwrap();
 
     // Normal validate exits 0 (warning doesn't fail)
@@ -1995,7 +1994,10 @@ fn export_exits_zero_and_outputs_json() {
         "expected status field: {stdout}"
     );
     assert!(json["items"].is_array(), "expected items array: {stdout}");
-    assert!(json["outputs"].is_array(), "expected outputs array: {stdout}");
+    assert!(
+        json["outputs"].is_array(),
+        "expected outputs array: {stdout}"
+    );
     assert!(
         json["diagnostics"].is_array(),
         "expected diagnostics array: {stdout}"
@@ -2036,8 +2038,7 @@ fn export_complete_status_on_clean_project() {
 #[test]
 fn export_no_file_bodies_in_output() {
     let dir = TempDir::new().unwrap();
-    let agent_content =
-        "---\nname: secret-agent\ndescription: secret\n---\n# TOP SECRET CONTENT";
+    let agent_content = "---\nname: secret-agent\ndescription: secret\n---\n# TOP SECRET CONTENT";
     let project =
         setup_synced_project(&dir, "proj", "src", &[("secret-agent", agent_content)], &[]);
 
@@ -2096,7 +2097,10 @@ fn validate_json_strict_escalates_warnings_in_output() {
     if let Some(diags) = json["diagnostics"].as_array() {
         for diag in diags {
             let level = diag["level"].as_str().unwrap_or("");
-            assert_ne!(level, "warning", "strict mode should escalate warnings to errors: {stdout}");
+            assert_ne!(
+                level, "warning",
+                "strict mode should escalate warnings to errors: {stdout}"
+            );
         }
     }
 }
