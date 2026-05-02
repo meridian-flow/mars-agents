@@ -125,7 +125,6 @@ fn sync_one_target(
             continue;
         }
         let dest_rel = outcome.dest_path.as_str();
-
         match &outcome.action {
             ActionTaken::Removed => {
                 // Remove from target too
@@ -486,6 +485,36 @@ mod tests {
         assert!(target.join("agents/coder.md").exists());
         assert!(target.join("agents/custom.md").exists());
         assert_eq!(results[0].items_removed, 0);
+    }
+
+    #[test]
+    fn sync_removed_agent_outcome_removes_existing_target_agent_without_copying() {
+        let dir = TempDir::new().unwrap();
+        let mars_dir = dir.path().join(".mars");
+        let target = dir.path().join(".agents");
+
+        std::fs::create_dir_all(mars_dir.join("agents")).unwrap();
+        std::fs::write(mars_dir.join("agents/coder.md"), "# Canonical").unwrap();
+        std::fs::create_dir_all(target.join("agents")).unwrap();
+        std::fs::write(target.join("agents/coder.md"), "# Existing target copy").unwrap();
+
+        let outcomes = vec![make_outcome("agents/coder.md", ActionTaken::Removed)];
+        let mut diag = DiagnosticCollector::new();
+
+        let results = sync_managed_targets(
+            dir.path(),
+            &mars_dir,
+            &[".agents".to_string()],
+            &outcomes,
+            &managed_paths(&["agents/coder.md"]),
+            false,
+            &mut diag,
+        );
+
+        assert_eq!(results[0].items_synced, 0);
+        assert_eq!(results[0].items_removed, 1);
+        assert!(!target.join("agents/coder.md").exists());
+        assert!(results[0].errors.is_empty());
     }
 
     #[test]

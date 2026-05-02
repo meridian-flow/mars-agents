@@ -76,6 +76,20 @@ fn link_target(ctx: &super::MarsContext, target_name: &str, json: bool) -> Resul
 
     let lock = crate::lock::load(&ctx.project_root)?;
     let outcomes = lock_items_as_sync_outcomes(&lock);
+    let agent_surface_policy = crate::compiler::agent_surface_policy(
+        config.settings.agent_emission.as_ref(),
+        ctx.meridian_managed,
+    );
+    let suppressed_outcomes;
+    let sync_outcomes = if matches!(
+        agent_surface_policy,
+        crate::compiler::AgentSurfacePolicy::SuppressAll
+    ) {
+        suppressed_outcomes = crate::compiler::suppress_agent_outcomes(&outcomes);
+        &suppressed_outcomes
+    } else {
+        &outcomes
+    };
     let previous_managed_paths = lock
         .all_output_dest_paths()
         .map(|dest_path| dest_path.to_string())
@@ -86,7 +100,7 @@ fn link_target(ctx: &super::MarsContext, target_name: &str, json: bool) -> Resul
         &ctx.project_root,
         &mars_dir,
         &[target_name.to_string()],
-        &outcomes,
+        sync_outcomes,
         &previous_managed_paths,
         true,
         &mut diag,

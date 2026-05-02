@@ -47,6 +47,10 @@ pub enum HarnessKind {
 }
 
 impl HarnessKind {
+    pub fn all() -> &'static [Self] {
+        &[Self::Claude, Self::Codex, Self::OpenCode, Self::Pi]
+    }
+
     /// Parse from a frontmatter string value.
     pub fn from_str(s: &str) -> Option<Self> {
         match s {

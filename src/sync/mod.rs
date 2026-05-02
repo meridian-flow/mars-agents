@@ -492,6 +492,7 @@ pub(crate) fn sync_targets(
     ctx: &MarsContext,
     applied: AppliedState,
     request: &SyncRequest,
+    agent_surface_policy: crate::compiler::AgentSurfacePolicy,
     diag: &mut DiagnosticCollector,
 ) -> SyncedState {
     if request.options.dry_run {
@@ -521,11 +522,22 @@ pub(crate) fn sync_targets(
         .map(|dest_path| dest_path.to_string())
         .collect::<HashSet<String>>();
 
+    let outcomes;
+    let target_outcomes_source = if matches!(
+        agent_surface_policy,
+        crate::compiler::AgentSurfacePolicy::SuppressAll
+    ) {
+        outcomes = crate::compiler::suppress_agent_outcomes(&applied.applied.outcomes);
+        &outcomes
+    } else {
+        &applied.applied.outcomes
+    };
+
     let target_outcomes = crate::target_sync::sync_managed_targets(
         &ctx.project_root,
         &mars_dir,
         &targets,
-        &applied.applied.outcomes,
+        target_outcomes_source,
         &previous_managed_paths,
         request.options.force,
         diag,

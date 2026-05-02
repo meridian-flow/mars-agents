@@ -26,8 +26,9 @@ use crate::diagnostic::DiagnosticCollector;
 use crate::error::MarsError;
 use crate::model::ReaderIr;
 use crate::sync::{
-    SyncReport, SyncRequest, apply::ActionTaken, apply_plan, build_target, check_frozen_gate,
-    create_plan, finalize, sync_targets,
+    SyncReport, SyncRequest,
+    apply::{ActionOutcome, ActionTaken},
+    apply_plan, build_target, check_frozen_gate, create_plan, finalize, sync_targets,
 };
 use crate::types::MarsContext;
 
@@ -55,36 +56,29 @@ pub fn compile(
     // Phase 3.2 / 3.3: Dual-surface compilation — after apply writes agents to
     // .mars/agents/, compile harness-bound agents to their native target directories.
     // Diagnostics run always; file writes are gated on !dry_run.
-    {
-        let mars_dir = ctx.project_root.join(".mars");
-        let emit_native_agents = should_emit_native_agents(
-            applied
-                .planned
-                .targeted
-                .resolved
-                .loaded
-                .config
-                .settings
-                .agent_emission
-                .as_ref(),
-            ctx.meridian_managed,
-        );
-        cleanup_removed_native_agents(
-            &ctx.project_root,
-            &applied.applied.outcomes,
-            request.options.dry_run,
-            diag,
-        );
-        if emit_native_agents {
-            dual_surface_compile(&ctx.project_root, &mars_dir, request.options.dry_run, diag);
-        } else {
-            remove_native_agent_surfaces(
-                &ctx.project_root,
-                &mars_dir,
-                request.options.dry_run,
-                diag,
-            );
-        }
+    let agent_surface_policy = agent_surface_policy(
+        applied
+            .planned
+            .targeted
+            .resolved
+            .loaded
+            .config
+            .settings
+            .agent_emission
+            .as_ref(),
+        ctx.meridian_managed,
+    );
+    let mars_dir = ctx.project_root.join(".mars");
+    reconcile_native_agent_surfaces(
+        agent_surface_policy,
+        &ctx.project_root,
+        &mars_dir,
+        &applied.applied.outcomes,
+        request.options.dry_run,
+        diag,
+    );
+    if matches!(agent_surface_policy, AgentSurfacePolicy::EmitAll) {
+        dual_surface_compile(&ctx.project_root, &mars_dir, request.options.dry_run, diag);
     }
 
     // Phase 5.1 / 5.2 / 5.3: MCP and hooks config-entry compilation.
@@ -95,30 +89,68 @@ pub fn compile(
         config_entries::compile_config_entries(ctx, &applied, request.options.dry_run, diag);
 
     // Phase 6: copy from canonical store to managed target directories.
-    let mut synced = sync_targets(ctx, applied, request, diag);
+    let mut synced = sync_targets(ctx, applied, request, agent_surface_policy, diag);
     synced.config_entries = config_entry_records;
 
     // Phase 7: write lock file, build report.
     finalize(ctx, synced, request, diag)
 }
 
-/// Remove stale native harness agent artifacts for agents that were removed
-/// from the canonical `.mars/agents/` store.
+/// Describes what happens to agent artifacts on target surfaces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentSurfacePolicy {
+    /// Emit lowered native agents and copy canonical agents to managed targets.
+    EmitAll,
+    /// Suppress all agent artifacts on target surfaces.
+    SuppressAll,
+}
+
+pub fn agent_surface_policy(
+    agent_emission: Option<&AgentEmission>,
+    meridian_managed: bool,
+) -> AgentSurfacePolicy {
+    match agent_emission.unwrap_or(&AgentEmission::Auto) {
+        AgentEmission::Always => AgentSurfacePolicy::EmitAll,
+        AgentEmission::Never => AgentSurfacePolicy::SuppressAll,
+        AgentEmission::Auto if meridian_managed => AgentSurfacePolicy::SuppressAll,
+        AgentEmission::Auto => AgentSurfacePolicy::EmitAll,
+    }
+}
+
+/// Convert agent outcomes into removals so target sync can remain a pure
+/// materializer with no knowledge of managed-mode policy.
+pub fn suppress_agent_outcomes(outcomes: &[ActionOutcome]) -> Vec<ActionOutcome> {
+    outcomes
+        .iter()
+        .cloned()
+        .map(|mut outcome| {
+            if outcome.item_id.kind == crate::lock::ItemKind::Agent {
+                outcome.action = ActionTaken::Removed;
+            }
+            outcome
+        })
+        .collect()
+}
+
+/// Reconcile native harness agent artifacts written outside target sync.
 ///
-/// Removed agents can no longer be inspected for their previous `harness:`
-/// value, so cleanup checks every native harness agent filename shape
-/// (`*.md` and `*.toml`) under every native agent surface. Missing files are
-/// ignored and removal errors are non-fatal diagnostics.
-fn cleanup_removed_native_agents(
+/// Under `SuppressAll`, removes lowered artifacts for all harness-bound agents
+/// still present in `.mars/agents/`. Under `EmitAll`, removes only artifacts
+/// for agents removed from the canonical store. Removed agents can no longer be
+/// inspected for their previous `harness:`, so removal checks every native
+/// harness filename shape.
+fn reconcile_native_agent_surfaces(
+    policy: AgentSurfacePolicy,
     project_root: &Path,
+    mars_dir: &Path,
     outcomes: &[crate::sync::apply::ActionOutcome],
     dry_run: bool,
     diag: &mut DiagnosticCollector,
 ) {
     use crate::lock::ItemKind;
 
-    if dry_run {
-        return;
+    if matches!(policy, AgentSurfacePolicy::SuppressAll) {
+        remove_current_native_agent_surfaces(project_root, mars_dir, dry_run, diag);
     }
 
     for outcome in outcomes {
@@ -129,41 +161,16 @@ fn cleanup_removed_native_agents(
         }
 
         let agent_name = outcome.dest_path.item_name(ItemKind::Agent);
-        for target in [".claude", ".codex", ".opencode", ".cursor", ".pi"] {
-            for extension in ["md", "toml"] {
-                let native_path = project_root
-                    .join(target)
-                    .join("agents")
-                    .join(format!("{agent_name}.{extension}"));
-                if !native_path.exists() && native_path.symlink_metadata().is_err() {
-                    continue;
-                }
-                if let Err(e) = crate::reconcile::fs_ops::safe_remove(&native_path) {
-                    diag.warn(
-                        "native-agent-remove",
-                        format!("could not remove {}: {e}", native_path.display()),
-                    );
-                }
-            }
-        }
+        remove_native_agent_shapes(project_root, &agent_name, dry_run, diag);
     }
 }
 
-/// Remove native harness agent artifacts for harness-bound agents currently in
-/// `.mars/agents/` when native agent emission is disabled.
-///
-/// This keeps sync idempotent when switching from standalone mode (native
-/// agents emitted) to Meridian-managed or `agent_emission = "never"` mode
-/// (native agents suppressed). It intentionally only touches agents that still
-/// exist in the canonical `.mars/` store and declare a harness, avoiding broad
-/// deletion of user-created native harness agents.
-fn remove_native_agent_surfaces(
+fn remove_current_native_agent_surfaces(
     project_root: &Path,
     mars_dir: &Path,
     dry_run: bool,
     diag: &mut DiagnosticCollector,
 ) {
-    use crate::compiler::agents::HarnessKind;
     use crate::compiler::agents::parse_agent_content;
 
     let agents_dir = mars_dir.join("agents");
@@ -200,31 +207,42 @@ fn remove_native_agent_surfaces(
             }
         };
 
-        let Some(harness) = &profile.harness else {
-            continue;
-        };
         let agent_name = profile.name.as_deref().unwrap_or_else(|| {
             path.file_stem()
                 .and_then(|s| s.to_str())
                 .unwrap_or("unknown")
         });
-        let file_name = match harness {
-            HarnessKind::Codex => format!("{agent_name}.toml"),
-            _ => format!("{agent_name}.md"),
-        };
-        let native_path = project_root
-            .join(harness.target_dir())
-            .join("agents")
-            .join(file_name);
+        remove_native_agent_shapes(project_root, agent_name, dry_run, diag);
+    }
+}
 
-        if dry_run || (!native_path.exists() && native_path.symlink_metadata().is_err()) {
-            continue;
-        }
-        if let Err(e) = crate::reconcile::fs_ops::safe_remove(&native_path) {
-            diag.warn(
-                "native-agent-remove",
-                format!("could not remove {}: {e}", native_path.display()),
-            );
+fn remove_native_agent_shapes(
+    project_root: &Path,
+    agent_name: &str,
+    dry_run: bool,
+    diag: &mut DiagnosticCollector,
+) {
+    use crate::compiler::agents::HarnessKind;
+
+    for harness in HarnessKind::all() {
+        let target = harness.target_dir();
+        for extension in ["md", "toml"] {
+            let native_path = project_root
+                .join(target)
+                .join("agents")
+                .join(format!("{agent_name}.{extension}"));
+            if !native_path.exists() && native_path.symlink_metadata().is_err() {
+                continue;
+            }
+            if dry_run {
+                continue;
+            }
+            if let Err(e) = crate::reconcile::fs_ops::safe_remove(&native_path) {
+                diag.warn(
+                    "native-agent-remove",
+                    format!("could not remove {}: {e}", native_path.display()),
+                );
+            }
         }
     }
 }
@@ -371,20 +389,10 @@ fn dual_surface_compile(
     }
 }
 
-fn should_emit_native_agents(
-    agent_emission: Option<&AgentEmission>,
-    meridian_managed: bool,
-) -> bool {
-    match agent_emission.unwrap_or(&AgentEmission::Auto) {
-        AgentEmission::Always => true,
-        AgentEmission::Never => false,
-        AgentEmission::Auto => !meridian_managed,
-    }
-}
-
 #[cfg(test)]
 mod skill_surface_tests {
     use super::*;
+    use crate::compiler::agents::HarnessKind;
     use crate::diagnostic::DiagnosticCollector;
     use crate::lock::{ItemId, ItemKind};
     use crate::sync::apply::{ActionOutcome, ActionTaken};
@@ -393,28 +401,34 @@ mod skill_surface_tests {
 
     #[test]
     fn native_agent_emission_defaults_to_standalone_auto() {
-        assert!(should_emit_native_agents(None, false));
+        assert_eq!(
+            agent_surface_policy(None, false),
+            AgentSurfacePolicy::EmitAll
+        );
     }
 
     #[test]
     fn native_agent_emission_auto_suppresses_meridian_managed() {
-        assert!(!should_emit_native_agents(Some(&AgentEmission::Auto), true));
+        assert_eq!(
+            agent_surface_policy(Some(&AgentEmission::Auto), true),
+            AgentSurfacePolicy::SuppressAll
+        );
     }
 
     #[test]
     fn native_agent_emission_always_ignores_meridian_managed() {
-        assert!(should_emit_native_agents(
-            Some(&AgentEmission::Always),
-            true
-        ));
+        assert_eq!(
+            agent_surface_policy(Some(&AgentEmission::Always), true),
+            AgentSurfacePolicy::EmitAll
+        );
     }
 
     #[test]
     fn native_agent_emission_never_suppresses_standalone() {
-        assert!(!should_emit_native_agents(
-            Some(&AgentEmission::Never),
-            false
-        ));
+        assert_eq!(
+            agent_surface_policy(Some(&AgentEmission::Never), false),
+            AgentSurfacePolicy::SuppressAll
+        );
     }
 
     fn agent_outcome(name: &str, action: ActionTaken) -> ActionOutcome {
@@ -432,27 +446,102 @@ mod skill_surface_tests {
     }
 
     #[test]
-    fn cleanup_removed_native_agents_removes_all_native_filename_shapes() {
+    fn reconcile_emit_all_removes_native_shapes_for_removed_agents() {
         let dir = TempDir::new().unwrap();
-        for target in [".claude", ".codex", ".opencode", ".cursor", ".pi"] {
-            let agents_dir = dir.path().join(target).join("agents");
+        for harness in HarnessKind::all() {
+            let agents_dir = dir.path().join(harness.target_dir()).join("agents");
             std::fs::create_dir_all(&agents_dir).unwrap();
             std::fs::write(agents_dir.join("coder.md"), "# Old\n").unwrap();
             std::fs::write(agents_dir.join("coder.toml"), "old = true\n").unwrap();
         }
 
         let mut diag = DiagnosticCollector::new();
-        cleanup_removed_native_agents(
+        reconcile_native_agent_surfaces(
+            AgentSurfacePolicy::EmitAll,
             dir.path(),
+            &dir.path().join(".mars"),
             &[agent_outcome("coder", ActionTaken::Removed)],
             false,
             &mut diag,
         );
 
-        for target in [".claude", ".codex", ".opencode", ".cursor", ".pi"] {
-            assert!(!dir.path().join(target).join("agents/coder.md").exists());
-            assert!(!dir.path().join(target).join("agents/coder.toml").exists());
+        for harness in HarnessKind::all() {
+            assert!(
+                !dir.path()
+                    .join(harness.target_dir())
+                    .join("agents/coder.md")
+                    .exists()
+            );
+            assert!(
+                !dir.path()
+                    .join(harness.target_dir())
+                    .join("agents/coder.toml")
+                    .exists()
+            );
         }
         assert!(diag.drain().is_empty());
+    }
+
+    #[test]
+    fn reconcile_suppress_all_removes_native_shapes_for_current_agents() {
+        let dir = TempDir::new().unwrap();
+
+        // Set up a canonical agent in .mars/agents/
+        let mars_agents = dir.path().join(".mars").join("agents");
+        std::fs::create_dir_all(&mars_agents).unwrap();
+        std::fs::write(
+            mars_agents.join("coder.md"),
+            "---\nname: coder\n---\n# Coder\n",
+        )
+        .unwrap();
+
+        // Set up native artifacts that should be cleaned
+        for target in [".claude", ".codex", ".opencode"] {
+            let agents_dir = dir.path().join(target).join("agents");
+            std::fs::create_dir_all(&agents_dir).unwrap();
+            std::fs::write(agents_dir.join("coder.md"), "# Native\n").unwrap();
+        }
+
+        let mut diag = DiagnosticCollector::new();
+        reconcile_native_agent_surfaces(
+            AgentSurfacePolicy::SuppressAll,
+            dir.path(),
+            &dir.path().join(".mars"),
+            // No removed outcomes — suppression removes current agents regardless
+            &[agent_outcome("coder", ActionTaken::Installed)],
+            false,
+            &mut diag,
+        );
+
+        for target in [".claude", ".codex", ".opencode"] {
+            assert!(
+                !dir.path().join(target).join("agents/coder.md").exists(),
+                "native agent should be removed under SuppressAll for target {target}"
+            );
+        }
+    }
+
+    #[test]
+    fn reconcile_emit_all_preserves_non_removed_agents() {
+        let dir = TempDir::new().unwrap();
+
+        // Set up native artifacts for a non-removed agent
+        let agents_dir = dir.path().join(".claude").join("agents");
+        std::fs::create_dir_all(&agents_dir).unwrap();
+        std::fs::write(agents_dir.join("coder.md"), "# Native\n").unwrap();
+
+        let mut diag = DiagnosticCollector::new();
+        reconcile_native_agent_surfaces(
+            AgentSurfacePolicy::EmitAll,
+            dir.path(),
+            &dir.path().join(".mars"),
+            // Agent is Installed (not Removed) — should be preserved
+            &[agent_outcome("coder", ActionTaken::Installed)],
+            false,
+            &mut diag,
+        );
+
+        // Native artifact should still exist
+        assert!(dir.path().join(".claude/agents/coder.md").exists());
     }
 }
