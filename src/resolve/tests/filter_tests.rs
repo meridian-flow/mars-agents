@@ -1,4 +1,82 @@
 use super::*;
+use crate::types::ItemKind;
+
+#[test]
+fn include_filter_seeds_bootstrap_docs_without_hooks_or_mcp() {
+    let mut package_items = IndexMap::new();
+    let discovered = [
+        (
+            ItemKind::Agent,
+            "runner",
+            PathBuf::from("agents/runner.md"),
+        ),
+        (
+            ItemKind::Skill,
+            "planning",
+            PathBuf::from("skills/planning"),
+        ),
+        (
+            ItemKind::BootstrapDoc,
+            "global-auth",
+            PathBuf::from("bootstrap/global-auth"),
+        ),
+        (ItemKind::Hook, "hook", PathBuf::from("hooks/hook")),
+        (ItemKind::McpServer, "server", PathBuf::from("mcp/server")),
+    ];
+
+    for (kind, name, source_path) in discovered {
+        let item_name = ItemName::from(name);
+        package_items.insert(
+            (kind, item_name.clone()),
+            crate::discover::DiscoveredItem {
+                id: crate::lock::ItemId {
+                    kind,
+                    name: item_name,
+                },
+                source_path,
+            },
+        );
+    }
+
+    let package = RegisteredPackage {
+        node: ResolvedNode {
+            source_name: "dep".into(),
+            source_id: SourceId::git(SourceUrl::from("https://example.com/dep.git")),
+            rooted_ref: dummy_rooted_ref(),
+            resolved_ref: dummy_ref("dep"),
+            latest_version: None,
+            manifest: None,
+            deps: Vec::new(),
+        },
+        items: package_items,
+        constraint: VersionConstraint::Latest,
+        spec: git_spec("https://example.com/dep.git", Some("v1.0.0")),
+        is_local: false,
+    };
+    let pending = PendingSource {
+        name: "dep".into(),
+        source_id: SourceId::git(SourceUrl::from("https://example.com/dep.git")),
+        spec: git_spec("https://example.com/dep.git", Some("v1.0.0")),
+        subpath: None,
+        constraint: VersionConstraint::Latest,
+        filter: FilterMode::Include {
+            agents: vec!["runner".into()],
+            skills: vec![],
+        },
+        required_by: "root".to_string(),
+    };
+
+    let seeded = super::package::seed_items_for_request(&pending, &package);
+    let seeded_kinds: Vec<_> = seeded
+        .iter()
+        .map(|item| (item.kind, item.item.as_str().to_string()))
+        .collect();
+
+    assert!(seeded_kinds.contains(&(ItemKind::Agent, "runner".to_string())));
+    assert!(seeded_kinds.contains(&(ItemKind::BootstrapDoc, "global-auth".to_string())));
+    assert!(!seeded_kinds.contains(&(ItemKind::Hook, "hook".to_string())));
+    assert!(!seeded_kinds.contains(&(ItemKind::McpServer, "server".to_string())));
+}
 
 #[test]
 fn filtered_transitive_dep_without_seed_request_does_not_collect_materialization_filter() {

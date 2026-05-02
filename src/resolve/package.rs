@@ -288,8 +288,12 @@ pub(crate) fn seed_items_for_request(
             selected.extend(package.items().filter(|item| match item.id.kind {
                 ItemKind::Agent => wanted_agents.contains(&item.id.name),
                 ItemKind::Skill => wanted_skills.contains(&item.id.name),
-                // New kinds not yet selectable via Include filter.
-                ItemKind::Hook | ItemKind::McpServer | ItemKind::BootstrapDoc => false,
+                // Package-level bootstrap docs are passive package content:
+                // if any part of the package is requested, seed them with the
+                // selected agents/skills so they can materialize.
+                ItemKind::BootstrapDoc => true,
+                // New active/config kinds are not yet selectable via Include filter.
+                ItemKind::Hook | ItemKind::McpServer => false,
             }));
         }
         FilterMode::Exclude(excluded) => {
