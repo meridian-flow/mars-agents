@@ -315,3 +315,160 @@ fn validate_json_reports_skill_legacy_field_warning() {
         "expected legacy skill deprecation warning: {stdout}"
     );
 }
+
+#[test]
+fn list_json_includes_skill_variant_availability() {
+    let dir = TempDir::new().unwrap();
+    let source = create_source(
+        &dir,
+        "src",
+        &[("reader", "# Reader")],
+        &[(
+            "planning",
+            "---\nname: planning\ndescription: plan helper\n---\n# Planning",
+        )],
+    );
+    fs::create_dir_all(source.join("skills/planning/variants/claude")).unwrap();
+    fs::create_dir_all(source.join("skills/planning/variants/codex/gpt-5")).unwrap();
+    fs::write(
+        source.join("skills/planning/variants/claude/SKILL.md"),
+        "# Claude",
+    )
+    .unwrap();
+    fs::write(
+        source.join("skills/planning/variants/codex/gpt-5/SKILL.md"),
+        "# Codex",
+    )
+    .unwrap();
+
+    let project = dir.child("proj");
+    project.create_dir_all().unwrap();
+    project
+        .child("mars.toml")
+        .write_str(&format!(
+            "[dependencies]\nsrc = {{ path = \"{}\" }}\n",
+            source.display()
+        ))
+        .unwrap();
+    mars()
+        .args(["sync", "--root", project.path().to_str().unwrap()])
+        .assert()
+        .success();
+
+    let output = mars()
+        .args(["--json", "list", "--root", project.path().to_str().unwrap()])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "mars list should succeed");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    let skills = json["skills"].as_array().unwrap();
+    let planning = skills
+        .iter()
+        .find(|entry| entry["name"] == "planning")
+        .expect("planning skill should be listed");
+    assert_eq!(planning["variants"].as_str(), Some("claude, codex"));
+}
+
+#[test]
+fn validate_json_reports_malformed_skill_frontmatter_error() {
+    let dir = TempDir::new().unwrap();
+    let agent_content = "---\nname: reader\ndescription: reads things\n---\n# Reader";
+    let malformed_skill =
+        "---\nname: planning\ndescription: broken skill\nmetadata: [\n---\n# Broken\n";
+    let project = setup_synced_project(
+        &dir,
+        "proj",
+        "src",
+        &[("reader", agent_content)],
+        &[("planning", malformed_skill)],
+    );
+
+    let output = mars()
+        .args(["validate", "--json", "--root", project.to_str().unwrap()])
+        .output()
+        .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "malformed skill frontmatter should make validate fail"
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    assert_eq!(
+        json["clean"].as_bool(),
+        Some(false),
+        "expected clean=false for malformed frontmatter: {stdout}"
+    );
+    assert!(
+        json["error_count"].as_u64().unwrap_or(0) > 0,
+        "expected nonzero error_count for malformed frontmatter: {stdout}"
+    );
+    let diagnostics = json["diagnostics"].as_array().unwrap();
+    assert!(
+        diagnostics.iter().any(|diag| {
+            diag["code"] == "skill-schema-error"
+                && diag["message"].as_str().is_some_and(|message| {
+                    message.contains("skill `planning`")
+                        && message.contains("skill frontmatter is malformed")
+                })
+        }),
+        "expected malformed skill frontmatter error: {stdout}"
+    );
+}
+
+#[test]
+#[ignore = "known gap: SV-W1 unknown harness variants do not yet surface validate warnings"]
+fn validate_json_reports_unknown_skill_variant_harness_warning() {
+    let dir = TempDir::new().unwrap();
+    let source = create_source(
+        &dir,
+        "src",
+        &[("reader", "# Reader")],
+        &[(
+            "planning",
+            "---\nname: planning\ndescription: plan helper\n---\n# Planning",
+        )],
+    );
+    fs::create_dir_all(source.join("skills/planning/variants/mystery-harness")).unwrap();
+    fs::write(
+        source.join("skills/planning/variants/mystery-harness/SKILL.md"),
+        "# Mystery Harness",
+    )
+    .unwrap();
+
+    let project = dir.child("proj");
+    project.create_dir_all().unwrap();
+    project
+        .child("mars.toml")
+        .write_str(&format!(
+            "[dependencies]\nsrc = {{ path = \"{}\" }}\n",
+            source.display()
+        ))
+        .unwrap();
+
+    let output = mars()
+        .args(["validate", "--json", "--root", project.path().to_str().unwrap()])
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "unknown harness variant should warn without failing validate"
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    let diagnostics = json["diagnostics"].as_array().unwrap();
+    assert!(
+        diagnostics.iter().any(|diag| {
+            diag["level"] == "warning"
+                && diag["message"].as_str().is_some_and(|message| {
+                    message.contains("mystery-harness")
+                        && message.contains("variant")
+                        && message.contains("planning")
+                })
+        }),
+        "expected validate warning for unknown skill variant harness: {stdout}"
+    );
+}

@@ -456,3 +456,55 @@ fn sync_frozen_returns_exit_code_two() {
         .code(2)
         .stderr(predicate::str::contains("--frozen"));
 }
+
+#[test]
+fn sync_preserves_selected_variant_raw_bytes_when_variant_frontmatter_is_malformed() {
+    let dir = TempDir::new().unwrap();
+    let base_skill =
+        "---\nname: planning\ndescription: base skill\ninvocation: explicit\n---\n# Base\n";
+    let source = create_source(&dir, "base", &[], &[("planning", base_skill)]);
+    let malformed_variant =
+        "---\nname: ignored\ndescription: malformed variant\nmetadata: [\n---\n# Claude broken\n";
+    let variant_dir = source.join("skills/planning/variants/claude");
+    fs::create_dir_all(&variant_dir).unwrap();
+    fs::write(variant_dir.join("SKILL.md"), malformed_variant).unwrap();
+
+    let project = dir.child("project");
+    mars()
+        .args(["init", ".claude", "--root", project.path().to_str().unwrap()])
+        .assert()
+        .success();
+
+    let add_output = mars()
+        .args([
+            "add",
+            source.to_str().unwrap(),
+            "--root",
+            project.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+
+    assert!(
+        add_output.status.success(),
+        "sync with malformed skill frontmatter should still succeed"
+    );
+
+    let native_skill = project
+        .child(".claude")
+        .child("skills")
+        .child("planning")
+        .child("SKILL.md");
+    assert_eq!(
+        fs::read_to_string(native_skill.path()).unwrap(),
+        malformed_variant,
+        "native projection should preserve the raw selected variant bytes"
+    );
+
+    assert!(
+        String::from_utf8(add_output.stderr)
+            .unwrap()
+            .contains("selected variant frontmatter is malformed; raw fallback used"),
+        "expected sync stderr to report the malformed selected variant fallback"
+    );
+}
