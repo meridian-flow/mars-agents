@@ -12,6 +12,8 @@ pub mod context;
 pub mod hooks;
 /// MCP server compiler lane: discovery, env-ref validation, collision detection.
 pub mod mcp;
+/// Skill frontmatter compiler lane: universal schema parsing and native lowering.
+pub mod skills;
 /// Skill variant layout validation, indexing, and projection helpers.
 pub mod variants;
 /// Visibility propagation rules for passive vs effectful items (D1/D10).

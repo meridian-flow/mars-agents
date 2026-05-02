@@ -237,6 +237,8 @@ fn copy_item_to_target(
             source,
             dest,
             native_skill_variant_key,
+            diag,
+            item_name,
         );
     }
 

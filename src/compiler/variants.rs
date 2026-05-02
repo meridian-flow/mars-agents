@@ -220,6 +220,8 @@ pub fn project_skill_for_target(
     source: &Path,
     dest: &Path,
     harness_variant_key: Option<&str>,
+    diag: &mut crate::diagnostic::DiagnosticCollector,
+    skill_name: &str,
 ) -> Result<(), MarsError> {
     let parent = dest.parent().unwrap_or(Path::new("."));
     fs::create_dir_all(parent)?;
@@ -239,8 +241,98 @@ pub fn project_skill_for_target(
         fs::write(projected_skill, content)?;
     }
 
+    if let Some(key) = harness_variant_key {
+        compile_projected_skill_frontmatter(source, tmp_dir.path(), key, diag, skill_name)?;
+    }
+
     let tmp_path = tmp_dir.keep();
     crate::platform::fs::replace_generated_dir(&tmp_path, dest)
+}
+
+fn compile_projected_skill_frontmatter(
+    source: &Path,
+    projected_dir: &Path,
+    harness_key: &str,
+    diag: &mut crate::diagnostic::DiagnosticCollector,
+    skill_name: &str,
+) -> Result<(), MarsError> {
+    use crate::compiler::agents::lower::Lossiness;
+    use crate::compiler::skills::lower::{SkillHarness, lower_skill_for_harness};
+    use crate::compiler::skills::parse_skill_content;
+
+    let Some(harness) = SkillHarness::from_variant_key(harness_key) else {
+        return Ok(());
+    };
+
+    let base_skill = source.join("SKILL.md");
+    let projected_skill = projected_dir.join("SKILL.md");
+    let base_content = fs::read_to_string(&base_skill)?;
+    let selected_content = fs::read_to_string(&projected_skill)?;
+
+    let mut skill_diags = Vec::new();
+    let (profile, _) = match parse_skill_content(&base_content, &mut skill_diags) {
+        Ok(parsed) => parsed,
+        Err(_) => {
+            for d in &skill_diags {
+                diag.error_with_category(
+                    "skill-schema-error",
+                    format!("skill `{skill_name}`: {}", d.message()),
+                    crate::diagnostic::DiagnosticCategory::Validation,
+                );
+            }
+            return Ok(());
+        }
+    };
+
+    for d in &skill_diags {
+        if d.is_error() {
+            diag.error_with_category(
+                "skill-schema-error",
+                format!("skill `{skill_name}`: {}", d.message()),
+                crate::diagnostic::DiagnosticCategory::Validation,
+            );
+        } else {
+            diag.warn(
+                "skill-schema-warning",
+                format!("skill `{skill_name}`: {}", d.message()),
+            );
+        }
+    }
+
+    let selected_fm = match crate::frontmatter::parse(&selected_content) {
+        Ok(fm) => fm,
+        Err(e) => {
+            diag.error_with_category(
+                "skill-schema-error",
+                format!("skill `{skill_name}` selected variant frontmatter is malformed; raw fallback used: {e}"),
+                crate::diagnostic::DiagnosticCategory::Validation,
+            );
+            return Ok(());
+        }
+    };
+    let lowered = lower_skill_for_harness(harness, &profile, selected_fm.body());
+
+    for lf in &lowered.lossy_fields {
+        match &lf.classification {
+            Lossiness::Dropped | Lossiness::MeridianOnly => diag.warn(
+                "skill-field-dropped",
+                format!(
+                    "skill `{skill_name}`: field `{}` dropped in {} native artifact",
+                    lf.field, lf.target
+                ),
+            ),
+            Lossiness::Approximate { note } => diag.warn(
+                "skill-field-approximate",
+                format!(
+                    "skill `{skill_name}`: field `{}` approximately mapped in {} ({note})",
+                    lf.field, lf.target
+                ),
+            ),
+        }
+    }
+
+    fs::write(projected_skill, lowered.bytes)?;
+    Ok(())
 }
 
 fn copy_dir_following_symlinks_excluding_top_level_variants(
@@ -309,6 +401,7 @@ fn copy_entry_following_symlinks(source: &Path, dest: &Path) -> Result<(), MarsE
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::diagnostic::DiagnosticCollector;
     use tempfile::TempDir;
 
     #[test]
@@ -368,7 +461,8 @@ mod tests {
         std::fs::write(source.join("variants/claude/SKILL.md"), "claude").unwrap();
         std::fs::write(source.join("variants/claude/opus/SKILL.md"), "opus").unwrap();
 
-        project_skill_for_target(&source, &dest, Some("claude")).unwrap();
+        let mut diag = DiagnosticCollector::new();
+        project_skill_for_target(&source, &dest, Some("claude"), &mut diag, "planning").unwrap();
 
         assert_eq!(
             std::fs::read_to_string(dest.join("SKILL.md")).unwrap(),
@@ -382,6 +476,35 @@ mod tests {
     }
 
     #[test]
+    fn native_projection_lowers_base_frontmatter_with_variant_body() {
+        let tmp = TempDir::new().unwrap();
+        let source = tmp.path().join("source");
+        let dest = tmp.path().join("dest");
+        std::fs::create_dir_all(source.join("variants/codex")).unwrap();
+        std::fs::write(
+            source.join("SKILL.md"),
+            "---\nname: planning\ndescription: Base desc\ninvocation: explicit\nallowed-tools: [Bash(git *)]\n---\nBase body\n",
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("variants/codex/SKILL.md"),
+            "---\nname: ignored\ninvocation: implicit\n---\nCodex body\n",
+        )
+        .unwrap();
+
+        let mut diag = DiagnosticCollector::new();
+        project_skill_for_target(&source, &dest, Some("codex"), &mut diag, "planning").unwrap();
+
+        let out = std::fs::read_to_string(dest.join("SKILL.md")).unwrap();
+        assert!(out.contains("name: planning"));
+        assert!(out.contains("allow_implicit_invocation: false"));
+        assert!(!out.contains("name: ignored"));
+        assert!(!out.contains("allowed-tools"));
+        assert!(out.ends_with("Codex body\n"));
+        assert!(diag.drain().iter().any(|d| d.code == "skill-field-dropped"));
+    }
+
+    #[test]
     fn full_fidelity_projection_keeps_variants() {
         let tmp = TempDir::new().unwrap();
         let source = tmp.path().join("source");
@@ -390,7 +513,8 @@ mod tests {
         std::fs::write(source.join("SKILL.md"), "base").unwrap();
         std::fs::write(source.join("variants/codex/SKILL.md"), "codex").unwrap();
 
-        project_skill_for_target(&source, &dest, None).unwrap();
+        let mut diag = DiagnosticCollector::new();
+        project_skill_for_target(&source, &dest, None, &mut diag, "planning").unwrap();
 
         assert_eq!(
             std::fs::read_to_string(dest.join("SKILL.md")).unwrap(),

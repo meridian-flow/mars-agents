@@ -280,17 +280,23 @@ pub(crate) fn build_target(
         } else {
             ContentHash::from(hash::compute_hash(&source_path, item.discovered.id.kind)?)
         };
-        if item.discovered.id.kind == ItemKind::Agent {
-            if let Err(message) =
+        if item.discovered.id.kind == ItemKind::Agent
+            && let Err(message) =
                 crate::target::validate_agent_filename(item.discovered.id.name.as_str())
-            {
-                diag.error_with_category(
-                    "invalid-agent-filename",
-                    format!("{message}; skipping local agent"),
-                    crate::diagnostic::DiagnosticCategory::Validation,
-                );
-                continue;
-            }
+        {
+            diag.error_with_category(
+                "invalid-agent-filename",
+                format!("{message}; skipping local agent"),
+                crate::diagnostic::DiagnosticCategory::Validation,
+            );
+            continue;
+        }
+        if item.discovered.id.kind == ItemKind::Skill {
+            validate_skill_frontmatter_at_source(
+                &source_path,
+                item.discovered.id.name.as_str(),
+                diag,
+            );
         }
         let dest_path =
             default_dest_path(item.discovered.id.kind, item.discovered.id.name.as_str());
@@ -929,6 +935,37 @@ fn validate_skill_refs(
         .collect();
 
     crate::validate::check_deps(&agents, &available_skills).unwrap_or_default()
+}
+
+fn validate_skill_frontmatter_at_source(
+    source_path: &Path,
+    skill_name: &str,
+    diag: &mut DiagnosticCollector,
+) {
+    let skill_md = if source_path.is_dir() {
+        source_path.join("SKILL.md")
+    } else {
+        source_path.to_path_buf()
+    };
+    let Ok(content) = std::fs::read_to_string(&skill_md) else {
+        return;
+    };
+    let mut skill_diags = Vec::new();
+    let _ = crate::compiler::skills::parse_skill_content(&content, &mut skill_diags);
+    for d in skill_diags {
+        if d.is_error() {
+            diag.error_with_category(
+                "skill-schema-error",
+                format!("skill `{skill_name}`: {}", d.message()),
+                crate::diagnostic::DiagnosticCategory::Validation,
+            );
+        } else {
+            diag.warn(
+                "skill-schema-warning",
+                format!("skill `{skill_name}`: {}", d.message()),
+            );
+        }
+    }
 }
 
 #[cfg(test)]
