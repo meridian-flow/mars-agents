@@ -83,13 +83,6 @@ pub fn compile(
                 diag,
             );
         }
-        skill_surface_compile(
-            &ctx.project_root,
-            &mars_dir,
-            &applied.applied.outcomes,
-            request.options.dry_run,
-            diag,
-        );
     }
 
     // Phase 5.1 / 5.2 / 5.3: MCP and hooks config-entry compilation.
@@ -376,118 +369,6 @@ fn dual_surface_compile(
     }
 }
 
-/// Skill-surface compilation: copy canonical `.mars/skills/` trees into every
-/// native harness skill directory.
-///
-/// `.mars/skills/` remains the canonical compiled store. Native skill copies
-/// are harness-facing artifacts, not managed targets, so this lane is separate
-/// from target sync and intentionally skips the deprecated `.agents` adapter.
-///
-/// Errors are non-fatal — emitted as diagnostics and sync continues (D9).
-fn skill_surface_compile(
-    project_root: &Path,
-    mars_dir: &Path,
-    outcomes: &[crate::sync::apply::ActionOutcome],
-    dry_run: bool,
-    diag: &mut DiagnosticCollector,
-) {
-    use crate::lock::ItemKind;
-    use crate::target::TargetRegistry;
-
-    let registry = TargetRegistry::new();
-    let skill_adapters: Vec<_> = registry
-        .iter()
-        .filter(|adapter| adapter.name() != ".agents")
-        .filter(|adapter| {
-            adapter
-                .default_dest_path(ItemKind::Skill, "__mars_skill_probe__")
-                .is_some()
-        })
-        .collect();
-
-    if skill_adapters.is_empty() {
-        return;
-    }
-
-    for outcome in outcomes {
-        if outcome.item_id.kind != ItemKind::Skill
-            || !matches!(outcome.action, ActionTaken::Removed)
-        {
-            continue;
-        }
-
-        let skill_name = outcome.item_id.name.as_str();
-        for adapter in &skill_adapters {
-            let Some(dest_rel) = adapter.default_dest_path(ItemKind::Skill, skill_name) else {
-                continue;
-            };
-            let native_path = project_root.join(adapter.name()).join(dest_rel.as_str());
-            if dry_run || (!native_path.exists() && native_path.symlink_metadata().is_err()) {
-                continue;
-            }
-            if let Err(e) = crate::reconcile::fs_ops::safe_remove(&native_path) {
-                diag.warn(
-                    "skill-surface-remove",
-                    format!("could not remove {}: {e}", native_path.display()),
-                );
-            }
-        }
-    }
-
-    let skills_dir = mars_dir.join("skills");
-    let Ok(entries) = std::fs::read_dir(&skills_dir) else {
-        // .mars/skills/ may not exist yet (e.g., first dry-run or no skills).
-        return;
-    };
-
-    for entry in entries.flatten() {
-        let source_path = entry.path();
-        let Ok(file_type) = entry.file_type() else {
-            diag.warn(
-                "skill-surface-read",
-                format!("could not inspect {}", source_path.display()),
-            );
-            continue;
-        };
-        if !file_type.is_dir() {
-            continue;
-        }
-
-        let Some(skill_name) = entry.file_name().to_str().map(str::to_owned) else {
-            diag.warn(
-                "skill-surface-name",
-                format!("skill path is not valid UTF-8: {}", source_path.display()),
-            );
-            continue;
-        };
-        crate::compiler::variants::validate_skill_variants(&source_path, &skill_name, diag);
-
-        for adapter in &skill_adapters {
-            let Some(dest_rel) = adapter.default_dest_path(ItemKind::Skill, &skill_name) else {
-                continue;
-            };
-            let native_path = project_root.join(adapter.name()).join(dest_rel.as_str());
-            if dry_run {
-                continue;
-            }
-            if let Err(e) = crate::compiler::variants::project_skill_for_target(
-                &source_path,
-                &native_path,
-                adapter.skill_variant_key(),
-            ) {
-                diag.warn(
-                    "skill-surface-copy",
-                    format!(
-                        "could not copy {} to {}: {e}",
-                        source_path.display(),
-                        native_path.display()
-                    ),
-                );
-            }
-        }
-    }
-}
-
 fn should_emit_native_agents(
     agent_emission: Option<&AgentEmission>,
     meridian_managed: bool,
@@ -534,20 +415,6 @@ mod skill_surface_tests {
         ));
     }
 
-    fn skill_outcome(name: &str, action: ActionTaken) -> ActionOutcome {
-        ActionOutcome {
-            item_id: ItemId {
-                kind: ItemKind::Skill,
-                name: ItemName::from(name),
-            },
-            action,
-            dest_path: DestPath::from(format!("skills/{name}")),
-            source_name: "test-source".into(),
-            source_checksum: None,
-            installed_checksum: None,
-        }
-    }
-
     fn agent_outcome(name: &str, action: ActionTaken) -> ActionOutcome {
         ActionOutcome {
             item_id: ItemId {
@@ -583,110 +450,6 @@ mod skill_surface_tests {
         for target in [".claude", ".codex", ".opencode", ".cursor", ".pi"] {
             assert!(!dir.path().join(target).join("agents/coder.md").exists());
             assert!(!dir.path().join(target).join("agents/coder.toml").exists());
-        }
-        assert!(diag.drain().is_empty());
-    }
-
-    #[test]
-    fn skill_surface_compile_copies_skills_to_native_harness_dirs_only() {
-        let dir = TempDir::new().unwrap();
-        let mars_dir = dir.path().join(".mars");
-        std::fs::create_dir_all(mars_dir.join("skills/planning")).unwrap();
-        std::fs::write(mars_dir.join("skills/planning/SKILL.md"), "# Planning\n").unwrap();
-
-        let mut diag = DiagnosticCollector::new();
-        skill_surface_compile(
-            dir.path(),
-            &mars_dir,
-            &[skill_outcome("planning", ActionTaken::Installed)],
-            false,
-            &mut diag,
-        );
-
-        for target in [".claude", ".codex", ".opencode", ".cursor", ".pi"] {
-            assert_eq!(
-                std::fs::read_to_string(dir.path().join(target).join("skills/planning/SKILL.md"))
-                    .unwrap(),
-                "# Planning\n"
-            );
-        }
-        assert!(!dir.path().join(".agents/skills/planning/SKILL.md").exists());
-        assert!(diag.drain().is_empty());
-    }
-
-    #[test]
-    fn skill_surface_compile_projects_harness_variants_and_shared_resources() {
-        let dir = TempDir::new().unwrap();
-        let mars_dir = dir.path().join(".mars");
-        let skill_dir = mars_dir.join("skills/planning");
-        std::fs::create_dir_all(skill_dir.join("resources")).unwrap();
-        std::fs::create_dir_all(skill_dir.join("variants/claude/opus")).unwrap();
-        std::fs::create_dir_all(skill_dir.join("variants/codex")).unwrap();
-        std::fs::write(skill_dir.join("SKILL.md"), "# Base\n").unwrap();
-        std::fs::write(skill_dir.join("resources/BOOTSTRAP.md"), "# Bootstrap\n").unwrap();
-        std::fs::write(skill_dir.join("variants/claude/SKILL.md"), "# Claude\n").unwrap();
-        std::fs::write(skill_dir.join("variants/claude/opus/SKILL.md"), "# Opus\n").unwrap();
-        std::fs::write(skill_dir.join("variants/codex/SKILL.md"), "# Codex\n").unwrap();
-
-        let mut diag = DiagnosticCollector::new();
-        skill_surface_compile(
-            dir.path(),
-            &mars_dir,
-            &[skill_outcome("planning", ActionTaken::Installed)],
-            false,
-            &mut diag,
-        );
-
-        assert_eq!(
-            std::fs::read_to_string(dir.path().join(".claude/skills/planning/SKILL.md")).unwrap(),
-            "# Claude\n"
-        );
-        assert_eq!(
-            std::fs::read_to_string(dir.path().join(".codex/skills/planning/SKILL.md")).unwrap(),
-            "# Codex\n"
-        );
-        assert_eq!(
-            std::fs::read_to_string(dir.path().join(".opencode/skills/planning/SKILL.md")).unwrap(),
-            "# Base\n"
-        );
-
-        for target in [".claude", ".codex", ".opencode", ".cursor", ".pi"] {
-            let native_skill = dir.path().join(target).join("skills/planning");
-            assert!(!native_skill.join("variants").exists());
-            assert_eq!(
-                std::fs::read_to_string(native_skill.join("resources/BOOTSTRAP.md")).unwrap(),
-                "# Bootstrap\n"
-            );
-        }
-        assert!(
-            mars_dir
-                .join("skills/planning/variants/claude/opus/SKILL.md")
-                .exists()
-        );
-        assert!(diag.drain().is_empty());
-    }
-
-    #[test]
-    fn skill_surface_compile_removes_native_copies_for_removed_skills() {
-        let dir = TempDir::new().unwrap();
-        let mars_dir = dir.path().join(".mars");
-        for target in [".claude", ".codex", ".opencode", ".cursor", ".pi"] {
-            let skill_dir = dir.path().join(target).join("skills/planning");
-            std::fs::create_dir_all(&skill_dir).unwrap();
-            std::fs::write(skill_dir.join("SKILL.md"), "# Old\n").unwrap();
-        }
-
-        let mut diag = DiagnosticCollector::new();
-        skill_surface_compile(
-            dir.path(),
-            &mars_dir,
-            &[skill_outcome("planning", ActionTaken::Removed)],
-            false,
-            &mut diag,
-        );
-
-        for target in [".claude", ".codex", ".opencode", ".cursor", ".pi"] {
-            assert!(!dir.path().join(target).join("skills/planning").exists());
         }
         assert!(diag.drain().is_empty());
     }

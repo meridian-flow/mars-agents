@@ -112,10 +112,10 @@ fn sync_one_target(
 
     // Track expected paths for orphan cleanup
     let mut expected_paths: HashSet<String> = HashSet::new();
-    let is_native_harness_target = crate::target::TargetRegistry::new()
+    let native_skill_variant_key = crate::target::TargetRegistry::new()
         .get(target_name)
         .and_then(|adapter| adapter.skill_variant_key())
-        .is_some();
+        .map(str::to_owned);
 
     for outcome in outcomes {
         if outcome.item_id.kind == crate::lock::ItemKind::BootstrapDoc {
@@ -124,12 +124,6 @@ fn sync_one_target(
             // files inside skill directories.
             continue;
         }
-        if is_native_harness_target && outcome.item_id.kind == crate::lock::ItemKind::Skill {
-            // Native harness skill surfaces are projected by skill_surface_compile()
-            // so variants/ is excluded and harness-specific SKILL.md is selected.
-            continue;
-        }
-
         let dest_rel = outcome.dest_path.as_str();
 
         match &outcome.action {
@@ -151,11 +145,20 @@ fn sync_one_target(
                 let dest = target_root.join(dest_rel);
                 if source.exists() || source.symlink_metadata().is_ok() {
                     if force || !dest.exists() {
-                        match copy_item_to_target(&source, &dest) {
+                        match copy_item_to_target(
+                            &source,
+                            &dest,
+                            outcome.item_id.kind,
+                            outcome.item_id.name.as_str(),
+                            native_skill_variant_key.as_deref(),
+                            diag,
+                        ) {
                             Ok(()) => items_synced += 1,
                             Err(e) => errors.push(format!("failed to copy {dest_rel}: {e}")),
                         }
-                    } else if let Some(expected_checksum) = &outcome.installed_checksum {
+                    } else if native_skill_variant_key.is_none()
+                        && let Some(expected_checksum) = &outcome.installed_checksum
+                    {
                         match crate::hash::compute_hash(&dest, outcome.item_id.kind) {
                             Ok(actual) => {
                                 let actual = ContentHash::from(actual);
@@ -183,7 +186,14 @@ fn sync_one_target(
                 let source = mars_dir.join(dest_rel);
                 let dest = target_root.join(dest_rel);
                 if source.exists() || source.symlink_metadata().is_ok() {
-                    match copy_item_to_target(&source, &dest) {
+                    match copy_item_to_target(
+                        &source,
+                        &dest,
+                        outcome.item_id.kind,
+                        outcome.item_id.name.as_str(),
+                        native_skill_variant_key.as_deref(),
+                        diag,
+                    ) {
                         Ok(()) => items_synced += 1,
                         Err(e) => errors.push(format!("failed to copy {dest_rel}: {e}")),
                     }
@@ -213,7 +223,23 @@ fn sync_one_target(
 ///
 /// Follows symlinks on the source side (D26 — targets get file copies, not symlinks).
 /// Uses atomic operations via the reconcile layer.
-fn copy_item_to_target(source: &Path, dest: &Path) -> Result<(), MarsError> {
+fn copy_item_to_target(
+    source: &Path,
+    dest: &Path,
+    kind: crate::lock::ItemKind,
+    item_name: &str,
+    native_skill_variant_key: Option<&str>,
+    diag: &mut DiagnosticCollector,
+) -> Result<(), MarsError> {
+    if kind == crate::lock::ItemKind::Skill && native_skill_variant_key.is_some() {
+        crate::compiler::variants::validate_skill_variants(source, item_name, diag);
+        return crate::compiler::variants::project_skill_for_target(
+            source,
+            dest,
+            native_skill_variant_key,
+        );
+    }
+
     // Ensure parent directories exist
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent)?;
@@ -493,13 +519,21 @@ mod tests {
     }
 
     #[test]
-    fn sync_skips_skills_for_native_harness_targets() {
+    fn sync_projects_skills_for_native_harness_targets() {
         let dir = TempDir::new().unwrap();
         let mars_dir = dir.path().join(".mars");
         let target = dir.path().join(".claude");
 
+        std::fs::create_dir_all(mars_dir.join("skills/planning/resources")).unwrap();
         std::fs::create_dir_all(mars_dir.join("skills/planning/variants/claude")).unwrap();
+        std::fs::create_dir_all(target.join("skills")).unwrap();
+        std::fs::write(target.join("skills/orphan"), "# Orphan").unwrap();
         std::fs::write(mars_dir.join("skills/planning/SKILL.md"), "# Base").unwrap();
+        std::fs::write(
+            mars_dir.join("skills/planning/resources/BOOTSTRAP.md"),
+            "# Bootstrap",
+        )
+        .unwrap();
         std::fs::write(
             mars_dir.join("skills/planning/variants/claude/SKILL.md"),
             "# Claude",
@@ -516,14 +550,22 @@ mod tests {
             &mars_dir,
             &[".claude".to_string()],
             &outcomes,
-            &managed_paths(&[]),
+            &managed_paths(&["skills/planning", "skills/orphan"]),
             false,
             &mut diag,
         );
 
-        assert_eq!(results[0].items_synced, 0);
-        assert!(!target.join("skills/planning/SKILL.md").exists());
+        assert_eq!(results[0].items_synced, 1);
+        assert_eq!(
+            std::fs::read_to_string(target.join("skills/planning/SKILL.md")).unwrap(),
+            "# Claude"
+        );
+        assert_eq!(
+            std::fs::read_to_string(target.join("skills/planning/resources/BOOTSTRAP.md")).unwrap(),
+            "# Bootstrap"
+        );
         assert!(!target.join("skills/planning/variants").exists());
+        assert!(!target.join("skills/orphan").exists());
     }
 
     #[test]

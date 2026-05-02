@@ -4,6 +4,9 @@ Caveman style. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- Native harness skill projection now runs inside `target_sync`, so projected skills stay expected during orphan cleanup and `mars link` can populate native skill dirs.
+
 ### Changed
 - `ReaderIr` now embeds `ResolvedState` directly — eliminates decompose/reconstruct round-trip between reader and compiler stages. Removed dead `target_registry` field. Renamed `_sync_lock` → `sync_lock` in `LoadedConfig`. Removed redundant nested `dry_run` guard in `finalize()`.
 
