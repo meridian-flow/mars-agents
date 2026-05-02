@@ -63,7 +63,10 @@ pub fn discover_source(
         &mut HashSet::new(),
     )?;
 
-    if items.is_empty() && tree_path.join("SKILL.md").is_file() {
+    let has_agent_or_skill = items
+        .iter()
+        .any(|item| matches!(item.id.kind, ItemKind::Agent | ItemKind::Skill));
+    if !has_agent_or_skill && tree_path.join("SKILL.md").is_file() {
         let name = fallback_name
             .map(String::from)
             .unwrap_or_else(|| package_basename(tree_path));
@@ -1176,6 +1179,37 @@ mod tests {
         let items = discover_resolved_source(dir.path(), Some("demo")).unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].source_path, PathBuf::from("skills/planning"));
+    }
+
+    #[test]
+    fn conventional_root_skill_survives_bootstrap_only_discovery() {
+        let dir = TempDir::new().unwrap();
+        fs::write(
+            dir.path().join("mars.toml"),
+            "[package]\nname='demo'\nversion='0.1.0'\n",
+        )
+        .unwrap();
+        fs::write(dir.path().join("SKILL.md"), "# root").unwrap();
+        fs::create_dir_all(dir.path().join("bootstrap/global-auth")).unwrap();
+        fs::write(
+            dir.path().join("bootstrap/global-auth/BOOTSTRAP.md"),
+            "# auth",
+        )
+        .unwrap();
+
+        let items = discover_resolved_source(dir.path(), Some("demo")).unwrap();
+
+        assert_eq!(items.len(), 2);
+        assert!(items.iter().any(|item| {
+            item.id.kind == ItemKind::Skill
+                && item.id.name.as_str() == "demo"
+                && item.source_path == Path::new(".")
+        }));
+        assert!(items.iter().any(|item| {
+            item.id.kind == ItemKind::BootstrapDoc
+                && item.id.name.as_str() == "global-auth"
+                && item.source_path == Path::new("bootstrap/global-auth")
+        }));
     }
 
     #[test]
