@@ -299,6 +299,10 @@ fn compile_projected_skill_frontmatter(
         }
     }
 
+    if !profile.has_frontmatter {
+        return Ok(());
+    }
+
     let selected_fm = match crate::frontmatter::parse(&selected_content) {
         Ok(fm) => fm,
         Err(e) => {

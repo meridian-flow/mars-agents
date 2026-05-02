@@ -116,10 +116,12 @@ pub fn lower_skill_to_claude(profile: &SkillProfile, body: &str) -> LoweredOutpu
 pub fn lower_skill_to_codex(profile: &SkillProfile, body: &str) -> LoweredOutput {
     let mut yaml = Mapping::new();
     insert_identity(&mut yaml, profile);
-    yaml.insert(
-        yk("allow_implicit_invocation"),
-        Value::Bool(profile.invocation == SkillInvocation::Implicit),
-    );
+    if profile.had_invocation_field || profile.legacy_fields_present {
+        yaml.insert(
+            yk("allow_implicit_invocation"),
+            Value::Bool(profile.invocation == SkillInvocation::Implicit),
+        );
+    }
     insert_metadata(&mut yaml, profile);
     let mut lossy_fields = Vec::new();
     if !profile.allowed_tools.is_empty() {
@@ -221,6 +223,25 @@ mod tests {
                 .any(|f| f.field == "allowed-tools" && f.classification == Lossiness::Dropped)
         );
     }
+    #[test]
+    fn codex_identity_only_does_not_gain_invocation_field() {
+        let content = "---\nname: skill\ndescription: desc\n---\nBody\n";
+        let mut diags = Vec::new();
+        let (profile, _) = parse_skill_content(content, &mut diags).unwrap();
+        let out = String::from_utf8(lower_skill_to_codex(&profile, "Body\n").bytes).unwrap();
+        assert!(out.contains("name: skill"));
+        assert!(out.contains("description: desc"));
+        assert!(!out.contains("allow_implicit_invocation"));
+    }
+
+    #[test]
+    fn codex_no_frontmatter_copies_body_without_frontmatter() {
+        let mut diags = Vec::new();
+        let (profile, fm) = parse_skill_content("# Body\nbytes", &mut diags).unwrap();
+        let out = String::from_utf8(lower_skill_to_codex(&profile, fm.body()).bytes).unwrap();
+        assert_eq!(out, "# Body\nbytes");
+    }
+
     #[test]
     fn opencode_drops_invocation_and_tools() {
         let lowered = lower_skill_to_opencode(&profile(), "Body\n");

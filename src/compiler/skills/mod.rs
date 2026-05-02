@@ -32,6 +32,7 @@ pub struct SkillProfile {
     pub metadata: Option<Value>,
     pub legacy_fields_present: bool,
     pub had_invocation_field: bool,
+    pub has_frontmatter: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -184,6 +185,7 @@ pub fn parse_skill_profile(fm: &Frontmatter, diags: &mut Vec<SkillDiagnostic>) -
         metadata,
         legacy_fields_present,
         had_invocation_field,
+        has_frontmatter: fm.has_frontmatter(),
     }
 }
 
