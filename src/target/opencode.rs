@@ -21,6 +21,10 @@ impl TargetAdapter for OpencodeAdapter {
         ".opencode"
     }
 
+    fn skill_variant_key(&self) -> Option<&str> {
+        Some("opencode")
+    }
+
     fn default_dest_path(&self, kind: ItemKind, name: &str) -> Option<DestPath> {
         match kind {
             ItemKind::Skill => Some(DestPath::from(format!("skills/{name}").as_str())),

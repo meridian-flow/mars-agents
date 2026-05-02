@@ -23,6 +23,10 @@ impl TargetAdapter for ClaudeAdapter {
         ".claude"
     }
 
+    fn skill_variant_key(&self) -> Option<&str> {
+        Some("claude")
+    }
+
     fn default_dest_path(&self, kind: ItemKind, name: &str) -> Option<DestPath> {
         match kind {
             ItemKind::Skill => Some(DestPath::from(format!("skills/{name}").as_str())),

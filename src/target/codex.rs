@@ -21,6 +21,10 @@ impl TargetAdapter for CodexAdapter {
         ".codex"
     }
 
+    fn skill_variant_key(&self) -> Option<&str> {
+        Some("codex")
+    }
+
     fn default_dest_path(&self, kind: ItemKind, name: &str) -> Option<DestPath> {
         match kind {
             ItemKind::Skill => Some(DestPath::from(format!("skills/{name}").as_str())),

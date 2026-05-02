@@ -98,6 +98,13 @@ pub trait TargetAdapter: std::fmt::Debug + Send + Sync {
     /// Target root name (e.g., `.claude`, `.codex`).
     fn name(&self) -> &str;
 
+    /// Skill variant harness key used when projecting skills to this target.
+    ///
+    /// Native harness targets return the `variants/<key>/` directory name they
+    /// consume. Full-fidelity targets that should not select skill variants
+    /// return `None`.
+    fn skill_variant_key(&self) -> Option<&str>;
+
     // -----------------------------------------------------------------------
     // Path resolution
     // -----------------------------------------------------------------------
@@ -282,6 +289,24 @@ mod tests {
     fn registry_get_unknown_name_returns_none() {
         let registry = TargetRegistry::new();
         assert!(registry.get(".unknown-target").is_none());
+    }
+
+    #[test]
+    fn native_adapters_expose_skill_variant_keys() {
+        let registry = TargetRegistry::new();
+        let expected = [
+            (".claude", Some("claude")),
+            (".codex", Some("codex")),
+            (".opencode", Some("opencode")),
+            (".pi", Some("pi")),
+            (".cursor", Some("cursor")),
+            (".agents", None),
+        ];
+
+        for (target, key) in expected {
+            let adapter = registry.get(target).unwrap();
+            assert_eq!(adapter.skill_variant_key(), key);
+        }
     }
 
     #[test]
