@@ -471,7 +471,12 @@ fn sync_preserves_selected_variant_raw_bytes_when_variant_frontmatter_is_malform
 
     let project = dir.child("project");
     mars()
-        .args(["init", ".claude", "--root", project.path().to_str().unwrap()])
+        .args([
+            "init",
+            ".claude",
+            "--root",
+            project.path().to_str().unwrap(),
+        ])
         .assert()
         .success();
 

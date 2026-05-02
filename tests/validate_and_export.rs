@@ -449,7 +449,12 @@ fn validate_json_reports_unknown_skill_variant_harness_warning() {
         .unwrap();
 
     let output = mars()
-        .args(["validate", "--json", "--root", project.path().to_str().unwrap()])
+        .args([
+            "validate",
+            "--json",
+            "--root",
+            project.path().to_str().unwrap(),
+        ])
         .output()
         .unwrap();
 

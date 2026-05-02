@@ -294,7 +294,7 @@ mod tests {
 
     #[test]
     fn schema_version_is_nonzero() {
-        assert!(SCHEMA_VERSION >= 1);
+        const { assert!(SCHEMA_VERSION >= 1) };
     }
 
     #[test]
