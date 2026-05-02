@@ -5,9 +5,11 @@
 //! keys available for native skill projection and CLI annotation.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 use crate::diagnostic::DiagnosticCollector;
+use crate::error::MarsError;
 
 /// Harness identifiers accepted under `skills/<name>/variants/`.
 pub const KNOWN_HARNESS_VARIANT_KEYS: &[&str] = &["claude", "codex", "opencode", "pi", "cursor"];
@@ -199,6 +201,111 @@ impl VariantLayoutWarning {
     }
 }
 
+/// Path to a harness-level replacement document, when one exists.
+pub fn harness_skill_variant_path(skill_dir: &Path, harness_key: &str) -> Option<PathBuf> {
+    let path = skill_dir
+        .join("variants")
+        .join(harness_key)
+        .join("SKILL.md");
+    path.is_file().then_some(path)
+}
+
+/// Atomically project one canonical skill tree to a target skill directory.
+///
+/// Native harness projections copy the whole skill tree except the top-level
+/// `variants/` subtree, then optionally replace only `SKILL.md` with the
+/// harness-level variant. Passing `None` keeps the full tree and is intended
+/// for full-fidelity targets such as `.agents`.
+pub fn project_skill_for_target(
+    source: &Path,
+    dest: &Path,
+    harness_variant_key: Option<&str>,
+) -> Result<(), MarsError> {
+    let parent = dest.parent().unwrap_or(Path::new("."));
+    fs::create_dir_all(parent)?;
+
+    let tmp_dir = tempfile::TempDir::new_in(parent)?;
+    if harness_variant_key.is_some() {
+        copy_dir_following_symlinks_excluding_top_level_variants(source, tmp_dir.path())?;
+    } else {
+        copy_dir_following_symlinks(source, tmp_dir.path())?;
+    }
+
+    if let Some(variant_path) =
+        harness_variant_key.and_then(|key| harness_skill_variant_path(source, key))
+    {
+        let projected_skill = tmp_dir.path().join("SKILL.md");
+        let content = fs::read(variant_path)?;
+        fs::write(projected_skill, content)?;
+    }
+
+    let tmp_path = tmp_dir.keep();
+    crate::platform::fs::replace_generated_dir(&tmp_path, dest)
+}
+
+fn copy_dir_following_symlinks_excluding_top_level_variants(
+    source: &Path,
+    dest: &Path,
+) -> Result<(), MarsError> {
+    fs::create_dir_all(dest)?;
+
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        if entry.file_name() == "variants" {
+            continue;
+        }
+        copy_entry_following_symlinks(&entry.path(), &dest.join(entry.file_name()))?;
+    }
+
+    Ok(())
+}
+
+fn copy_dir_following_symlinks(source: &Path, dest: &Path) -> Result<(), MarsError> {
+    fs::create_dir_all(dest)?;
+
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        copy_entry_following_symlinks(&entry.path(), &dest.join(entry.file_name()))?;
+    }
+
+    Ok(())
+}
+
+fn copy_entry_following_symlinks(source: &Path, dest: &Path) -> Result<(), MarsError> {
+    let metadata = match fs::metadata(source) {
+        Ok(m) => m,
+        Err(e) => {
+            if source.symlink_metadata()?.file_type().is_symlink() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("broken symlink in source tree: {}", source.display()),
+                )
+                .into());
+            }
+            return Err(e.into());
+        }
+    };
+
+    if metadata.is_dir() {
+        copy_dir_following_symlinks(source, dest)
+    } else if metadata.is_file() {
+        let content = fs::read(source)?;
+        fs::write(dest, content)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(dest, fs::Permissions::from_mode(0o644))?;
+        }
+        Ok(())
+    } else {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("unsupported filesystem entry: {}", source.display()),
+        )
+        .into())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -247,5 +354,48 @@ mod tests {
                 .iter()
                 .any(|w| w.code == "skill-variant-missing-skill")
         );
+    }
+
+    #[test]
+    fn projects_native_skill_without_variants_and_replaces_skill_md() {
+        let tmp = TempDir::new().unwrap();
+        let source = tmp.path().join("source");
+        let dest = tmp.path().join("dest");
+        std::fs::create_dir_all(source.join("resources")).unwrap();
+        std::fs::create_dir_all(source.join("variants/claude/opus")).unwrap();
+        std::fs::write(source.join("SKILL.md"), "base").unwrap();
+        std::fs::write(source.join("resources/BOOTSTRAP.md"), "bootstrap").unwrap();
+        std::fs::write(source.join("variants/claude/SKILL.md"), "claude").unwrap();
+        std::fs::write(source.join("variants/claude/opus/SKILL.md"), "opus").unwrap();
+
+        project_skill_for_target(&source, &dest, Some("claude")).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(dest.join("SKILL.md")).unwrap(),
+            "claude"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dest.join("resources/BOOTSTRAP.md")).unwrap(),
+            "bootstrap"
+        );
+        assert!(!dest.join("variants").exists());
+    }
+
+    #[test]
+    fn full_fidelity_projection_keeps_variants() {
+        let tmp = TempDir::new().unwrap();
+        let source = tmp.path().join("source");
+        let dest = tmp.path().join("dest");
+        std::fs::create_dir_all(source.join("variants/codex")).unwrap();
+        std::fs::write(source.join("SKILL.md"), "base").unwrap();
+        std::fs::write(source.join("variants/codex/SKILL.md"), "codex").unwrap();
+
+        project_skill_for_target(&source, &dest, None).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(dest.join("SKILL.md")).unwrap(),
+            "base"
+        );
+        assert!(dest.join("variants/codex/SKILL.md").exists());
     }
 }

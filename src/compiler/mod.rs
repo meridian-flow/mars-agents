@@ -470,7 +470,11 @@ fn skill_surface_compile(
             if dry_run {
                 continue;
             }
-            if let Err(e) = crate::reconcile::fs_ops::atomic_copy_dir(&source_path, &native_path) {
+            if let Err(e) = crate::compiler::variants::project_skill_for_target(
+                &source_path,
+                &native_path,
+                adapter.skill_variant_key(),
+            ) {
                 diag.warn(
                     "skill-surface-copy",
                     format!(
@@ -607,6 +611,58 @@ mod skill_surface_tests {
             );
         }
         assert!(!dir.path().join(".agents/skills/planning/SKILL.md").exists());
+        assert!(diag.drain().is_empty());
+    }
+
+    #[test]
+    fn skill_surface_compile_projects_harness_variants_and_shared_resources() {
+        let dir = TempDir::new().unwrap();
+        let mars_dir = dir.path().join(".mars");
+        let skill_dir = mars_dir.join("skills/planning");
+        std::fs::create_dir_all(skill_dir.join("resources")).unwrap();
+        std::fs::create_dir_all(skill_dir.join("variants/claude/opus")).unwrap();
+        std::fs::create_dir_all(skill_dir.join("variants/codex")).unwrap();
+        std::fs::write(skill_dir.join("SKILL.md"), "# Base\n").unwrap();
+        std::fs::write(skill_dir.join("resources/BOOTSTRAP.md"), "# Bootstrap\n").unwrap();
+        std::fs::write(skill_dir.join("variants/claude/SKILL.md"), "# Claude\n").unwrap();
+        std::fs::write(skill_dir.join("variants/claude/opus/SKILL.md"), "# Opus\n").unwrap();
+        std::fs::write(skill_dir.join("variants/codex/SKILL.md"), "# Codex\n").unwrap();
+
+        let mut diag = DiagnosticCollector::new();
+        skill_surface_compile(
+            dir.path(),
+            &mars_dir,
+            &[skill_outcome("planning", ActionTaken::Installed)],
+            false,
+            &mut diag,
+        );
+
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join(".claude/skills/planning/SKILL.md")).unwrap(),
+            "# Claude\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join(".codex/skills/planning/SKILL.md")).unwrap(),
+            "# Codex\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join(".opencode/skills/planning/SKILL.md")).unwrap(),
+            "# Base\n"
+        );
+
+        for target in [".claude", ".codex", ".opencode", ".cursor", ".pi"] {
+            let native_skill = dir.path().join(target).join("skills/planning");
+            assert!(!native_skill.join("variants").exists());
+            assert_eq!(
+                std::fs::read_to_string(native_skill.join("resources/BOOTSTRAP.md")).unwrap(),
+                "# Bootstrap\n"
+            );
+        }
+        assert!(
+            mars_dir
+                .join("skills/planning/variants/claude/opus/SKILL.md")
+                .exists()
+        );
         assert!(diag.drain().is_empty());
     }
 
