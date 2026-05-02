@@ -24,8 +24,10 @@ const SKILL_CONTAINER_ROOTS: &[&str] = &[
     ".codex/skills",
 ];
 const AGENT_CONTAINER_ROOTS: &[&str] = &["agents", ".claude/agents", ".codex/agents"];
+const BOOTSTRAP_CONTAINER_ROOTS: &[&str] = &["bootstrap"];
 const MANIFEST_SKILL_KEYS: &[&str] = &["skills", "skill_paths", "skillPaths"];
 const MANIFEST_AGENT_KEYS: &[&str] = &["agents", "agent_paths", "agentPaths"];
+const MANIFEST_BOOTSTRAP_KEYS: &[&str] = &["bootstrapDocs", "bootstrap_docs"];
 
 /// An item discovered in a source tree by filesystem convention.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -233,8 +235,36 @@ fn scan_manifest_declared_path(
                 )?;
             }
         }
-        // New kinds not yet handled by source discovery.
-        ItemKind::Hook | ItemKind::McpServer | ItemKind::BootstrapDoc => {}
+        ItemKind::BootstrapDoc => {
+            if candidate.join("BOOTSTRAP.md").is_file() {
+                register_bootstrap_doc(
+                    package_root,
+                    &declared_path.relative_path,
+                    items,
+                    &mut visited,
+                )?;
+            } else if candidate
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name == "BOOTSTRAP.md")
+                && candidate.is_file()
+                && let Some(parent) = declared_path.relative_path.parent()
+            {
+                register_bootstrap_doc(package_root, parent, items, &mut visited)?;
+            } else if matches_container_root(
+                &declared_path.relative_path,
+                BOOTSTRAP_CONTAINER_ROOTS,
+            ) {
+                scan_bootstrap_dir(
+                    package_root,
+                    &declared_path.relative_path,
+                    items,
+                    &mut visited,
+                )?;
+            }
+        }
+        // New config kinds not yet handled by source discovery.
+        ItemKind::Hook | ItemKind::McpServer => {}
     }
 
     Ok(())
@@ -403,6 +433,13 @@ fn collect_heuristic_candidates_at_base(
             candidates,
         )?;
     }
+    for root in BOOTSTRAP_CONTAINER_ROOTS {
+        collect_bootstrap_container_candidates(
+            package_root,
+            &join_relative(base_rel, Path::new(root)),
+            candidates,
+        )?;
+    }
     Ok(())
 }
 
@@ -483,6 +520,35 @@ fn collect_agent_container_candidates(
         }
         let rel = relative_to(package_root, &path)?;
         candidates.push(LayeredCandidate::new(ItemKind::Agent, rel)?);
+    }
+
+    Ok(())
+}
+
+fn collect_bootstrap_container_candidates(
+    package_root: &Path,
+    container_rel: &Path,
+    candidates: &mut Vec<LayeredCandidate>,
+) -> Result<(), MarsError> {
+    let container_dir = package_root.join(container_rel);
+    if !container_dir.is_dir() {
+        return Ok(());
+    }
+
+    for path in read_dir_paths_sorted(&container_dir)? {
+        if !path.is_dir() {
+            continue;
+        }
+        if let Some(name) = path.file_name().and_then(|name| name.to_str())
+            && name.starts_with('.')
+        {
+            continue;
+        }
+        if !path.join("BOOTSTRAP.md").is_file() {
+            continue;
+        }
+        let rel = relative_to(package_root, &path)?;
+        candidates.push(LayeredCandidate::new(ItemKind::BootstrapDoc, rel)?);
     }
 
     Ok(())
@@ -691,6 +757,11 @@ fn parse_declared_paths(json: &Value) -> Vec<RawDeclaredPath> {
             collect_declared_paths_from_value(ItemKind::Agent, value, &mut declared);
         }
     }
+    for key in MANIFEST_BOOTSTRAP_KEYS {
+        if let Some(value) = map.get(*key) {
+            collect_declared_paths_from_value(ItemKind::BootstrapDoc, value, &mut declared);
+        }
+    }
     declared
 }
 
@@ -740,9 +811,8 @@ fn logical_layer(kind: ItemKind, relative_path: &Path) -> Result<usize, MarsErro
     };
     let container_roots = match kind {
         ItemKind::Skill => SKILL_CONTAINER_ROOTS,
-        ItemKind::Agent | ItemKind::Hook | ItemKind::McpServer | ItemKind::BootstrapDoc => {
-            AGENT_CONTAINER_ROOTS
-        }
+        ItemKind::BootstrapDoc => BOOTSTRAP_CONTAINER_ROOTS,
+        ItemKind::Agent | ItemKind::Hook | ItemKind::McpServer => AGENT_CONTAINER_ROOTS,
     };
 
     let mut layer = default_layer;
@@ -808,21 +878,32 @@ impl LayeredCandidate {
                 },
                 source_path: normalize_relative_path(&source_path),
             },
-            ItemKind::Agent | ItemKind::Hook | ItemKind::McpServer | ItemKind::BootstrapDoc => {
-                DiscoveredItem {
-                    id: ItemId {
-                        kind,
-                        name: ItemName::from(
-                            source_path
-                                .file_stem()
-                                .and_then(|name| name.to_str())
-                                .unwrap_or_default()
-                                .to_string(),
-                        ),
-                    },
-                    source_path: normalize_relative_path(&source_path),
-                }
-            }
+            ItemKind::Agent | ItemKind::Hook | ItemKind::McpServer => DiscoveredItem {
+                id: ItemId {
+                    kind,
+                    name: ItemName::from(
+                        source_path
+                            .file_stem()
+                            .and_then(|name| name.to_str())
+                            .unwrap_or_default()
+                            .to_string(),
+                    ),
+                },
+                source_path: normalize_relative_path(&source_path),
+            },
+            ItemKind::BootstrapDoc => DiscoveredItem {
+                id: ItemId {
+                    kind,
+                    name: ItemName::from(
+                        source_path
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .unwrap_or_default()
+                            .to_string(),
+                    ),
+                },
+                source_path: normalize_relative_path(&source_path),
+            },
         };
 
         Ok(Self {
@@ -1117,6 +1198,44 @@ mod tests {
     }
 
     #[test]
+    fn fallback_manifest_declares_bootstrap_docs() {
+        let dir = TempDir::new().unwrap();
+        fs::create_dir_all(dir.path().join("docs/global-auth")).unwrap();
+        fs::write(dir.path().join("docs/global-auth/BOOTSTRAP.md"), "# auth").unwrap();
+        fs::create_dir_all(dir.path().join(".claude-plugin")).unwrap();
+        fs::write(
+            dir.path().join(".claude-plugin/plugin.json"),
+            r#"{"bootstrapDocs":[{"path":"./docs/global-auth"}]}"#,
+        )
+        .unwrap();
+
+        let items = discover_fallback(dir.path(), Some("demo")).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].id.kind, ItemKind::BootstrapDoc);
+        assert_eq!(items[0].id.name.as_str(), "global-auth");
+        assert_eq!(items[0].source_path, PathBuf::from("docs/global-auth"));
+    }
+
+    #[test]
+    fn fallback_manifest_declares_bootstrap_container() {
+        let dir = TempDir::new().unwrap();
+        fs::create_dir_all(dir.path().join("bootstrap/setup")).unwrap();
+        fs::write(dir.path().join("bootstrap/setup/BOOTSTRAP.md"), "# setup").unwrap();
+        fs::create_dir_all(dir.path().join(".claude-plugin")).unwrap();
+        fs::write(
+            dir.path().join(".claude-plugin/plugin.json"),
+            r#"{"bootstrap_docs":["./bootstrap"]}"#,
+        )
+        .unwrap();
+
+        let items = discover_fallback(dir.path(), Some("demo")).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].id.kind, ItemKind::BootstrapDoc);
+        assert_eq!(items[0].id.name.as_str(), "setup");
+        assert_eq!(items[0].source_path, PathBuf::from("bootstrap/setup"));
+    }
+
+    #[test]
     fn fallback_prefers_first_match_after_visit_dedupe() {
         let dir = TempDir::new().unwrap();
         fs::create_dir_all(dir.path().join("skills/plan")).unwrap();
@@ -1140,6 +1259,32 @@ mod tests {
         let items = discover_fallback(dir.path(), Some("demo")).unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].source_path, PathBuf::from("caveman"));
+    }
+
+    #[test]
+    fn fallback_heuristic_finds_bootstrap_container_docs() {
+        let dir = TempDir::new().unwrap();
+        fs::create_dir_all(dir.path().join("nested/bootstrap/setup")).unwrap();
+        fs::create_dir_all(dir.path().join("nested/bootstrap/.hidden")).unwrap();
+        fs::write(
+            dir.path().join("nested/bootstrap/setup/BOOTSTRAP.md"),
+            "# setup",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("nested/bootstrap/.hidden/BOOTSTRAP.md"),
+            "# hidden",
+        )
+        .unwrap();
+
+        let items = discover_fallback(dir.path(), Some("demo")).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].id.kind, ItemKind::BootstrapDoc);
+        assert_eq!(items[0].id.name.as_str(), "setup");
+        assert_eq!(
+            items[0].source_path,
+            PathBuf::from("nested/bootstrap/setup")
+        );
     }
 
     #[test]
