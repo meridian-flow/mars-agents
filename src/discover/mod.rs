@@ -85,17 +85,24 @@ pub fn discover_fallback(
     package_root: &Path,
     source_name: Option<&str>,
 ) -> Result<Vec<DiscoveredItem>, MarsError> {
+    let source_name = source_name.unwrap_or("unknown-source");
+
     if package_root.join("SKILL.md").is_file() {
-        return Ok(vec![DiscoveredItem {
+        let mut items = vec![DiscoveredItem {
             id: ItemId {
                 kind: ItemKind::Skill,
                 name: ItemName::from(package_basename(package_root)),
             },
             source_path: PathBuf::from("."),
-        }]);
+        }];
+        items.extend(
+            discover_manifest_declared_items(package_root, source_name)?
+                .into_iter()
+                .filter(|item| item.id.kind == ItemKind::BootstrapDoc),
+        );
+        return finalize_items(source_name, items);
     }
 
-    let source_name = source_name.unwrap_or("unknown-source");
     let explicit_items = discover_manifest_declared_items(package_root, source_name)?;
     if !explicit_items.is_empty() {
         return finalize_items(source_name, explicit_items);
@@ -1099,6 +1106,33 @@ mod tests {
             dir.path().file_name().unwrap().to_string_lossy().as_ref()
         );
         assert_eq!(items[0].source_path, PathBuf::from("."));
+    }
+
+    #[test]
+    fn fallback_root_skill_includes_manifest_bootstrap_docs() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("SKILL.md"), "# root").unwrap();
+        fs::create_dir_all(dir.path().join("docs/global-auth")).unwrap();
+        fs::write(dir.path().join("docs/global-auth/BOOTSTRAP.md"), "# auth").unwrap();
+        fs::create_dir_all(dir.path().join(".claude-plugin")).unwrap();
+        fs::write(
+            dir.path().join(".claude-plugin/plugin.json"),
+            r#"{"bootstrapDocs":[{"path":"./docs/global-auth"}]}"#,
+        )
+        .unwrap();
+
+        let items = discover_fallback(dir.path(), Some("demo")).unwrap();
+
+        assert_eq!(items.len(), 2);
+        assert!(
+            items
+                .iter()
+                .any(|item| item.id.kind == ItemKind::Skill && item.source_path == Path::new("."))
+        );
+        assert!(items.iter().any(|item| {
+            item.id.kind == ItemKind::BootstrapDoc
+                && item.source_path == Path::new("docs/global-auth")
+        }));
     }
 
     #[test]
