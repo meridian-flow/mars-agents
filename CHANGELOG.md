@@ -8,6 +8,7 @@ Caveman style. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Conventional flat-skill packages with root `SKILL.md` plus bootstrap docs now discover both skill and bootstrap docs.
 - Native harness skill projection now runs inside `target_sync`, so projected skills stay expected during orphan cleanup and `mars link` can populate native skill dirs.
 - Native skill projections now always refreshed on sync even when canonical is Skipped. Diverged projections repaired with warning.
+- Windows TOML path escaping: `PathBuf` fields in config serialization now normalize backslashes to forward slashes. Prevents `\U` in `C:\Users\...` from being interpreted as TOML unicode escape sequences.
 
 ### Changed
 - `ReaderIr` now embeds `ResolvedState` directly — eliminates decompose/reconstruct round-trip between reader and compiler stages. Removed dead `target_registry` field. Renamed `_sync_lock` → `sync_lock` in `LoadedConfig`. Removed redundant nested `dry_run` guard in `finalize()`.
