@@ -165,7 +165,7 @@ mod tests {
             ),
             ItemKind::BootstrapDoc => (
                 PathBuf::from(format!("/tmp/source/bootstrap/{name}")),
-                format!("bootstrap/{name}"),
+                format!("bootstrap/{name}/BOOTSTRAP.md"),
             ),
         };
 
@@ -202,7 +202,7 @@ mod tests {
             ItemKind::Skill => format!("skills/{name}"),
             ItemKind::Hook => format!("hooks/{name}"),
             ItemKind::McpServer => format!("mcp/{name}"),
-            ItemKind::BootstrapDoc => format!("bootstrap/{name}"),
+            ItemKind::BootstrapDoc => format!("bootstrap/{name}/BOOTSTRAP.md"),
         };
 
         LockedItem {

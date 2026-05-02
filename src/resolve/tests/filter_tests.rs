@@ -5,11 +5,7 @@ use crate::types::ItemKind;
 fn include_filter_seeds_bootstrap_docs_without_hooks_or_mcp() {
     let mut package_items = IndexMap::new();
     let discovered = [
-        (
-            ItemKind::Agent,
-            "runner",
-            PathBuf::from("agents/runner.md"),
-        ),
+        (ItemKind::Agent, "runner", PathBuf::from("agents/runner.md")),
         (
             ItemKind::Skill,
             "planning",

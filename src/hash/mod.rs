@@ -15,11 +15,11 @@ use crate::types::ItemKind;
 /// Output format: `"sha256:<64-char-hex>"`.
 pub fn compute_hash(path: &Path, kind: ItemKind) -> Result<String, MarsError> {
     match kind {
-        ItemKind::Agent | ItemKind::Hook | ItemKind::McpServer | ItemKind::BootstrapDoc => {
+        ItemKind::Agent | ItemKind::Hook | ItemKind::McpServer => {
             let content = fs::read(path)?;
             Ok(hash_bytes(&content))
         }
-        ItemKind::Skill => compute_dir_hash(path),
+        ItemKind::Skill | ItemKind::BootstrapDoc => compute_dir_hash(path),
     }
 }
 

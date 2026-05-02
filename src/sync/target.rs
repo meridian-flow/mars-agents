@@ -227,7 +227,8 @@ pub fn check_unmanaged_collisions(
             // Check if disk content matches what we'd install — if so,
             // this is a partial prior install (crash recovery), not an
             // unmanaged user file. Safe to overwrite.
-            if let Ok(disk_hash) = hash::compute_hash(&disk_path, target_item.id.kind)
+            let hash_path = hash_path_for_kind(&disk_path, target_item.id.kind);
+            if let Ok(disk_hash) = hash::compute_hash(&hash_path, target_item.id.kind)
                 && disk_hash == target_item.source_hash.as_str()
             {
                 continue;
@@ -271,7 +272,7 @@ fn default_dest_path(kind: ItemKind, name: &str) -> DestPath {
         ItemKind::Skill => format!("skills/{name}"),
         ItemKind::Hook => format!("hooks/{name}"),
         ItemKind::McpServer => format!("mcp/{name}"),
-        ItemKind::BootstrapDoc => format!("bootstrap/{name}"),
+        ItemKind::BootstrapDoc => format!("bootstrap/{name}/BOOTSTRAP.md"),
     };
     // Safe: internal paths constructed from validated item names
     DestPath::new(path_str).expect("internal default path is always valid")
@@ -292,7 +293,12 @@ fn parse_rename_dest(
     let has_parent = normalized.contains('/');
 
     if has_prefix || has_parent {
-        return DestPath::new(&normalized).map_err(|e| MarsError::Source {
+        let dest = if kind == ItemKind::BootstrapDoc && !normalized.ends_with("/BOOTSTRAP.md") {
+            format!("{normalized}/BOOTSTRAP.md")
+        } else {
+            normalized.clone()
+        };
+        return DestPath::new(&dest).map_err(|e| MarsError::Source {
             source_name: source_name.to_string(),
             message: format!("invalid rename destination `{rename_value}`: {e}"),
         });
@@ -309,7 +315,7 @@ fn parse_rename_dest(
         ItemKind::Skill => format!("skills/{normalized}"),
         ItemKind::Hook => format!("hooks/{normalized}"),
         ItemKind::McpServer => format!("mcp/{normalized}"),
-        ItemKind::BootstrapDoc => format!("bootstrap/{normalized}"),
+        ItemKind::BootstrapDoc => format!("bootstrap/{normalized}/BOOTSTRAP.md"),
     };
     DestPath::new(path_str).map_err(|e| MarsError::Source {
         source_name: source_name.to_string(),
@@ -318,12 +324,26 @@ fn parse_rename_dest(
 }
 
 fn dest_name_from_dest(dest_path: &DestPath, kind: ItemKind) -> String {
-    let last = dest_path.as_str().rsplit('/').next().unwrap_or("");
     match kind {
-        ItemKind::Agent => last.strip_suffix(".md").unwrap_or(last).to_string(),
-        ItemKind::Skill | ItemKind::Hook | ItemKind::McpServer | ItemKind::BootstrapDoc => {
-            last.to_string()
+        ItemKind::BootstrapDoc => dest_path.item_name(kind),
+        _ => {
+            let last = dest_path.as_str().rsplit('/').next().unwrap_or("");
+            match kind {
+                ItemKind::Agent => last.strip_suffix(".md").unwrap_or(last).to_string(),
+                ItemKind::Skill | ItemKind::Hook | ItemKind::McpServer => last.to_string(),
+                ItemKind::BootstrapDoc => unreachable!("handled above"),
+            }
         }
+    }
+}
+
+fn hash_path_for_kind(path: &Path, kind: ItemKind) -> PathBuf {
+    if kind == ItemKind::BootstrapDoc {
+        path.parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| path.to_path_buf())
+    } else {
+        path.to_path_buf()
     }
 }
 

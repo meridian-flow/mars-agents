@@ -299,7 +299,11 @@ fn register_bootstrap_doc(
     if !visited.insert(normalized.clone()) {
         return Ok(());
     }
-    if !package_root.join(&normalized).join("BOOTSTRAP.md").is_file() {
+    if !package_root
+        .join(&normalized)
+        .join("BOOTSTRAP.md")
+        .is_file()
+    {
         return Ok(());
     }
     let name = normalized
@@ -972,7 +976,11 @@ mod tests {
     fn conventional_bootstrap_discovery_ignores_missing_bootstrap_file() {
         let dir = TempDir::new().unwrap();
         fs::create_dir_all(dir.path().join("bootstrap/incomplete")).unwrap();
-        fs::write(dir.path().join("bootstrap/incomplete/README.md"), "# readme").unwrap();
+        fs::write(
+            dir.path().join("bootstrap/incomplete/README.md"),
+            "# readme",
+        )
+        .unwrap();
 
         let items = discover_source(dir.path(), None).unwrap();
         assert!(items.is_empty());

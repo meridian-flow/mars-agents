@@ -394,13 +394,24 @@ impl DestPath {
     }
 
     /// Extract the installed item name from this path.
-    /// Agents strip a trailing `.md`; all directory-based kinds use the leaf name.
+    /// Agents strip a trailing `.md`; bootstrap docs use their containing directory
+    /// because their canonical path is `bootstrap/<name>/BOOTSTRAP.md`; all other
+    /// directory-based kinds use the leaf name.
     pub fn item_name(&self, kind: ItemKind) -> String {
-        let last = self.0.rsplit('/').next().unwrap_or("");
         match kind {
-            ItemKind::Agent => last.strip_suffix(".md").unwrap_or(last).to_string(),
-            ItemKind::Skill | ItemKind::Hook | ItemKind::McpServer | ItemKind::BootstrapDoc => {
-                last.to_string()
+            ItemKind::BootstrapDoc => self
+                .0
+                .strip_suffix("/BOOTSTRAP.md")
+                .and_then(|path| path.rsplit('/').next())
+                .unwrap_or_else(|| self.0.rsplit('/').next().unwrap_or(""))
+                .to_string(),
+            _ => {
+                let last = self.0.rsplit('/').next().unwrap_or("");
+                match kind {
+                    ItemKind::Agent => last.strip_suffix(".md").unwrap_or(last).to_string(),
+                    ItemKind::Skill | ItemKind::Hook | ItemKind::McpServer => last.to_string(),
+                    ItemKind::BootstrapDoc => unreachable!("handled above"),
+                }
             }
         }
     }
@@ -869,6 +880,12 @@ mod tests {
     fn dest_path_item_name_extracts_skill_leaf() {
         let path = DestPath::new("skills/planning").unwrap();
         assert_eq!(path.item_name(ItemKind::Skill), "planning");
+    }
+
+    #[test]
+    fn dest_path_item_name_extracts_bootstrap_doc_container() {
+        let path = DestPath::new("bootstrap/global-auth/BOOTSTRAP.md").unwrap();
+        assert_eq!(path.item_name(ItemKind::BootstrapDoc), "global-auth");
     }
 
     #[test]

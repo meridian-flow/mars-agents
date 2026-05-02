@@ -170,7 +170,7 @@ fn execute_action(
         }
 
         PlannedAction::Remove { locked } => {
-            let dest = locked.dest_path.resolve(root);
+            let dest = removal_path(root, &locked.dest_path, locked.kind);
             if dest.exists() {
                 fs_ops::safe_remove(&dest)?;
             }
@@ -295,9 +295,19 @@ fn dry_run_action(action: &PlannedAction) -> ActionOutcome {
 /// Returns the installed checksum (hash of what was written to disk).
 fn install_item(target: &TargetItem, dest: &Path) -> Result<ContentHash, MarsError> {
     match target.id.kind {
-        ItemKind::Agent | ItemKind::Hook | ItemKind::McpServer | ItemKind::BootstrapDoc => {
+        ItemKind::Agent | ItemKind::Hook | ItemKind::McpServer => {
             let content = content_to_install(target)?;
             write_file_and_verify(dest, &content)
+        }
+        ItemKind::BootstrapDoc => {
+            let doc_dest = dest.parent().ok_or_else(|| {
+                std::io::Error::other(format!(
+                    "bootstrap destination has no parent directory: {}",
+                    dest.display()
+                ))
+            })?;
+            fs_ops::atomic_install_dir(&target.source_path, doc_dest)?;
+            crate::hash::compute_hash(doc_dest, ItemKind::BootstrapDoc).map(ContentHash::from)
         }
         ItemKind::Skill => {
             if target.is_flat_skill {
@@ -335,6 +345,8 @@ fn write_file_and_verify(dest: &Path, content: &[u8]) -> Result<ContentHash, Mar
 fn content_to_install(target: &TargetItem) -> Result<Vec<u8>, MarsError> {
     if let Some(content) = &target.rewritten_content {
         Ok(content.as_bytes().to_vec())
+    } else if target.id.kind == ItemKind::BootstrapDoc {
+        Ok(std::fs::read(target.source_path.join("BOOTSTRAP.md"))?)
     } else {
         Ok(std::fs::read(&target.source_path)?)
     }
@@ -356,9 +368,8 @@ fn read_target_content_for_merge(target: &TargetItem) -> Result<Vec<u8>, MarsErr
 /// For now, read the primary file content.
 fn read_item_content(path: &Path, kind: ItemKind) -> Result<Vec<u8>, MarsError> {
     match kind {
-        ItemKind::Agent | ItemKind::Hook | ItemKind::McpServer | ItemKind::BootstrapDoc => {
-            Ok(std::fs::read(path)?)
-        }
+        ItemKind::Agent | ItemKind::Hook | ItemKind::McpServer => Ok(std::fs::read(path)?),
+        ItemKind::BootstrapDoc => Ok(std::fs::read(path.join("BOOTSTRAP.md"))?),
         ItemKind::Skill => {
             // For skills (directories), read the SKILL.md as the merge target
             let skill_md = path.join("SKILL.md");
@@ -392,7 +403,11 @@ fn cache_base_content(
     }
 
     match kind {
-        ItemKind::Agent | ItemKind::Hook | ItemKind::McpServer | ItemKind::BootstrapDoc => {
+        ItemKind::Agent | ItemKind::Hook | ItemKind::McpServer => {
+            let content = std::fs::read(dest)?;
+            fs_ops::atomic_write_file(&cache_path, &content)?;
+        }
+        ItemKind::BootstrapDoc => {
             let content = std::fs::read(dest)?;
             fs_ops::atomic_write_file(&cache_path, &content)?;
         }
@@ -422,7 +437,7 @@ pub fn prune_orphans(
 
     for (dest_path_str, locked_item) in lock.flat_items() {
         if !target.items.contains_key(&dest_path_str) {
-            let dest = dest_path_str.resolve(root);
+            let dest = removal_path(root, &dest_path_str, locked_item.kind);
             if dest.exists() {
                 fs_ops::safe_remove(&dest)?;
             }
@@ -441,6 +456,17 @@ pub fn prune_orphans(
     }
 
     Ok(outcomes)
+}
+
+fn removal_path(root: &Path, dest_path: &DestPath, kind: ItemKind) -> std::path::PathBuf {
+    let dest = dest_path.resolve(root);
+    if kind == ItemKind::BootstrapDoc {
+        dest.parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| dest.clone())
+    } else {
+        dest
+    }
 }
 
 #[cfg(test)]
@@ -469,6 +495,28 @@ mod tests {
             source_path,
             dest_path: format!("agents/{name}.md").into(),
             source_hash: hash::hash_bytes(content).into(),
+            is_flat_skill: false,
+            rewritten_content: None,
+        }
+    }
+
+    fn make_bootstrap_target(name: &str, source_path: PathBuf) -> TargetItem {
+        TargetItem {
+            id: ItemId {
+                kind: ItemKind::BootstrapDoc,
+                name: name.into(),
+            },
+            source_name: "test-source".into(),
+            origin: crate::types::SourceOrigin::Dependency("test-source".into()),
+            source_id: crate::types::SourceId::Path {
+                canonical: source_path.clone(),
+                subpath: None,
+            },
+            source_hash: crate::hash::compute_hash(&source_path, ItemKind::BootstrapDoc)
+                .unwrap()
+                .into(),
+            source_path,
+            dest_path: format!("bootstrap/{name}/BOOTSTRAP.md").into(),
             is_flat_skill: false,
             rewritten_content: None,
         }
@@ -594,6 +642,36 @@ mod tests {
         assert_eq!(installed, new_content);
     }
 
+    #[test]
+    fn install_bootstrap_doc_directory_to_canonical_file_path() {
+        let root = TempDir::new().unwrap();
+        let source_dir = TempDir::new().unwrap();
+        let cache_dir = TempDir::new().unwrap();
+        let bases_dir = cache_dir.path().join("bases");
+        let bootstrap_dir = source_dir.path().join("bootstrap/global-auth");
+        fs::create_dir_all(&bootstrap_dir).unwrap();
+        fs::write(bootstrap_dir.join("BOOTSTRAP.md"), b"# auth").unwrap();
+
+        let target = make_bootstrap_target("global-auth", bootstrap_dir);
+        let plan = SyncPlan {
+            actions: vec![PlannedAction::Install { target }],
+        };
+        let options = SyncOptions {
+            force: false,
+            dry_run: false,
+            frozen: false,
+            no_refresh_models: false,
+        };
+
+        let result = execute(root.path(), &plan, &options, &bases_dir).unwrap();
+
+        assert!(matches!(result.outcomes[0].action, ActionTaken::Installed));
+        assert_eq!(
+            fs::read(root.path().join("bootstrap/global-auth/BOOTSTRAP.md")).unwrap(),
+            b"# auth"
+        );
+    }
+
     // === Remove tests ===
 
     #[test]
@@ -666,6 +744,39 @@ mod tests {
         let result = execute(root.path(), &plan, &options, &bases_dir).unwrap();
         assert!(matches!(result.outcomes[0].action, ActionTaken::Removed));
         assert!(!root.path().join("skills/old-skill").exists());
+    }
+
+    #[test]
+    fn remove_bootstrap_doc_removes_container_directory() {
+        let root = TempDir::new().unwrap();
+        let cache_dir = TempDir::new().unwrap();
+        let bases_dir = cache_dir.path().join("bases");
+        let bootstrap_dir = root.path().join("bootstrap/global-auth");
+        fs::create_dir_all(&bootstrap_dir).unwrap();
+        fs::write(bootstrap_dir.join("BOOTSTRAP.md"), b"# auth").unwrap();
+
+        let locked = LockedItem {
+            source: "old-source".into(),
+            kind: ItemKind::BootstrapDoc,
+            version: None,
+            source_checksum: "sha256:aaa".into(),
+            installed_checksum: "sha256:bbb".into(),
+            dest_path: "bootstrap/global-auth/BOOTSTRAP.md".into(),
+        };
+
+        let plan = SyncPlan {
+            actions: vec![PlannedAction::Remove { locked }],
+        };
+        let options = SyncOptions {
+            force: false,
+            dry_run: false,
+            frozen: false,
+            no_refresh_models: false,
+        };
+
+        let result = execute(root.path(), &plan, &options, &bases_dir).unwrap();
+        assert!(matches!(result.outcomes[0].action, ActionTaken::Removed));
+        assert!(!bootstrap_dir.exists());
     }
 
     // === Dry run tests ===

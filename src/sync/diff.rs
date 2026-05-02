@@ -77,8 +77,9 @@ pub fn compute(
             };
 
             let disk_path = target_item.dest_path.resolve(root);
-            let local_changed = if disk_path.exists() {
-                let disk_hash = hash::compute_hash(&disk_path, target_item.id.kind)?;
+            let hash_path = hash_path_for_kind(&disk_path, target_item.id.kind);
+            let local_changed = if hash_path.exists() {
+                let disk_hash = hash::compute_hash(&hash_path, target_item.id.kind)?;
                 let disk_hash = ContentHash::from(disk_hash);
                 if disk_hash != *expected_disk_checksum {
                     Some(disk_hash)
@@ -94,7 +95,7 @@ pub fn compute(
             match (source_changed, &local_changed) {
                 (false, None) => {
                     // Neither changed → skip
-                    if disk_path.exists() {
+                    if hash_path.exists() {
                         items.push(DiffEntry::Unchanged {
                             target: target_item.clone(),
                             locked: locked_item.clone(),
@@ -157,6 +158,16 @@ fn rewritten_installed_checksum(target_item: &TargetItem) -> Option<ContentHash>
         .map(|content| ContentHash::from(hash::hash_bytes(content.as_bytes())))
 }
 
+fn hash_path_for_kind(path: &Path, kind: crate::lock::ItemKind) -> std::path::PathBuf {
+    if kind == crate::lock::ItemKind::BootstrapDoc {
+        path.parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| path.to_path_buf())
+    } else {
+        path.to_path_buf()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -180,7 +191,7 @@ mod tests {
             ItemKind::Skill => PathBuf::from("skills").join(name),
             ItemKind::Hook => PathBuf::from("hooks").join(name),
             ItemKind::McpServer => PathBuf::from("mcp").join(name),
-            ItemKind::BootstrapDoc => PathBuf::from("bootstrap").join(name),
+            ItemKind::BootstrapDoc => PathBuf::from("bootstrap").join(name).join("BOOTSTRAP.md"),
         };
         TargetItem {
             id: ItemId {
@@ -213,7 +224,7 @@ mod tests {
             ItemKind::Skill => format!("skills/{name}"),
             ItemKind::Hook => format!("hooks/{name}"),
             ItemKind::McpServer => format!("mcp/{name}"),
-            ItemKind::BootstrapDoc => format!("bootstrap/{name}"),
+            ItemKind::BootstrapDoc => format!("bootstrap/{name}/BOOTSTRAP.md"),
         };
         let key = format!("{kind}/{name}");
         let item = LockedItemV2 {

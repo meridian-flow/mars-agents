@@ -30,7 +30,7 @@ impl TargetAdapter for AgentsAdapter {
             ItemKind::Skill => format!("skills/{name}"),
             ItemKind::Hook => format!("hooks/{name}"),
             ItemKind::McpServer => format!("mcp/{name}"),
-            ItemKind::BootstrapDoc => format!("bootstrap/{name}"),
+            ItemKind::BootstrapDoc => format!("bootstrap/{name}/BOOTSTRAP.md"),
         };
         Some(DestPath::from(path.as_str()))
     }
