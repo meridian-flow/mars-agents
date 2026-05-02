@@ -40,13 +40,64 @@ pub struct PackageInfo {
     pub description: Option<String>,
 }
 
+mod toml_path_serde {
+    use serde::{Deserialize, Deserializer, Serializer};
+    use std::path::{Path, PathBuf};
+
+    pub fn serialize<S>(path: &Path, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let s = path.to_string_lossy().replace('\\', "/");
+        serializer.serialize_str(&s)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<PathBuf, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        Ok(PathBuf::from(s))
+    }
+}
+
+mod toml_path_serde_opt {
+    use serde::{Deserialize, Deserializer, Serializer};
+    use std::path::PathBuf;
+
+    pub fn serialize<S>(path: &Option<PathBuf>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match path {
+            Some(path) => {
+                let s = path.to_string_lossy().replace('\\', "/");
+                serializer.serialize_some(&s)
+            }
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<PathBuf>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = Option::<String>::deserialize(deserializer)?;
+        Ok(s.map(PathBuf::from))
+    }
+}
+
 /// Consumer install intent — what goes in [dependencies] of a consumer mars.toml.
 /// Has optional URL or path source plus filters for selecting items.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct InstallDep {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<SourceUrl>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "toml_path_serde_opt"
+    )]
     pub path: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subpath: Option<SourceSubpath>,
@@ -138,6 +189,7 @@ pub struct LocalConfig {
 /// Dev override — local path swap for a git source.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct OverrideEntry {
+    #[serde(with = "toml_path_serde")]
     pub path: PathBuf,
 }
 
@@ -2162,6 +2214,60 @@ skills = ["prompt-helper"]
                 .skills
                 .as_deref(),
             Some(&["prompt-helper".into()][..])
+        );
+    }
+
+    #[test]
+    fn path_with_backslashes_serializes_as_forward_slashes() {
+        let mut deps = IndexMap::new();
+        deps.insert(
+            SourceName::from("test-src"),
+            InstallDep {
+                url: None,
+                path: Some(PathBuf::from("C:\\Users\\dev\\src")),
+                subpath: None,
+                version: None,
+                filter: FilterConfig::default(),
+            },
+        );
+        let config = Config {
+            dependencies: deps,
+            ..Config::default()
+        };
+        let toml_str = toml::to_string_pretty(&config).unwrap();
+        assert!(
+            !toml_str.contains('\\'),
+            "TOML output must not contain backslashes: {toml_str}"
+        );
+        assert!(
+            toml_str.contains("C:/Users/dev/src"),
+            "expected forward-slash path in TOML: {toml_str}"
+        );
+        let reparsed: Config = toml::from_str(&toml_str).unwrap();
+        assert_eq!(
+            reparsed.dependencies["test-src"].path.as_ref().unwrap(),
+            &PathBuf::from("C:/Users/dev/src"),
+        );
+    }
+
+    #[test]
+    fn override_path_serializes_forward_slashes() {
+        let mut overrides = IndexMap::new();
+        overrides.insert(
+            SourceName::from("my-dep"),
+            OverrideEntry {
+                path: PathBuf::from("C:\\Users\\dev\\local-pkg"),
+            },
+        );
+        let local = LocalConfig { overrides };
+        let toml_str = toml::to_string_pretty(&local).unwrap();
+        assert!(
+            !toml_str.contains('\\'),
+            "local config TOML must not contain backslashes: {toml_str}"
+        );
+        assert!(
+            toml_str.contains("C:/Users/dev/local-pkg"),
+            "expected forward-slash override path: {toml_str}"
         );
     }
 }
