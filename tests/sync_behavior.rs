@@ -188,6 +188,60 @@ fn sync_materializes_bootstrap_docs_only_to_mars_store_and_removes_cleanly() {
 }
 
 #[test]
+fn sync_repairs_diverged_native_skill_projection_when_canonical_is_skipped() {
+    let dir = TempDir::new().unwrap();
+    let source = create_source(&dir, "base", &[], &[("planning", "# Base")]);
+    let variant_dir = source.join("skills/planning/variants/claude");
+    fs::create_dir_all(&variant_dir).unwrap();
+    fs::write(variant_dir.join("SKILL.md"), "# Claude").unwrap();
+
+    let project = dir.child("project");
+    mars()
+        .args([
+            "init",
+            ".claude",
+            "--root",
+            project.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    mars()
+        .args([
+            "add",
+            source.to_str().unwrap(),
+            "--root",
+            project.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let native_skill = project
+        .child(".claude")
+        .child("skills")
+        .child("planning")
+        .child("SKILL.md");
+    assert_eq!(fs::read_to_string(native_skill.path()).unwrap(), "# Claude");
+
+    fs::write(native_skill.path(), "# Locally edited native projection").unwrap();
+
+    mars()
+        .args([
+            "sync",
+            "--no-upgrade-hint",
+            "--root",
+            project.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "warning: repaired diverged native projection: .claude/skills/planning/SKILL.md",
+        ));
+
+    assert_eq!(fs::read_to_string(native_skill.path()).unwrap(), "# Claude");
+}
+
+#[test]
 fn conflict_flow_with_resolve() {
     let dir = TempDir::new().unwrap();
     let source = create_source(

@@ -144,7 +144,15 @@ fn sync_one_target(
                 let source = mars_dir.join(dest_rel);
                 let dest = target_root.join(dest_rel);
                 if source.exists() || source.symlink_metadata().is_ok() {
-                    if force || !dest.exists() {
+                    let should_refresh_native_skill = outcome.item_id.kind
+                        == crate::lock::ItemKind::Skill
+                        && native_skill_variant_key.is_some();
+                    if force || !dest.exists() || should_refresh_native_skill {
+                        let previous_target_hash = if should_refresh_native_skill && dest.exists() {
+                            crate::hash::compute_hash(&dest, outcome.item_id.kind).ok()
+                        } else {
+                            None
+                        };
                         match copy_item_to_target(
                             &source,
                             &dest,
@@ -153,7 +161,21 @@ fn sync_one_target(
                             native_skill_variant_key.as_deref(),
                             diag,
                         ) {
-                            Ok(()) => items_synced += 1,
+                            Ok(()) => {
+                                items_synced += 1;
+                                if let Some(previous_target_hash) = previous_target_hash
+                                    && let Ok(current_target_hash) =
+                                        crate::hash::compute_hash(&dest, outcome.item_id.kind)
+                                    && previous_target_hash != current_target_hash
+                                {
+                                    diag.warn(
+                                        "target-native-projection-repaired",
+                                        format!(
+                                            "repaired diverged native projection: {target_name}/{dest_rel}/SKILL.md"
+                                        ),
+                                    );
+                                }
+                            }
                             Err(e) => errors.push(format!("failed to copy {dest_rel}: {e}")),
                         }
                     } else if native_skill_variant_key.is_none()
