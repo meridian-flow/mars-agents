@@ -7,11 +7,15 @@ Caveman style. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 - Conventional flat-skill packages with root `SKILL.md` plus bootstrap docs now discover both skill and bootstrap docs.
 - Native harness skill projection now runs inside `target_sync`, so projected skills stay expected during orphan cleanup and `mars link` can populate native skill dirs.
+- Native skill projections now always refreshed on sync even when canonical is Skipped. Diverged projections repaired with warning.
 
 ### Changed
 - `ReaderIr` now embeds `ResolvedState` directly — eliminates decompose/reconstruct round-trip between reader and compiler stages. Removed dead `target_registry` field. Renamed `_sync_lock` → `sync_lock` in `LoadedConfig`. Removed redundant nested `dry_run` guard in `finalize()`.
 
 ### Added
+- Bootstrap doc discovery. Package-level `bootstrap/<doc>/BOOTSTRAP.md` scanned during conventional discovery, flows through resolve/target/diff/apply pipeline, materializes to `.mars/bootstrap/`. Fallback/manifest discovery via `bootstrapDocs`/`bootstrap_docs` keys. `mars list` and `mars export` surface bootstrap docs.
+- Skill variant projection. `variants/<harness>/<model>/SKILL.md` hierarchy discovered and validated. Native harness dirs get harness-selected variant; canonical `.mars/skills/<name>/variants/` preserved intact. `mars list` shows variant availability.
+- Skill frontmatter compilation. Universal schema (`invocation`, `allowed-tools`, `license`, `metadata`) compiled to per-harness native fields via typed `SkillProfile` parser and lowering functions. Legacy `disable-model-invocation`/`allow_implicit_invocation` recognized as aliases with deprecation warnings. Raw fallback for malformed frontmatter. `mars validate` checks skill schema.
 - `sync::translate` module — `TranslatedOutput` type wraps `PlannedAction` with optional pre-translated content; `translate()` pass-through establishes insertion point for per-target format lowering.
 - `TargetAdapter::write_config_entries` / `remove_config_entries` default-no-op methods + `ConfigEntry`/`ConfigEntryKind` placeholder types in `target/mod.rs`.
 - Lock-driven orphan cleanup in `target_sync`: `cleanup_orphans` now iterates lock v2 `previous_managed_paths` directly instead of scanning hardcoded subdirectories (`agents/`, `skills/`, etc.).
