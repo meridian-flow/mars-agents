@@ -461,9 +461,13 @@ pub fn prune_orphans(
 fn removal_path(root: &Path, dest_path: &DestPath, kind: ItemKind) -> std::path::PathBuf {
     let dest = dest_path.resolve(root);
     if kind == ItemKind::BootstrapDoc {
-        dest.parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| dest.clone())
+        if dest_path.as_str().split('/').count() >= 3 {
+            dest.parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| dest.clone())
+        } else {
+            dest
+        }
     } else {
         dest
     }
@@ -777,6 +781,41 @@ mod tests {
         let result = execute(root.path(), &plan, &options, &bases_dir).unwrap();
         assert!(matches!(result.outcomes[0].action, ActionTaken::Removed));
         assert!(!bootstrap_dir.exists());
+    }
+
+    #[test]
+    fn remove_degenerate_bootstrap_doc_path_removes_exact_file_only() {
+        let root = TempDir::new().unwrap();
+        let cache_dir = TempDir::new().unwrap();
+        let bases_dir = cache_dir.path().join("bases");
+        let bootstrap_dir = root.path().join("bootstrap");
+        fs::create_dir_all(&bootstrap_dir).unwrap();
+        fs::write(bootstrap_dir.join("BOOTSTRAP.md"), b"# root").unwrap();
+        fs::write(bootstrap_dir.join("keep.md"), b"# keep").unwrap();
+
+        let locked = LockedItem {
+            source: "old-source".into(),
+            kind: ItemKind::BootstrapDoc,
+            version: None,
+            source_checksum: "sha256:aaa".into(),
+            installed_checksum: "sha256:bbb".into(),
+            dest_path: "bootstrap/BOOTSTRAP.md".into(),
+        };
+
+        let plan = SyncPlan {
+            actions: vec![PlannedAction::Remove { locked }],
+        };
+        let options = SyncOptions {
+            force: false,
+            dry_run: false,
+            frozen: false,
+            no_refresh_models: false,
+        };
+
+        let result = execute(root.path(), &plan, &options, &bases_dir).unwrap();
+        assert!(matches!(result.outcomes[0].action, ActionTaken::Removed));
+        assert!(!bootstrap_dir.join("BOOTSTRAP.md").exists());
+        assert!(bootstrap_dir.join("keep.md").exists());
     }
 
     // === Dry run tests ===
