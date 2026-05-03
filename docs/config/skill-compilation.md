@@ -1,16 +1,16 @@
 # Skill Compilation
 
-Skills use a universal frontmatter schema that mars compiles to per-harness native field formats during `mars sync`. This separates skill authoring from harness-specific field names — a skill author writes `invocation: explicit` once, and mars emits the right field for Claude, Codex, or any other target.
+Skills use a universal frontmatter schema that mars compiles to per-harness native field formats during `mars sync`. This separates skill authoring from harness-specific field names — a skill author writes `model-invocable: false` once, and mars emits the right field for Claude, Codex, or any other target.
 
 ## Universal Skill Frontmatter
 
-All skill fields below are optional. A skill with no frontmatter is valid and is treated as body-only with implicit invocation.
+All skill fields below are optional. A skill with no frontmatter is valid and is treated as body-only with both model and user invocability enabled.
 
 ```yaml
 ---
 name: my-skill
 description: What this skill does
-invocation: explicit
+model-invocable: false
 allowed-tools: [Bash(git *), Read, Write]
 license: MIT
 metadata:
@@ -44,36 +44,35 @@ One-line summary. Shown in `mars list` and passed through to native artifacts.
 
 ---
 
-### `invocation`
+### `model-invocable`
 
 | | |
 |---|---|
-| Type | string |
-| Allowed values | `explicit`, `implicit` |
-| Default | `implicit` |
+| Type | boolean |
+| Default | `true` |
 
-Controls whether an agent can call this skill spontaneously or only when explicitly told to.
-
-| Value | Behavior |
-|---|---|
-| `implicit` | Agent may invoke the skill freely. Default. |
-| `explicit` | Agent invokes the skill only when the user or orchestrator explicitly asks for it. |
+Controls whether the model can see and self-load this skill.
 
 ```yaml
-invocation: explicit   # require explicit call
-invocation: implicit   # allow spontaneous use (default)
+model-invocable: false   # model cannot self-invoke
 ```
 
-**Legacy aliases (deprecated).** These fields are recognized and converted to `invocation` during compilation, but should not be used in new source packages:
+---
 
-| Legacy field | Equivalent canonical field |
+### `user-invocable`
+
+| | |
 |---|---|
-| `disable-model-invocation: true` | `invocation: explicit` |
-| `disable-model-invocation: false` | `invocation: implicit` |
-| `allow_implicit_invocation: true` | `invocation: implicit` |
-| `allow_implicit_invocation: false` | `invocation: explicit` |
+| Type | boolean |
+| Default | `true` |
 
-If `invocation:` is present, legacy fields are ignored (warning emitted). If both legacy fields are present and conflict, an error is emitted and `implicit` is used as fallback.
+Controls whether the user can trigger this skill with `/name`.
+
+```yaml
+user-invocable: false   # user cannot trigger via /name
+```
+
+**Removed fields.** `invocation`, `disable-model-invocation`, and `allow_implicit_invocation` are no longer recognized. Using them produces a user-visible `skill-schema-error` diagnostic whose message says the field was removed; the parser-level variant is `RemovedField`. Migrate to `model-invocable` / `user-invocable`.
 
 ---
 
@@ -126,7 +125,7 @@ metadata:
 
 ## Per-Harness Lowering
 
-Mars compiles universal frontmatter fields to each target's native field names during `mars sync`. The `invocation` field in particular maps to different native fields per harness.
+Mars compiles universal frontmatter fields to each target's native field names during `mars sync`. Skill invocability maps to different native fields per harness.
 
 ### Field mapping table
 
@@ -134,19 +133,17 @@ Mars compiles universal frontmatter fields to each target's native field names d
 |---|---|---|---|---|---|---|
 | `name` | preserved | `name` | `name` | `name` | `name` | `name` |
 | `description` | preserved | `description` | `description` | `description` | `description` | `description` |
-| `invocation: explicit` | preserved | `disable-model-invocation: true` | `allow_implicit_invocation: false` | dropped | `disable-model-invocation: true` | `disable-model-invocation: true` |
-| `invocation: implicit` | preserved | (omit field) | `allow_implicit_invocation: true`¹ | dropped | (omit field) | (omit field) |
+| `model-invocable: false` | preserved | `disable-model-invocation: true` | `allow_implicit_invocation: false`¹ | dropped | `disable-model-invocation: true` | `disable-model-invocation: true` |
+| `model-invocable: true` | preserved | (omit) | (omit or `allow_implicit_invocation: true`)¹ | (omit) | (omit) | (omit) |
+| `user-invocable: false` | preserved | `user-invocable: false` | dropped | dropped | dropped | dropped |
+| `user-invocable: true` | preserved | (omit) | (omit) | (omit) | (omit) | (omit) |
 | `allowed-tools` | preserved | `allowed-tools` | dropped | dropped | `allowed-tools` | dropped |
 | `license` | preserved | `license` | `license` | `license` | `license` | `license` |
 | `metadata` | preserved | `metadata` | `metadata` | `metadata` | `metadata` | `metadata` |
 
-¹ Codex only emits `allow_implicit_invocation` when the source skill had an explicit `invocation` field or legacy invocation fields. Skills with no invocation field at all do not gain an `allow_implicit_invocation` field in the Codex artifact.
+¹ Codex only emits `allow_implicit_invocation` when the source skill explicitly set `model-invocable`. Skills with no `model-invocable` field do not gain an `allow_implicit_invocation` field in the Codex artifact.
 
-Lossiness diagnostics follow the same model as agent compilation:
-
-```
-warning[skill-field-dropped]: skill `my-skill`: field `allowed-tools` dropped in Codex native artifact
-```
+`skill-field-dropped` entries follow the same lossiness metadata model as agent compilation. They are returned by lowering functions for tooling such as `mars validate --verbose`, but are not guaranteed to surface as user-visible warnings. The variant projection caller currently silences `Dropped` entries; only `Approximate` entries produce warnings.
 
 ---
 
@@ -201,7 +198,7 @@ Source tree:
 
 ```
 skills/my-skill/
-  SKILL.md          # base: invocation: explicit, allowed-tools: [Bash(git *)]
+  SKILL.md          # base: model-invocable: false, allowed-tools: [Bash(git *)]
   variants/
     claude/
       SKILL.md      # Claude-specific instructions
@@ -223,7 +220,7 @@ Meridian at runtime: if resolving `claude+opus`, checks for `variants/claude/opu
 
 `.mars/skills/` retains the universal schema — no lowering is applied here. Only native harness surfaces (`.claude/`, `.codex/`, etc.) receive harness-compiled frontmatter.
 
-Meridian always reads from `.mars/skills/`. Skill compilation is transparent to the runtime; Meridian handles variant selection itself without re-compiling.
+Meridian always reads from `.mars/skills/`. Skill compilation is transparent to the runtime; Meridian handles variant selection itself without re-compiling. Skill presence at boot is determined by the agent profile `skills:` list; skills do not define a `presence` field.
 
 ---
 
@@ -233,10 +230,12 @@ Mars emits diagnostics during `mars sync` and `mars validate` for skill compilat
 
 | Code | Severity | Cause |
 |---|---|---|
-| `skill-field-dropped` | warning | A field has no native equivalent in the target harness |
-| `skill-schema-error` | error | Invalid or malformed frontmatter |
-| `skill-schema-warning` | warning | Deprecated field or non-fatal parse issue |
+| `skill-schema-error` | error | Invalid or malformed frontmatter, including removed `invocation`, `disable-model-invocation`, or `allow_implicit_invocation` fields; the parser-level variant for removed fields is `RemovedField` |
+| `skill-field-dropped` | metadata | Internal lossiness metadata for fields with no native equivalent; used by verbose tooling, not a guaranteed user-visible warning |
+| `skill-schema-warning` | warning | Non-fatal parse issue |
 | `skill-variant-unknown-harness` | warning | Unknown harness key under `variants/` |
 | `skill-variant-missing-skill` | warning | Model variant directory has no `SKILL.md` |
+
+`skill-field-dropped` entries with `Dropped` lossiness are currently suppressed in normal projection output; only `Approximate` entries produce user-visible warnings.
 
 Errors in frontmatter parsing skip frontmatter compilation for that skill; the body is still projected.

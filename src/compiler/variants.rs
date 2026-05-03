@@ -482,12 +482,12 @@ mod tests {
         std::fs::create_dir_all(source.join("variants/codex")).unwrap();
         std::fs::write(
             source.join("SKILL.md"),
-            "---\nname: planning\ndescription: Base desc\ninvocation: explicit\nallowed-tools: [Bash(git *)]\n---\nBase body\n",
+            "---\nname: planning\ndescription: Base desc\nmodel-invocable: false\nallowed-tools: [Bash(git *)]\n---\nBase body\n",
         )
         .unwrap();
         std::fs::write(
             source.join("variants/codex/SKILL.md"),
-            "---\nname: ignored\ninvocation: implicit\n---\nCodex body\n",
+            "---\nname: ignored\n---\nCodex body\n",
         )
         .unwrap();
 

@@ -4,6 +4,9 @@ Caveman style. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+- Skill schema: replaced `invocation: explicit | implicit` enum with two independent booleans `model-invocable` and `user-invocable` (both default true). Per-harness lowering compiles each boolean to native fields: Claude gets both natively, Codex gets `allow_implicit_invocation` for model-invocable, Pi/Cursor get `disable-model-invocation`. Old fields (`invocation`, `disable-model-invocation`, `allow_implicit_invocation`) are hard errors.
+
 ### Fixed
 - `MERIDIAN_MANAGED=1` now suppresses agent artifacts in managed targets (`.claude/agents/`, `.opencode/agents/`). Previously target sync copied agents from `.mars/` to targets even under managed mode. Introduced `AgentSurfacePolicy` enum, unified three agent cleanup paths into `reconcile_native_agent_surfaces`, and fixed `mars link` to apply the same suppression policy as `mars sync`.
 - Native harness cleanup dirs derived from `HarnessKind::all()` instead of a hardcoded list. Removed stale `.cursor` entry that isn't a `HarnessKind` variant.
@@ -37,7 +40,7 @@ Caveman style. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 - Bootstrap doc discovery. Package-level `bootstrap/<doc>/BOOTSTRAP.md` scanned during conventional discovery, flows through resolve/target/diff/apply pipeline, materializes to `.mars/bootstrap/`. Fallback/manifest discovery via `bootstrapDocs`/`bootstrap_docs` keys. `mars list` and `mars export` surface bootstrap docs.
 - Skill variant projection. `variants/<harness>/<model>/SKILL.md` hierarchy discovered and validated. Native harness dirs get harness-selected variant; canonical `.mars/skills/<name>/variants/` preserved intact. `mars list` shows variant availability.
-- Skill frontmatter compilation. Universal schema (`invocation`, `allowed-tools`, `license`, `metadata`) compiled to per-harness native fields via typed `SkillProfile` parser and lowering functions. Legacy `disable-model-invocation`/`allow_implicit_invocation` recognized as aliases with deprecation warnings. Raw fallback for malformed frontmatter. `mars validate` checks skill schema.
+- Skill frontmatter compilation. Universal schema (`model-invocable`, `user-invocable`, `allowed-tools`, `license`, `metadata`) compiled to per-harness native fields via typed `SkillProfile` parser and lowering functions. Legacy `invocation`, `disable-model-invocation`, and `allow_implicit_invocation` now hard schema errors; migrate to `model-invocable` / `user-invocable`. Raw fallback for malformed frontmatter. `mars validate` checks skill schema.
 - `sync::translate` module — `TranslatedOutput` type wraps `PlannedAction` with optional pre-translated content; `translate()` pass-through establishes insertion point for per-target format lowering.
 - `TargetAdapter::write_config_entries` / `remove_config_entries` default-no-op methods + `ConfigEntry`/`ConfigEntryKind` placeholder types in `target/mod.rs`.
 - Lock-driven orphan cleanup in `target_sync`: `cleanup_orphans` now iterates lock v2 `previous_managed_paths` directly instead of scanning hardcoded subdirectories (`agents/`, `skills/`, etc.).

@@ -11,7 +11,6 @@ pub struct SkillProfile {
     pub name: Option<String>,
     pub description: Option<String>,
     pub model_invocable: bool,
-    #[allow(dead_code)]
     pub user_invocable: bool,
     pub allowed_tools: Vec<String>,
     pub license: Option<String>,
@@ -19,7 +18,6 @@ pub struct SkillProfile {
     /// true when the source frontmatter explicitly set `model-invocable`
     pub had_model_invocable_field: bool,
     /// true when the source frontmatter explicitly set `user-invocable`
-    #[allow(dead_code)]
     pub had_user_invocable_field: bool,
     pub has_frontmatter: bool,
 }
@@ -244,6 +242,7 @@ mod tests {
         assert!(d.is_empty());
         assert!(p.model_invocable);
         assert!(p.user_invocable);
+        assert!(!p.has_frontmatter);
         assert_eq!(fm.body(), "# Body\nbytes");
     }
 
@@ -251,6 +250,7 @@ mod tests {
     fn parses_identity_only() {
         let (p, d, _) = parse("---\nname: a\ndescription: b\n---\nbody");
         assert!(d.is_empty());
+        assert!(p.has_frontmatter);
         assert_eq!(p.name.as_deref(), Some("a"));
         assert_eq!(p.description.as_deref(), Some("b"));
     }
@@ -267,7 +267,14 @@ mod tests {
 
     #[test]
     fn user_invocable_false_parses() {
-        let (p, d, _) = parse("---\nname: a\ndescription: b\nuser-invocable: false\n---\nbody");
+        let (p, d, _) = parse(
+            "---
+name: a
+description: b
+user-invocable: false
+---
+body",
+        );
         assert!(d.is_empty());
         assert!(p.model_invocable);
         assert!(!p.had_model_invocable_field);
@@ -288,6 +295,18 @@ mod tests {
     }
 
     #[test]
+    fn explicit_true_invocability_sets_presence_flags() {
+        let (p, d, _) = parse(
+            "---\nname: a\ndescription: b\nmodel-invocable: true\nuser-invocable: true\n---\nbody",
+        );
+        assert!(d.is_empty());
+        assert!(p.model_invocable);
+        assert!(p.user_invocable);
+        assert!(p.had_model_invocable_field);
+        assert!(p.had_user_invocable_field);
+    }
+
+    #[test]
     fn non_boolean_model_invocable_defaults_true() {
         let (p, d, _) = parse("---\nname: a\ndescription: b\nmodel-invocable: \"yes\"\n---\nbody");
         assert!(p.model_invocable);
@@ -296,6 +315,25 @@ mod tests {
             d,
             SkillDiagnostic::InvalidFieldType { field, allowed, .. }
                 if field == "model-invocable" && *allowed == "boolean"
+        )));
+    }
+
+    #[test]
+    fn non_boolean_user_invocable_defaults_true() {
+        let (p, d, _) = parse(
+            "---
+name: a
+description: b
+user-invocable: 7
+---
+body",
+        );
+        assert!(p.user_invocable);
+        assert!(!p.had_user_invocable_field);
+        assert!(d.iter().any(|d| matches!(
+            d,
+            SkillDiagnostic::InvalidFieldType { field, allowed, .. }
+                if field == "user-invocable" && *allowed == "boolean"
         )));
     }
 
@@ -310,16 +348,34 @@ mod tests {
 
     #[test]
     fn removed_field_disable_model_invocation() {
-        let (_, d, _) =
-            parse("---\nname: a\ndescription: b\ndisable-model-invocation: true\n---\nbody");
+        let (p, d, _) = parse(
+            "---
+name: a
+description: b
+disable-model-invocation: true
+---
+body",
+        );
+        assert!(p.model_invocable);
+        assert!(!p.had_model_invocable_field);
+        assert!(p.user_invocable);
         assert!(removed_field_named(&d, "disable-model-invocation"));
         assert!(d.iter().any(SkillDiagnostic::is_error));
     }
 
     #[test]
     fn removed_field_allow_implicit_invocation() {
-        let (_, d, _) =
-            parse("---\nname: a\ndescription: b\nallow_implicit_invocation: false\n---\nbody");
+        let (p, d, _) = parse(
+            "---
+name: a
+description: b
+allow_implicit_invocation: false
+---
+body",
+        );
+        assert!(p.model_invocable);
+        assert!(!p.had_model_invocable_field);
+        assert!(p.user_invocable);
         assert!(removed_field_named(&d, "allow_implicit_invocation"));
         assert!(d.iter().any(SkillDiagnostic::is_error));
     }
