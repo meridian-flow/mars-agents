@@ -318,13 +318,8 @@ fn compile_projected_skill_frontmatter(
 
     for lf in &lowered.lossy_fields {
         match &lf.classification {
-            Lossiness::Dropped | Lossiness::MeridianOnly => diag.warn(
-                "skill-field-dropped",
-                format!(
-                    "skill `{skill_name}`: field `{}` dropped in {} native artifact",
-                    lf.field, lf.target
-                ),
-            ),
+            // Dropped/MeridianOnly fields are expected target-format gaps — not actionable.
+            Lossiness::Dropped | Lossiness::MeridianOnly => {}
             Lossiness::Approximate { note } => diag.warn(
                 "skill-field-approximate",
                 format!(
@@ -505,7 +500,8 @@ mod tests {
         assert!(!out.contains("name: ignored"));
         assert!(!out.contains("allowed-tools"));
         assert!(out.ends_with("Codex body\n"));
-        assert!(diag.drain().iter().any(|d| d.code == "skill-field-dropped"));
+        // Dropped fields are silently suppressed (not actionable), so no diagnostics expected.
+        assert!(diag.drain().is_empty());
     }
 
     #[test]

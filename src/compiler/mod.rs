@@ -339,15 +339,8 @@ fn dual_surface_compile(
         for lf in &lowered.lossy_fields {
             use crate::compiler::agents::lower::Lossiness;
             match &lf.classification {
-                Lossiness::Dropped | Lossiness::MeridianOnly => {
-                    diag.warn(
-                        "agent-field-dropped",
-                        format!(
-                            "agent `{agent_name}`: field `{}` dropped in {} native artifact",
-                            lf.field, lf.target
-                        ),
-                    );
-                }
+                // Dropped/MeridianOnly fields are expected target-format gaps — not actionable.
+                Lossiness::Dropped | Lossiness::MeridianOnly => {}
                 Lossiness::Approximate { note } => {
                     diag.warn(
                         "agent-field-approximate",
