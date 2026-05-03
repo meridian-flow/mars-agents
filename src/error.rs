@@ -238,6 +238,9 @@ pub enum MarsError {
 
     #[error("git command failed: `{command}` — {message}")]
     GitCli { command: String, message: String },
+
+    #[error("internal error: {0}")]
+    Internal(String),
 }
 
 impl MarsError {
@@ -269,7 +272,8 @@ impl MarsError {
             | MarsError::ModelCacheUnavailable { .. }
             | MarsError::Io { .. }
             | MarsError::Http { .. }
-            | MarsError::GitCli { .. } => 3,
+            | MarsError::GitCli { .. }
+            | MarsError::Internal(_) => 3,
         }
     }
 }

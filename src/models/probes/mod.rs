@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 
 pub mod opencode;
+pub mod opencode_cache;
 
 pub use opencode::{OpenCodeProbeResult, probe, probe_with_timeout};
 

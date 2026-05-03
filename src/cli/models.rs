@@ -9,6 +9,7 @@ use crate::diagnostic::{Diagnostic, DiagnosticCollector, DiagnosticLevel};
 use crate::error::MarsError;
 use crate::models::availability::{AvailabilityStatus, ModelAvailability};
 use crate::models::probes::OpenCodeProbeResult;
+use crate::models::probes::opencode_cache::{self, CachedProbeOutcome};
 use crate::models::{self, HarnessSource, ModelAlias, ModelSpec};
 use crate::types::MarsContext;
 
@@ -29,6 +30,8 @@ pub enum ModelsCommand {
     Resolve(ResolveAliasArgs),
     /// Quick-add a pinned alias to mars.toml [models].
     Alias(AddAliasArgs),
+    #[command(name = "__refresh-probe", hide = true)]
+    RefreshProbe(RefreshProbeArgs),
 }
 
 #[derive(Debug, Parser)]
@@ -63,6 +66,12 @@ pub struct ResolveAliasArgs {
 }
 
 #[derive(Debug, Parser)]
+pub struct RefreshProbeArgs {
+    #[arg(long)]
+    target: String,
+}
+
+#[derive(Debug, Parser)]
 pub struct AddAliasArgs {
     /// Alias name.
     pub name: String,
@@ -82,6 +91,7 @@ pub fn run(args: &ModelsArgs, ctx: &MarsContext, json: bool) -> Result<i32, Mars
         ModelsCommand::List(args) => run_list(args, ctx, json),
         ModelsCommand::Resolve(a) => run_resolve(a, ctx, json),
         ModelsCommand::Alias(a) => run_alias(a, ctx, json),
+        ModelsCommand::RefreshProbe(a) => run_refresh_probe(a),
     }
 }
 
@@ -862,8 +872,17 @@ fn run_resolve(args: &ResolveAliasArgs, ctx: &MarsContext, json: bool) -> Result
 
         // Step 2: alias-prefix resolution
         if let Some(mut resolved) = models::resolve_with_alias_prefix(&args.name, &merged, cache) {
-            annotate_one_availability(&mut resolved, args, &installed, None);
-            return run_output_resolved(&args.name, &resolved, "alias_prefix", outcome, json);
+            let is_offline = models::is_mars_offline() || args.no_refresh_models;
+            let cache_outcome = opencode_cache::probe_cached(&installed, is_offline);
+            annotate_one_availability(&mut resolved, args, &installed, cache_outcome.result());
+            return run_output_resolved(
+                &args.name,
+                &resolved,
+                "alias_prefix",
+                outcome,
+                &cache_outcome,
+                json,
+            );
         }
     }
 
@@ -874,6 +893,13 @@ fn run_resolve(args: &ResolveAliasArgs, ctx: &MarsContext, json: bool) -> Result
         .unwrap_or(models::RefreshOutcome::Offline);
     let is_offline = models::is_mars_offline() || args.no_refresh_models;
     run_output_passthrough(&args.name, &outcome, is_offline, &installed, json)
+}
+
+fn run_refresh_probe(args: &RefreshProbeArgs) -> Result<i32, MarsError> {
+    if args.target != "opencode" {
+        return Ok(1);
+    }
+    opencode_cache::run_refresh_probe_command()
 }
 
 fn run_alias(args: &AddAliasArgs, ctx: &MarsContext, json: bool) -> Result<i32, MarsError> {
@@ -955,8 +981,10 @@ fn run_resolve_exact_alias(
     let source = determine_source(name, ctx)?;
     let mut diag = DiagnosticCollector::new();
     let mut resolved_entry = models::resolve_one(name, merged, runtime.cache, &mut diag);
+    let is_offline = models::is_mars_offline() || args.no_refresh_models;
+    let cache_outcome = opencode_cache::probe_cached(runtime.installed, is_offline);
     if let Some(r) = resolved_entry.as_mut() {
-        annotate_one_availability(r, args, runtime.installed, None);
+        annotate_one_availability(r, args, runtime.installed, cache_outcome.result());
     }
     let diagnostics = diag.drain();
 
@@ -974,6 +1002,7 @@ fn run_resolve_exact_alias(
                 "spec": format_spec(&alias.spec),
                 "description": r.description,
             });
+            out["probe_cache"] = serde_json::json!(cache_outcome.cache_status());
             if let Some(error) = unavailable_harness_error(r) {
                 out["error"] = serde_json::json!(error);
             }
@@ -1005,6 +1034,9 @@ fn run_resolve_exact_alias(
             return Ok(1);
         }
     } else {
+        if matches!(cache_outcome, CachedProbeOutcome::Stale(_)) {
+            eprintln!("note: using cached opencode probe (stale, background refresh triggered)");
+        }
         let Some(r) = resolved_entry.as_ref() else {
             eprintln!("error: alias `{}` did not resolve to a model ID", name);
             return Ok(1);
@@ -1068,6 +1100,7 @@ fn run_output_resolved(
     resolved: &models::ResolvedAlias,
     source: &str,
     outcome: &models::RefreshOutcome,
+    cache_outcome: &CachedProbeOutcome,
     json: bool,
 ) -> Result<i32, MarsError> {
     let cache_warning = cache_warning(outcome);
@@ -1098,12 +1131,16 @@ fn run_output_resolved(
         if let Some(autocompact) = resolved.autocompact {
             out["autocompact"] = serde_json::json!(autocompact);
         }
+        out["probe_cache"] = serde_json::json!(cache_outcome.cache_status());
         add_availability_json_fields(&mut out, resolved.availability.as_ref());
         if let Some(warning) = cache_warning.as_deref() {
             out["cache_warning"] = serde_json::json!(warning);
         }
         println!("{}", serde_json::to_string_pretty(&out).unwrap());
     } else {
+        if matches!(cache_outcome, CachedProbeOutcome::Stale(_)) {
+            eprintln!("note: using cached opencode probe (stale, background refresh triggered)");
+        }
         let harness = resolved.harness.as_deref().unwrap_or("—");
         println!("Alias:    {}", name);
         println!("Source:   {}", source);
