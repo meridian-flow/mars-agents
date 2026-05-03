@@ -6,32 +6,21 @@ use serde_yaml::Value;
 
 use crate::frontmatter::{Frontmatter, FrontmatterError};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SkillInvocation {
-    Explicit,
-    Implicit,
-}
-
-impl SkillInvocation {
-    pub fn from_str(s: &str) -> Option<Self> {
-        match s {
-            "explicit" => Some(Self::Explicit),
-            "implicit" => Some(Self::Implicit),
-            _ => None,
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct SkillProfile {
     pub name: Option<String>,
     pub description: Option<String>,
-    pub invocation: SkillInvocation,
+    pub model_invocable: bool,
+    #[allow(dead_code)]
+    pub user_invocable: bool,
     pub allowed_tools: Vec<String>,
     pub license: Option<String>,
     pub metadata: Option<Value>,
-    pub legacy_fields_present: bool,
-    pub had_invocation_field: bool,
+    /// true when the source frontmatter explicitly set `model-invocable`
+    pub had_model_invocable_field: bool,
+    /// true when the source frontmatter explicitly set `user-invocable`
+    #[allow(dead_code)]
+    pub had_user_invocable_field: bool,
     pub has_frontmatter: bool,
 }
 
@@ -47,13 +36,9 @@ pub enum SkillDiagnostic {
         value: String,
         allowed: &'static str,
     },
-    DeprecatedLegacyField {
+    RemovedField {
         field: String,
     },
-    RedundantLegacyField {
-        field: String,
-    },
-    ConflictingLegacyFields,
     MalformedFrontmatter {
         message: String,
     },
@@ -64,7 +49,7 @@ impl SkillDiagnostic {
         matches!(
             self,
             Self::InvalidFieldValue { .. }
-                | Self::ConflictingLegacyFields
+                | Self::RemovedField { .. }
                 | Self::MalformedFrontmatter { .. }
         )
     }
@@ -83,15 +68,9 @@ impl SkillDiagnostic {
             } => format!(
                 "skill field `{field}` has unsupported value `{value}`; expected: {allowed}"
             ),
-            Self::DeprecatedLegacyField { field } => {
-                format!("skill uses deprecated `{field}` field; use `invocation` instead")
-            }
-            Self::RedundantLegacyField { field } => {
-                format!("skill field `{field}` ignored because canonical `invocation` is present")
-            }
-            Self::ConflictingLegacyFields => {
-                "skill legacy invocation fields conflict; use canonical `invocation`".to_string()
-            }
+            Self::RemovedField { field } => format!(
+                "skill field `{field}` has been removed; use `model-invocable` / `user-invocable` instead"
+            ),
             Self::MalformedFrontmatter { message } => {
                 format!("skill frontmatter is malformed; raw fallback used: {message}")
             }
@@ -150,20 +129,24 @@ fn validate_required_string(field: &str, val: Option<&Value>, diags: &mut Vec<Sk
     }
 }
 
-fn legacy_invocation(field: &str, val: &Value) -> Option<SkillInvocation> {
-    let b = val.as_bool()?;
-    match field {
-        "disable-model-invocation" => Some(if b {
-            SkillInvocation::Explicit
-        } else {
-            SkillInvocation::Implicit
-        }),
-        "allow_implicit_invocation" => Some(if b {
-            SkillInvocation::Implicit
-        } else {
-            SkillInvocation::Explicit
-        }),
-        _ => None,
+fn parse_invocability_bool(
+    field: &str,
+    raw: Option<&Value>,
+    diags: &mut Vec<SkillDiagnostic>,
+) -> (bool, bool) {
+    match raw {
+        Some(raw) => match raw.as_bool() {
+            Some(value) => (value, true),
+            None => {
+                diags.push(SkillDiagnostic::InvalidFieldType {
+                    field: field.to_string(),
+                    value: value_label(raw),
+                    allowed: "boolean",
+                });
+                (true, false)
+            }
+        },
+        None => (true, false),
     }
 }
 
@@ -193,73 +176,33 @@ pub fn parse_skill_profile(fm: &Frontmatter, diags: &mut Vec<SkillDiagnostic>) -
     }
     let metadata = fm.get("metadata").cloned();
 
-    let disable = fm.get("disable-model-invocation");
-    let allow = fm.get("allow_implicit_invocation");
-    for (field, raw) in [
-        ("disable-model-invocation", disable),
-        ("allow_implicit_invocation", allow),
+    let (model_invocable, had_model_invocable_field) =
+        parse_invocability_bool("model-invocable", fm.get("model-invocable"), diags);
+    let (user_invocable, had_user_invocable_field) =
+        parse_invocability_bool("user-invocable", fm.get("user-invocable"), diags);
+
+    for field in [
+        "invocation",
+        "disable-model-invocation",
+        "allow_implicit_invocation",
     ] {
-        if let Some(raw) = raw
-            && !raw.is_bool()
-        {
-            diags.push(SkillDiagnostic::InvalidFieldValue {
+        if fm.get(field).is_some() {
+            diags.push(SkillDiagnostic::RemovedField {
                 field: field.to_string(),
-                value: value_label(raw),
-                allowed: "boolean",
             });
         }
     }
-    let legacy_fields_present = disable.is_some() || allow.is_some();
-    let had_invocation_field = fm.get("invocation").is_some();
-
-    let invocation = if let Some(raw) = fm.get("invocation") {
-        for field in ["disable-model-invocation", "allow_implicit_invocation"] {
-            if fm.get(field).is_some() {
-                diags.push(SkillDiagnostic::RedundantLegacyField {
-                    field: field.to_string(),
-                });
-            }
-        }
-        match raw.as_str().and_then(SkillInvocation::from_str) {
-            Some(inv) => inv,
-            None => {
-                diags.push(SkillDiagnostic::InvalidFieldValue {
-                    field: "invocation".to_string(),
-                    value: value_label(raw),
-                    allowed: "explicit, implicit",
-                });
-                SkillInvocation::Implicit
-            }
-        }
-    } else {
-        let disable_inv = disable.and_then(|v| legacy_invocation("disable-model-invocation", v));
-        let allow_inv = allow.and_then(|v| legacy_invocation("allow_implicit_invocation", v));
-        for field in ["disable-model-invocation", "allow_implicit_invocation"] {
-            if fm.get(field).is_some() {
-                diags.push(SkillDiagnostic::DeprecatedLegacyField {
-                    field: field.to_string(),
-                });
-            }
-        }
-        match (disable_inv, allow_inv) {
-            (Some(a), Some(b)) if a != b => {
-                diags.push(SkillDiagnostic::ConflictingLegacyFields);
-                SkillInvocation::Implicit
-            }
-            (Some(a), _) | (_, Some(a)) => a,
-            (None, None) => SkillInvocation::Implicit,
-        }
-    };
 
     SkillProfile {
         name,
         description,
-        invocation,
+        model_invocable,
+        user_invocable,
         allowed_tools,
         license,
         metadata,
-        legacy_fields_present,
-        had_invocation_field,
+        had_model_invocable_field,
+        had_user_invocable_field,
         has_frontmatter: fm.has_frontmatter(),
     }
 }
@@ -285,13 +228,25 @@ mod tests {
         let (profile, fm) = parse_skill_content(content, &mut diags).unwrap();
         (profile, diags, fm)
     }
+
+    fn removed_field_named(diags: &[SkillDiagnostic], expected: &str) -> bool {
+        diags.iter().any(|d| {
+            matches!(
+                d,
+                SkillDiagnostic::RemovedField { field } if field == expected
+            )
+        })
+    }
+
     #[test]
-    fn no_frontmatter_defaults_implicit_and_preserves_body() {
+    fn no_frontmatter_defaults_invocable_and_preserves_body() {
         let (p, d, fm) = parse("# Body\nbytes");
         assert!(d.is_empty());
-        assert_eq!(p.invocation, SkillInvocation::Implicit);
+        assert!(p.model_invocable);
+        assert!(p.user_invocable);
         assert_eq!(fm.body(), "# Body\nbytes");
     }
+
     #[test]
     fn parses_identity_only() {
         let (p, d, _) = parse("---\nname: a\ndescription: b\n---\nbody");
@@ -299,35 +254,86 @@ mod tests {
         assert_eq!(p.name.as_deref(), Some("a"));
         assert_eq!(p.description.as_deref(), Some("b"));
     }
+
     #[test]
-    fn canonical_invocation_wins_over_legacy() {
-        let (p, d, _) = parse(
-            "---\nname: a\ndescription: b\ninvocation: implicit\ndisable-model-invocation: true\n---\nbody",
-        );
-        assert_eq!(p.invocation, SkillInvocation::Implicit);
-        assert!(matches!(d[0], SkillDiagnostic::RedundantLegacyField { .. }));
+    fn model_invocable_false_parses() {
+        let (p, d, _) = parse("---\nname: a\ndescription: b\nmodel-invocable: false\n---\nbody");
+        assert!(d.is_empty());
+        assert!(!p.model_invocable);
+        assert!(p.had_model_invocable_field);
+        assert!(p.user_invocable);
+        assert!(!p.had_user_invocable_field);
     }
+
     #[test]
-    fn legacy_aliases_map_invocation() {
-        let (p, d, _) =
+    fn user_invocable_false_parses() {
+        let (p, d, _) = parse("---\nname: a\ndescription: b\nuser-invocable: false\n---\nbody");
+        assert!(d.is_empty());
+        assert!(p.model_invocable);
+        assert!(!p.had_model_invocable_field);
+        assert!(!p.user_invocable);
+        assert!(p.had_user_invocable_field);
+    }
+
+    #[test]
+    fn both_booleans_false_accepted() {
+        let (p, d, _) = parse(
+            "---\nname: a\ndescription: b\nmodel-invocable: false\nuser-invocable: false\n---\nbody",
+        );
+        assert!(d.is_empty());
+        assert!(!p.model_invocable);
+        assert!(!p.user_invocable);
+        assert!(p.had_model_invocable_field);
+        assert!(p.had_user_invocable_field);
+    }
+
+    #[test]
+    fn non_boolean_model_invocable_defaults_true() {
+        let (p, d, _) = parse("---\nname: a\ndescription: b\nmodel-invocable: \"yes\"\n---\nbody");
+        assert!(p.model_invocable);
+        assert!(!p.had_model_invocable_field);
+        assert!(d.iter().any(|d| matches!(
+            d,
+            SkillDiagnostic::InvalidFieldType { field, allowed, .. }
+                if field == "model-invocable" && *allowed == "boolean"
+        )));
+    }
+
+    #[test]
+    fn removed_field_invocation() {
+        let (p, d, _) = parse("---\nname: a\ndescription: b\ninvocation: explicit\n---\nbody");
+        assert!(p.model_invocable);
+        assert!(p.user_invocable);
+        assert!(removed_field_named(&d, "invocation"));
+        assert!(d.iter().any(SkillDiagnostic::is_error));
+    }
+
+    #[test]
+    fn removed_field_disable_model_invocation() {
+        let (_, d, _) =
+            parse("---\nname: a\ndescription: b\ndisable-model-invocation: true\n---\nbody");
+        assert!(removed_field_named(&d, "disable-model-invocation"));
+        assert!(d.iter().any(SkillDiagnostic::is_error));
+    }
+
+    #[test]
+    fn removed_field_allow_implicit_invocation() {
+        let (_, d, _) =
             parse("---\nname: a\ndescription: b\nallow_implicit_invocation: false\n---\nbody");
-        assert_eq!(p.invocation, SkillInvocation::Explicit);
-        assert!(matches!(
-            d[0],
-            SkillDiagnostic::DeprecatedLegacyField { .. }
-        ));
+        assert!(removed_field_named(&d, "allow_implicit_invocation"));
+        assert!(d.iter().any(SkillDiagnostic::is_error));
     }
+
     #[test]
-    fn conflicting_legacy_fields_error() {
-        let (p, d, _) = parse(
-            "---\nname: a\ndescription: b\ndisable-model-invocation: true\nallow_implicit_invocation: true\n---\nbody",
+    fn all_removed_fields_emit_removed_field() {
+        let (_, d, _) = parse(
+            "---\nname: a\ndescription: b\ninvocation: explicit\ndisable-model-invocation: true\nallow_implicit_invocation: false\n---\nbody",
         );
-        assert_eq!(p.invocation, SkillInvocation::Implicit);
-        assert!(
-            d.iter()
-                .any(|d| matches!(d, SkillDiagnostic::ConflictingLegacyFields))
-        );
+        assert!(removed_field_named(&d, "invocation"));
+        assert!(removed_field_named(&d, "disable-model-invocation"));
+        assert!(removed_field_named(&d, "allow_implicit_invocation"));
     }
+
     #[test]
     fn frontmatter_requires_name_and_description() {
         let (_, d, _) = parse("---\nname: a\n---\nbody");
@@ -350,17 +356,6 @@ mod tests {
         assert!(d.iter().any(|d| matches!(
             d,
             SkillDiagnostic::InvalidFieldType { field, .. } if field == "license"
-        )));
-    }
-
-    #[test]
-    fn legacy_aliases_require_boolean_values() {
-        let (_, d, _) =
-            parse("---\nname: a\ndescription: b\nallow_implicit_invocation: nope\n---\nbody");
-        assert!(d.iter().any(|d| matches!(
-            d,
-            SkillDiagnostic::InvalidFieldValue { field, allowed, .. }
-                if field == "allow_implicit_invocation" && *allowed == "boolean"
         )));
     }
 

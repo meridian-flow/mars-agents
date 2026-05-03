@@ -3,7 +3,7 @@
 use serde_yaml::{Mapping, Value};
 
 use crate::compiler::agents::lower::{Lossiness, LossyField, LoweredOutput};
-use crate::compiler::skills::{SkillInvocation, SkillProfile};
+use crate::compiler::skills::SkillProfile;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SkillHarness {
@@ -102,7 +102,7 @@ pub fn lower_skill_for_harness(
 pub fn lower_skill_to_claude(profile: &SkillProfile, body: &str) -> LoweredOutput {
     let mut yaml = Mapping::new();
     insert_identity(&mut yaml, profile);
-    if profile.invocation == SkillInvocation::Explicit {
+    if !profile.model_invocable {
         yaml.insert(yk("disable-model-invocation"), Value::Bool(true));
     }
     insert_allowed_tools(&mut yaml, profile);
@@ -116,10 +116,10 @@ pub fn lower_skill_to_claude(profile: &SkillProfile, body: &str) -> LoweredOutpu
 pub fn lower_skill_to_codex(profile: &SkillProfile, body: &str) -> LoweredOutput {
     let mut yaml = Mapping::new();
     insert_identity(&mut yaml, profile);
-    if profile.had_invocation_field || profile.legacy_fields_present {
+    if profile.had_model_invocable_field {
         yaml.insert(
             yk("allow_implicit_invocation"),
-            Value::Bool(profile.invocation == SkillInvocation::Implicit),
+            Value::Bool(profile.model_invocable),
         );
     }
     insert_metadata(&mut yaml, profile);
@@ -138,11 +138,8 @@ pub fn lower_skill_to_opencode(profile: &SkillProfile, body: &str) -> LoweredOut
     insert_identity(&mut yaml, profile);
     insert_metadata(&mut yaml, profile);
     let mut lossy_fields = Vec::new();
-    if profile.had_invocation_field
-        || profile.legacy_fields_present
-        || profile.invocation == SkillInvocation::Explicit
-    {
-        lossy_fields.push(dropped("invocation", SkillHarness::OpenCode));
+    if !profile.model_invocable {
+        lossy_fields.push(dropped("model-invocable", SkillHarness::OpenCode));
     }
     if !profile.allowed_tools.is_empty() {
         lossy_fields.push(dropped("allowed-tools", SkillHarness::OpenCode));
@@ -156,7 +153,7 @@ pub fn lower_skill_to_opencode(profile: &SkillProfile, body: &str) -> LoweredOut
 pub fn lower_skill_to_pi(profile: &SkillProfile, body: &str) -> LoweredOutput {
     let mut yaml = Mapping::new();
     insert_identity(&mut yaml, profile);
-    if profile.invocation == SkillInvocation::Explicit {
+    if !profile.model_invocable {
         yaml.insert(yk("disable-model-invocation"), Value::Bool(true));
     }
     insert_allowed_tools(&mut yaml, profile);
@@ -170,7 +167,7 @@ pub fn lower_skill_to_pi(profile: &SkillProfile, body: &str) -> LoweredOutput {
 pub fn lower_skill_to_cursor(profile: &SkillProfile, body: &str) -> LoweredOutput {
     let mut yaml = Mapping::new();
     insert_identity(&mut yaml, profile);
-    if profile.invocation == SkillInvocation::Explicit {
+    if !profile.model_invocable {
         yaml.insert(yk("disable-model-invocation"), Value::Bool(true));
     }
     insert_metadata(&mut yaml, profile);
@@ -197,7 +194,7 @@ mod tests {
     use super::*;
     use crate::compiler::skills::parse_skill_content;
     fn profile() -> SkillProfile {
-        let content = "---\nname: skill\ndescription: desc\ninvocation: explicit\nallowed-tools: [Bash(git *)]\nlicense: MIT\nmetadata:\n  owner: team\nextra: stripped\n---\nBody\n";
+        let content = "---\nname: skill\ndescription: desc\nmodel-invocable: false\nallowed-tools: [Bash(git *)]\nlicense: MIT\nmetadata:\n  owner: team\nextra: stripped\n---\nBody\n";
         let mut diags = Vec::new();
         parse_skill_content(content, &mut diags).unwrap().0
     }
