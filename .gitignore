@@ -4,8 +4,10 @@
 # Meridian workspace state
 .meridian/
 .agents/
+.claude/
 .mars/
 .codex
+.opencode/
 mars.local.toml
 uv.lock
 meridian.toml
