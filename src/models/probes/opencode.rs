@@ -4,10 +4,11 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use serde::{Deserialize, Serialize};
 use wait_timeout::ChildExt;
 
 /// Result of probing OpenCode's runtime availability.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct OpenCodeProbeResult {
     /// Provider availability: OpenCode provider ID -> has credentials.
     pub providers: HashMap<String, bool>,
@@ -234,5 +235,23 @@ openrouter/anthropic/claude-opus-4.7"#;
     fn test_parse_models_strips_ansi() {
         let slugs = parse_models_output("\x1b[32mopenai/gpt-5.4\x1b[0m");
         assert_eq!(slugs, vec!["openai/gpt-5.4"]);
+    }
+
+    #[test]
+    fn test_probe_result_round_trip() {
+        let result = OpenCodeProbeResult {
+            providers: HashMap::from([("openai".to_string(), true)]),
+            model_slugs: vec!["openai/gpt-5.4".to_string()],
+            provider_probe_success: true,
+            model_probe_success: true,
+            error: None,
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        let back: OpenCodeProbeResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.providers.get("openai"), Some(&true));
+        assert_eq!(back.model_slugs, result.model_slugs);
+        assert_eq!(back.provider_probe_success, true);
+        assert_eq!(back.model_probe_success, true);
+        assert_eq!(back.error, None);
     }
 }

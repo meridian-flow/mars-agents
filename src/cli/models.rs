@@ -254,6 +254,13 @@ struct AvailabilityContext<'a> {
     is_offline: bool,
 }
 
+#[derive(Clone, Copy)]
+struct ResolveRuntime<'a> {
+    cache: &'a models::ModelsCache,
+    outcome: &'a models::RefreshOutcome,
+    installed: &'a HashSet<String>,
+}
+
 fn run_list_all(
     merged: &IndexMap<String, ModelAlias>,
     cache: &models::ModelsCache,
@@ -680,7 +687,7 @@ fn probe_opencode_if_needed(
     is_offline: bool,
     json: bool,
 ) -> Option<OpenCodeProbeResult> {
-    if is_offline || !installed.contains("opencode") {
+    if !models::probes::should_probe_opencode(installed, is_offline) {
         return None;
     }
     if !json {
@@ -794,20 +801,21 @@ fn availability_status_label(availability: Option<&ModelAvailability>) -> &'stat
 fn annotate_one_availability(
     resolved: &mut models::ResolvedAlias,
     args: &ResolveAliasArgs,
+    installed: &HashSet<String>,
     probe_result: Option<&OpenCodeProbeResult>,
 ) {
-    let installed = models::harness::detect_installed_harnesses();
     let is_offline = models::is_mars_offline() || args.no_refresh_models;
-    let owned_probe = if probe_result.is_none() && !is_offline && installed.contains("opencode") {
-        Some(models::probes::opencode::probe())
-    } else {
-        None
-    };
+    let owned_probe =
+        if probe_result.is_none() && models::probes::should_probe_opencode(installed, is_offline) {
+            Some(models::probes::opencode::probe())
+        } else {
+            None
+        };
     let probe_result = probe_result.or(owned_probe.as_ref());
     resolved.availability = Some(models::availability::classify_model(
         &resolved.model_id,
         &resolved.provider,
-        &installed,
+        installed,
         probe_result,
         is_offline,
     ));
@@ -839,16 +847,22 @@ fn run_resolve(args: &ResolveAliasArgs, ctx: &MarsContext, json: bool) -> Result
 
     // Cache is enrichment, not a gate. If unavailable, skip to passthrough.
     let cache_result = ensure_fresh_or_json_error(&mars, ttl, mode, json)?;
+    let installed = models::harness::detect_installed_harnesses();
 
     if let Some((cache, outcome)) = &cache_result {
         // Step 1: exact alias lookup
         if let Some(alias) = merged.get(&args.name) {
-            return run_resolve_exact_alias(args, alias, &merged, ctx, cache, outcome, json);
+            let runtime = ResolveRuntime {
+                cache,
+                outcome,
+                installed: &installed,
+            };
+            return run_resolve_exact_alias(args, alias, &merged, ctx, runtime, json);
         }
 
         // Step 2: alias-prefix resolution
         if let Some(mut resolved) = models::resolve_with_alias_prefix(&args.name, &merged, cache) {
-            annotate_one_availability(&mut resolved, args, None);
+            annotate_one_availability(&mut resolved, args, &installed, None);
             return run_output_resolved(&args.name, &resolved, "alias_prefix", outcome, json);
         }
     }
@@ -859,7 +873,7 @@ fn run_resolve(args: &ResolveAliasArgs, ctx: &MarsContext, json: bool) -> Result
         .map(|(_, o)| o.clone())
         .unwrap_or(models::RefreshOutcome::Offline);
     let is_offline = models::is_mars_offline() || args.no_refresh_models;
-    run_output_passthrough(&args.name, &outcome, is_offline, json)
+    run_output_passthrough(&args.name, &outcome, is_offline, &installed, json)
 }
 
 fn run_alias(args: &AddAliasArgs, ctx: &MarsContext, json: bool) -> Result<i32, MarsError> {
@@ -927,11 +941,10 @@ fn run_resolve_exact_alias(
     alias: &ModelAlias,
     merged: &IndexMap<String, ModelAlias>,
     ctx: &MarsContext,
-    cache: &models::ModelsCache,
-    outcome: &models::RefreshOutcome,
+    runtime: ResolveRuntime<'_>,
     json: bool,
 ) -> Result<i32, MarsError> {
-    let cache_warning = cache_warning(outcome);
+    let cache_warning = cache_warning(runtime.outcome);
     if let Some(warning) = cache_warning.as_deref()
         && !json
     {
@@ -941,9 +954,9 @@ fn run_resolve_exact_alias(
     let name = &args.name;
     let source = determine_source(name, ctx)?;
     let mut diag = DiagnosticCollector::new();
-    let mut resolved_entry = models::resolve_one(name, merged, cache, &mut diag);
+    let mut resolved_entry = models::resolve_one(name, merged, runtime.cache, &mut diag);
     if let Some(r) = resolved_entry.as_mut() {
-        annotate_one_availability(r, args, None);
+        annotate_one_availability(r, args, runtime.installed, None);
     }
     let diagnostics = diag.drain();
 
@@ -1117,6 +1130,7 @@ fn run_output_passthrough(
     name: &str,
     outcome: &models::RefreshOutcome,
     is_offline: bool,
+    installed: &HashSet<String>,
     json: bool,
 ) -> Result<i32, MarsError> {
     if name.trim().is_empty() {
@@ -1141,11 +1155,10 @@ fn run_output_passthrough(
         eprintln!("warning: {warning}");
     }
 
-    let installed = models::harness::detect_installed_harnesses();
     let guessed_provider = models::infer_provider_from_model_id(name).map(str::to_string);
     let harness = guessed_provider
         .as_deref()
-        .and_then(|p| models::harness::resolve_harness_for_provider(p, &installed));
+        .and_then(|p| models::harness::resolve_harness_for_provider(p, installed));
     let harness_source = if harness.is_some() {
         "pattern_guess"
     } else {
@@ -1155,7 +1168,7 @@ fn run_output_passthrough(
         .as_deref()
         .map(models::harness::harness_candidates_for_provider)
         .unwrap_or_default();
-    let probe_result = if !is_offline && installed.contains("opencode") {
+    let probe_result = if models::probes::should_probe_opencode(installed, is_offline) {
         Some(models::probes::opencode::probe())
     } else {
         None
@@ -1163,7 +1176,7 @@ fn run_output_passthrough(
     let availability = models::availability::classify_model(
         name,
         guessed_provider.as_deref().unwrap_or("unknown"),
-        &installed,
+        installed,
         probe_result.as_ref(),
         is_offline,
     );
