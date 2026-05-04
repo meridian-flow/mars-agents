@@ -1,6 +1,4 @@
 //! `mars unlink <target>` — remove a managed target directory.
-//!
-//! Thin wrapper around `link --unlink` for discoverability.
 
 use crate::error::MarsError;
 
@@ -13,9 +11,6 @@ pub struct UnlinkArgs {
 
 /// Run `mars unlink`.
 pub fn run(args: &UnlinkArgs, ctx: &super::MarsContext, json: bool) -> Result<i32, MarsError> {
-    let link_args = super::link::LinkArgs {
-        target: args.target.clone(),
-        unlink: true,
-    };
-    super::link::run(&link_args, ctx, json)
+    let target_name = super::link::normalize_target_name(&args.target)?;
+    super::link::unlink_target(ctx, &target_name, json)
 }

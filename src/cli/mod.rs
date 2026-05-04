@@ -225,9 +225,7 @@ fn dispatch_result(cli: Cli) -> Result<i32, MarsError> {
 }
 
 fn should_auto_init_project(cmd: &Command, err: &MarsError) -> bool {
-    let is_additive = matches!(cmd, Command::Add(_))
-        || matches!(cmd, Command::Link(args) if !args.unlink);
-    is_additive
+    matches!(cmd, Command::Add(_) | Command::Link(_))
         && matches!(
             err,
             MarsError::Config(ConfigError::ProjectRootNotFound { .. })

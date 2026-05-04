@@ -2,8 +2,7 @@
 //!
 //! `mars link <target>` adds the target to `settings.targets` and copies
 //! content from `.mars/` into that target.
-//! `mars link --unlink <target>` removes the target from `settings.targets`
-//! and removes the target directory.
+//! Use `mars unlink <target>` to remove a target.
 
 use crate::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCollector, DiagnosticLevel};
 use crate::error::MarsError;
@@ -19,20 +18,11 @@ use super::output;
 pub struct LinkArgs {
     /// Target directory to materialize (e.g. `.claude`).
     pub target: String,
-
-    /// Remove target management instead of adding it.
-    #[arg(long)]
-    pub unlink: bool,
 }
 
 /// Run `mars link`.
 pub fn run(args: &LinkArgs, ctx: &super::MarsContext, json: bool) -> Result<i32, MarsError> {
     let target_name = normalize_target_name(&args.target)?;
-
-    if args.unlink {
-        return unlink_target(ctx, &target_name, json);
-    }
-
     link_target(ctx, &target_name, json)
 }
 
@@ -161,7 +151,7 @@ fn deprecated_agents_target_diagnostic(target_name: &str) -> Option<Diagnostic> 
     })
 }
 
-fn unlink_target(
+pub fn unlink_target(
     ctx: &super::MarsContext,
     target_name: &str,
     json: bool,
@@ -221,7 +211,7 @@ fn unlink_target(
     Ok(0)
 }
 
-fn normalize_target_name(target: &str) -> Result<String, MarsError> {
+pub fn normalize_target_name(target: &str) -> Result<String, MarsError> {
     let normalized = target.trim_end_matches('/').trim_end_matches('\\');
     if normalized.contains('/') || normalized.contains('\\') {
         return Err(MarsError::Link {

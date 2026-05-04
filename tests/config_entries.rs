@@ -130,9 +130,8 @@ targets = [".claude"]
 
     mars()
         .args([
-            "link",
+            "unlink",
             ".claude",
-            "--unlink",
             "--root",
             project.path().to_str().unwrap(),
         ])
@@ -180,9 +179,8 @@ managed_root = ".agents"
 
     mars()
         .args([
-            "link",
+            "unlink",
             ".agents",
-            "--unlink",
             "--root",
             project.path().to_str().unwrap(),
         ])
