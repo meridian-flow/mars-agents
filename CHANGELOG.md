@@ -5,10 +5,15 @@ Caveman style. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
-- `mars unlink <target>` top-level subcommand. Removes a managed target directory and its settings entry.
+- `mars unlink <target>` top-level subcommand. Removes a managed target directory and its settings entry. Owns its logic directly (not a shim over link).
+- `cli::target` shared module for target-name normalization.
 
 ### Removed
 - `mars link --unlink` flag. Use `mars unlink <target>` instead.
+
+### Fixed
+- `mars link --unlink` no longer auto-initializes a project in an empty directory before unlinking.
+- `mars unlink` deletes the target directory before saving config, so a failed deletion doesn't leave settings mutated with the directory still on disk.
 
 ### Changed
 - Skill schema: replaced `invocation: explicit | implicit` enum with two independent booleans `model-invocable` and `user-invocable` (both default true). Per-harness lowering compiles each boolean to native fields: Claude gets both natively, Codex gets `allow_implicit_invocation` for model-invocable, Pi/Cursor get `disable-model-invocation`. Old fields (`invocation`, `disable-model-invocation`, `allow_implicit_invocation`) are hard errors.
