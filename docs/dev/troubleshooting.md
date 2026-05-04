@@ -127,7 +127,7 @@ mars resolve agents/coder.md    # Resolve specific file
 ### Link points to wrong target
 
 ```bash
-mars link --unlink .claude   # Remove old link
+mars unlink .claude          # Remove old link
 mars link .claude            # Re-create correct link
 ```
 

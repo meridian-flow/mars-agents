@@ -137,7 +137,7 @@ targets = [".claude"]
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("settings.targets"));
+        .stdout(predicate::str::contains("from settings"));
 
     let config: Value =
         toml::from_str(&fs::read_to_string(project.child("mars.toml").path()).unwrap()).unwrap();

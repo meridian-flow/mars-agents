@@ -5,7 +5,10 @@ Caveman style. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
-- `mars unlink <target>` top-level subcommand. Delegates to `link --unlink` but discoverable and matches the deprecation warning text.
+- `mars unlink <target>` top-level subcommand. Removes a managed target directory and its settings entry.
+
+### Removed
+- `mars link --unlink` flag. Use `mars unlink <target>` instead.
 
 ### Changed
 - Skill schema: replaced `invocation: explicit | implicit` enum with two independent booleans `model-invocable` and `user-invocable` (both default true). Per-harness lowering compiles each boolean to native fields: Claude gets both natively, Codex gets `allow_implicit_invocation` for model-invocable, Pi/Cursor get `disable-model-invocation`. Old fields (`invocation`, `disable-model-invocation`, `allow_implicit_invocation`) are hard errors.

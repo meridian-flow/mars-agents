@@ -283,28 +283,45 @@ Writes to `mars.local.toml` and re-syncs. The local path replaces the git URL fo
 
 ## `mars link`
 
-Copy `agents/` and `skills/` into a tool directory.
+Add a managed target directory.
 
 ```bash
-mars link <target> [--unlink] [--force]
+mars link <target> [--force]
 ```
 
 | Flag | Description |
 |---|---|
-| `--unlink` | Remove managed target instead of adding one |
 | `--force` | Replace whatever exists (data may be lost) |
 
 **Behavior:**
 - Adds `<target>` as a managed target directory and copies content from `.mars/` into it
 - Conflict-aware: scans target before mutating. If conflicts exist, reports all problems and aborts (zero mutations)
 - Persists the target in `mars.toml [settings] targets`
-- `--unlink` removes the target directory and its entry from settings
 
 ```bash
 mars link .claude            # Copy agents/ and skills/ into .claude/
 mars link .cursor            # Copy to another tool
-mars link --unlink .claude   # Remove managed target
 mars link .claude --force    # Replace whatever exists
+```
+
+---
+
+## `mars unlink`
+
+Remove a managed target directory.
+
+```bash
+mars unlink <target>
+```
+
+**Behavior:**
+- Removes `<target>` from `mars.toml [settings] targets` (and `managed_root` if it matches)
+- Deletes the target directory if it was managed
+- Reports if the target was not managed (no-op)
+
+```bash
+mars unlink .agents          # Remove deprecated .agents target
+mars unlink .claude          # Stop managing .claude
 ```
 
 ---

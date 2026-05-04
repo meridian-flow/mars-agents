@@ -25,6 +25,7 @@ pub mod rename;
 pub mod repair;
 pub mod resolve_cmd;
 pub mod sync;
+pub mod target;
 pub mod unlink;
 pub mod upgrade;
 pub mod validate;
@@ -148,7 +149,7 @@ pub enum Command {
     /// Set a local dev override for a source.
     Override(override_cmd::OverrideArgs),
 
-    /// Add/remove managed target directories (e.g. .claude).
+    /// Add a managed target directory (e.g. .claude).
     Link(link::LinkArgs),
 
     /// Remove a managed target directory.

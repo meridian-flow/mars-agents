@@ -1,4 +1,4 @@
-//! `mars link <dir>` — manage target directories materialized from `.mars/`.
+//! `mars link <target>` — add a managed target directory.
 //!
 //! `mars link <target>` adds the target to `settings.targets` and copies
 //! content from `.mars/` into that target.
@@ -22,7 +22,7 @@ pub struct LinkArgs {
 
 /// Run `mars link`.
 pub fn run(args: &LinkArgs, ctx: &super::MarsContext, json: bool) -> Result<i32, MarsError> {
-    let target_name = normalize_target_name(&args.target)?;
+    let target_name = super::target::normalize_target_name(&args.target)?;
     link_target(ctx, &target_name, json)
 }
 
@@ -151,83 +151,6 @@ fn deprecated_agents_target_diagnostic(target_name: &str) -> Option<Diagnostic> 
     })
 }
 
-pub fn unlink_target(
-    ctx: &super::MarsContext,
-    target_name: &str,
-    json: bool,
-) -> Result<i32, MarsError> {
-    let mars_dir = ctx.project_root.join(".mars");
-    std::fs::create_dir_all(&mars_dir)?;
-    let lock_path = mars_dir.join("sync.lock");
-    let _sync_lock = crate::fs::FileLock::acquire(&lock_path)?;
-
-    let mut config = crate::config::load(&ctx.project_root)?;
-    let mut settings_updated = false;
-    let mut target_was_managed = false;
-
-    if config.settings.managed_root.as_deref() == Some(target_name) {
-        config.settings.managed_root = None;
-        settings_updated = true;
-        target_was_managed = true;
-    }
-
-    if let Some(targets) = config.settings.targets.as_mut() {
-        let old_len = targets.len();
-        targets.retain(|target| target != target_name);
-        if targets.len() != old_len {
-            settings_updated = true;
-            target_was_managed = true;
-        }
-        if targets.is_empty() {
-            config.settings.targets = None;
-        }
-    }
-
-    if settings_updated {
-        crate::config::save(&ctx.project_root, &config)?;
-    }
-
-    let target_dir = ctx.project_root.join(target_name);
-    let removed_dir = if target_was_managed && target_dir.exists() {
-        std::fs::remove_dir_all(&target_dir)?;
-        true
-    } else {
-        false
-    };
-
-    if json {
-        output::print_json(&serde_json::json!({
-            "ok": true,
-            "target": target_name,
-            "settings_updated": settings_updated,
-            "removed_dir": removed_dir,
-        }));
-    } else if removed_dir {
-        output::print_success(&format!("removed managed target `{target_name}`"));
-    } else {
-        output::print_info(&format!("removed `{target_name}` from settings.targets"));
-    }
-
-    Ok(0)
-}
-
-pub fn normalize_target_name(target: &str) -> Result<String, MarsError> {
-    let normalized = target.trim_end_matches('/').trim_end_matches('\\');
-    if normalized.contains('/') || normalized.contains('\\') {
-        return Err(MarsError::Link {
-            target: target.to_string(),
-            message: "link target must be a directory name, not a path".to_string(),
-        });
-    }
-    if normalized.is_empty() || normalized == "." || normalized == ".." {
-        return Err(MarsError::Link {
-            target: target.to_string(),
-            message: "invalid link target name".to_string(),
-        });
-    }
-    Ok(normalized.to_string())
-}
-
 fn lock_items_as_sync_outcomes(lock: &LockFile) -> Vec<ActionOutcome> {
     lock.flat_items()
         .into_iter()
@@ -255,30 +178,4 @@ fn item_name_from_dest_path(dest_path: &crate::types::DestPath, kind: ItemKind) 
     };
 
     ItemName::from(name)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::normalize_target_name;
-
-    #[test]
-    fn normalize_strips_trailing_slash() {
-        assert_eq!(normalize_target_name(".claude/").unwrap(), ".claude");
-    }
-
-    #[test]
-    fn normalize_rejects_path() {
-        assert!(normalize_target_name("foo/bar").is_err());
-    }
-
-    #[test]
-    fn normalize_rejects_empty() {
-        assert!(normalize_target_name("").is_err());
-    }
-
-    #[test]
-    fn normalize_rejects_dots() {
-        assert!(normalize_target_name(".").is_err());
-        assert!(normalize_target_name("..").is_err());
-    }
 }
