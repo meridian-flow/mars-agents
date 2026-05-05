@@ -1,6 +1,6 @@
 {
   "name": "@meridian-flow/mars-agents-win32-x64",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "description": "mars binary for Windows x64",
   "license": "MIT",
   "repository": {
