@@ -10,9 +10,27 @@ const HARNESS_BINARIES: &[(&str, &str)] = &[
 pub fn detect_installed_harnesses() -> HashSet<String> {
     HARNESS_BINARIES
         .iter()
-        .filter(|(_, binary)| which::which(binary).is_ok())
+        .filter(|(_, binary)| harness_binary_exists(binary))
         .map(|(name, _)| name.to_string())
         .collect()
+}
+
+fn harness_binary_exists(binary: &str) -> bool {
+    if which::which(binary).is_ok() {
+        return true;
+    }
+
+    #[cfg(windows)]
+    {
+        ["exe", "cmd", "bat"]
+            .iter()
+            .any(|ext| which::which(format!("{binary}.{ext}")).is_ok())
+    }
+
+    #[cfg(not(windows))]
+    {
+        false
+    }
 }
 
 const PROVIDER_HARNESS_PREFERENCES: &[(&str, &[&str])] = &[

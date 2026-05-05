@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::io::Read;
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -79,7 +80,8 @@ fn probe_timeout() -> Duration {
 }
 
 fn run_command(cmd: &str, args: &[&str], timeout: Duration) -> Result<String, String> {
-    let mut child = Command::new(cmd)
+    let program = resolve_command(cmd);
+    let mut child = Command::new(&program)
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -120,6 +122,23 @@ fn run_command(cmd: &str, args: &[&str], timeout: Duration) -> Result<String, St
             Err("timeout".to_string())
         }
     }
+}
+
+fn resolve_command(cmd: &str) -> PathBuf {
+    if let Ok(path) = which::which(cmd) {
+        return path;
+    }
+
+    #[cfg(windows)]
+    {
+        for ext in ["exe", "cmd", "bat"] {
+            if let Ok(path) = which::which(format!("{cmd}.{ext}")) {
+                return path;
+            }
+        }
+    }
+
+    PathBuf::from(cmd)
 }
 
 fn strip_ansi(s: &str) -> String {

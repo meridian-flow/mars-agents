@@ -13,6 +13,7 @@ Caveman style. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `mars link --unlink` flag. Use `mars unlink <target>` instead.
 
 ### Fixed
+- Windows OpenCode probe cache cold path detects and runs `.bat`/`.cmd` shims, so fake or npm-installed `opencode` no longer skips cache population.
 - `mars link --unlink` no longer auto-initializes a project in an empty directory before unlinking.
 - `mars unlink` deletes the target directory before saving config, so a failed deletion doesn't leave settings mutated with the directory still on disk.
 
